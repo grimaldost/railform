@@ -59,6 +59,10 @@ All notable changes to this project are recorded here, in the
   ignored by `commit-msg`; a `null` or absent pull request body is empty text.
 - A `commit-lane` job in railform's own CI that runs `commit-range` and `pr-text` on pull
   requests, which now also trigger on `edited`.
+- `commit-msg` reads git's comment character from `core.commentChar` (falling back to `#`, and
+  reading `auto` as `#`); `commit-range` asks `git log` for no signatures, so `log.showSignature`
+  cannot put gpg text in the hash field; an empty `commit.types` is a configuration error (exit 2).
+- On an `edited` pull request event only the `commit-lane` job runs; `checks` and `audit` skip.
 
 ### Changed
 

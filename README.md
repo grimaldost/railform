@@ -124,7 +124,8 @@ Three verbs judge commit text, with the rules read from the frame (`commit.types
 `commit.attribution_patterns`):
 
 - `railform commit-msg FILE` checks the message file git hands the `commit-msg` hook. Lines that
-  start with `#` are git comments and are ignored, as is everything after the scissors line.
+  start with git's comment character (`core.commentChar`, else `#`) are git comments and are
+  ignored, as is everything after the scissors line.
 - `railform commit-range BASE...HEAD` checks every commit that HEAD adds to BASE since their merge
   base.
 - `railform pr-text [--event PATH]` checks a pull request's title and body, read from the event
@@ -133,12 +134,16 @@ Three verbs judge commit text, with the rules read from the frame (`commit.types
 The subject rule: the first line reads `type(scope)!: description`, the scope and the `!` optional
 and the type one of `commit.types`. A commit with more than one parent (a merge) is exempt, since
 git writes its subject; `commit-msg` treats a merge in progress the same way. The title of a pull
-request is not held to the subject rule.
+request is not held to the subject rule. Git's own `Revert "..."` subject, and GitHub's, fail the
+subject rule; write the revert as `revert: ...`.
 
 The attribution rule applies to every message, merges and the pull request's title and body
 included: no line may match a pattern of `commit.attribution_patterns` (Python regular
-expressions, matched case-insensitively per line). The default set rejects a trailer that names an
-AI tool as author, co-author, signer or assistant, and a "generated with" stamp that names one.
+expressions, matched case-insensitively per line). The default set is keel's. It rejects a trailer
+that names Claude, GPT, Anthropic or Copilot as author, co-author, signer or assistant, but its
+"generated with" stamp pattern names Claude only, so another tool's stamp passes. The second arm of
+the mantis-research script (a stamp that names GPT or Anthropic) was not added. Dependabot bodies
+quote upstream release notes, which could, rarely, trip the stamp pattern.
 
 When both rules fail, the verdict code is `subject`; a failure of the attribution rule alone is
 `attribution`. An unreadable message file, a bad range, a missing event payload and an invalid
