@@ -281,7 +281,7 @@ manifest:
 |---|---|---|
 | `railform-commit-msg` | `commit-msg` | the message file |
 | `railform-branch-name` | `pre-push` | every push pre-commit runs hooks for (`always_run: true`, `pass_filenames: false`) |
-| `railform-hooks-check` | `pre-commit` | changes under `.githooks/` (adopt writes the repository's `hooks.dir`) |
+| `railform-hooks-check` | `pre-commit` | every commit (`always_run: true`, `pass_filenames: false`), since a commit that only deletes a wrapper stages no file a filter could match |
 | `railform-private-refs` | `pre-commit` | the staged files only |
 
 The hygiene hooks (trailing whitespace, end of file, merge-conflict markers and the rest) are
@@ -301,8 +301,12 @@ name judged is the one the branch gets on the remote (`git push origin feat/x:fo
   and a lowercase slug, such as `feat/hook-rail` or `release/1.2.3`. It was measured over the
   head branches of 454 merged pull requests: with the commit types as the only categories, 93% of
   them passed; with this shape, all of them.
-- The default `branch.allow` holds the branches bots create: `dependabot/**` and `*-patch-*`
-  (GitHub's web editor names its branches `<user>-patch-<N>`).
+- The default refuses `main` and every other name without a slash: a direct
+  `git push origin main` that carries new commits is refused. Work reaches the default branch
+  through pull requests.
+- The default `branch.allow` is `dependabot/**`, the branches Dependabot creates. GitHub's web
+  editor names its branches `<user>-patch-<N>`, which the default refuses; a repository that
+  takes changes from the web editor adds a glob such as `*-patch-*` with an `exceptions` row.
 - A detached HEAD with no other source passes, and so does a pushed ref that is not a branch
   (a tag): there is no branch name to judge.
 
@@ -314,11 +318,17 @@ only the first ref with new commits. So the rail is blind to:
   on `main` and `git push origin foo`;
 - every ref after the first in a push of several refs.
 
-The `commit-lane` job of the reusable CI workflow closes both gaps on the server: it runs
-`railform branch-name` on the head branch of every pull request, so a misnamed branch is refused
-once it opens a pull request, however it was pushed.
+The `commit-lane` job of the reusable CI workflow will close both gaps on the server, once that
+workflow exists (§9 of the development-rails spec, not yet built): it will run
+`railform branch-name` on the head branch of every pull request, so a misnamed branch will be
+refused once it opens a pull request, however it was pushed. A fork's pull request from its
+`main` will be refused there too.
 
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the gate commands and the commit rules, and
 [CHANGELOG.md](CHANGELOG.md) for what changed. The license is MIT.
+
+The tests marked `slow` need the network; the hook-rail tests, which run real `git commit` and
+`git push` through pre-commit, need it in every session. Offline, run
+`uv run --frozen python -m pytest -q -m "not slow"`.
