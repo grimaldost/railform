@@ -39,6 +39,14 @@ All notable changes to this project are recorded here, in the
   record files and version-site paths. `hooks.pre_commit_version` is set only in the
   `plugin-marketplace` preset, whose test command pins the pytest railform locks. Two exceptions
   rows that cover the same departure fail `bad-exception`.
+- The `hooks-check` and `arm` verbs and the wrapper template they share (`railform.wrapper`).
+  `hooks-check` fails a hook wrapper that is missing (`missing`), not tracked as `100755`
+  (`mode`) or not the rendered wrapper once CRLF is read as LF (`content`); `--armed` also fails
+  unless `core.hooksPath` equals `hooks.dir` (`not-armed`). `arm` sets `core.hooksPath` in the
+  local configuration. The hook directory, hook names and wrapper command come from the frame.
+  A wrapper that pins a requirement to no version, such as `pre-commit== hook-impl`, is refused
+  as a configuration error (exit 2). Ported from the commit-lane tests of the stack-radar engine;
+  the stage, dev-group and frozen-`uv run` rules of that source are not ported yet.
 
 ### Changed
 

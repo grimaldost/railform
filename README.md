@@ -101,6 +101,23 @@ Some keys hold rows rather than plain values:
   `$GITHUB_OUTPUT` names, as `<table>_<key>`; lists, tables, booleans and numbers are written as
   compact JSON.
 
+## Hook wrappers
+
+A repository tracks one small shell script per git hook in `hooks.dir` (`.githooks` by default),
+each of which runs that stage of `.pre-commit-config.yaml` through the frame's `hooks.wrapper`
+command. The text is fixed by a template, so a wrapper is correct or it is not.
+
+- `railform hooks-check` checks every hook in `hooks.names`: the file exists (`missing`), the git
+  index tracks it as `100755` (`mode`; git skips a hook that is not executable on Linux and
+  macOS), and its text, with CRLF read as LF, is the rendered wrapper (`content`). It judges
+  the index and the file, never the working-tree executable bit.
+- `railform hooks-check --armed` also fails unless `git config core.hooksPath` equals `hooks.dir`
+  (`not-armed`).
+- `railform arm` sets `core.hooksPath` to `hooks.dir` in the clone's local configuration. Run it
+  once in each clone; worktrees share the clone's configuration.
+- A frame whose `hooks.wrapper` pins a requirement to no version (the `{hooks.pre_commit_version}`
+  placeholder with `hooks.pre_commit_version` empty) is a configuration error, exit 2.
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the gate commands and the commit rules, and
