@@ -50,6 +50,19 @@ All notable changes to this project are recorded here, in the
   `hooks.dir` is read as a normalised path (`./.githooks`, `.githooks/` and a backslash path name
   the same directory), and `railform.wrapper` is the one module a caller needs: it renders the
   wrapper and validates `hooks.dir`.
+- The commit lane: `railform commit-msg FILE`, `railform commit-range BASE...HEAD` and
+  `railform pr-text [--event PATH]`, ported from keel's no-attribution hook and from
+  mantis-research's commit-message script, with their tests. The subject follows
+  `type(scope)!: description` with the frame's `commit.types`, and a commit with more than one
+  parent is exempt; every message, merges and a pull request's title and body included, is
+  checked against `commit.attribution_patterns`. Git comment lines and the scissors line are
+  ignored by `commit-msg`; a `null` or absent pull request body is empty text.
+- A `commit-lane` job in railform's own CI that runs `commit-range` and `pr-text` on pull
+  requests, which now also trigger on `edited`.
+- `commit-msg` reads git's comment character from `core.commentChar` (falling back to `#`, and
+  reading `auto` as `#`); `commit-range` asks `git log` for no signatures, so `log.showSignature`
+  cannot put gpg text in the hash field; an empty `commit.types` is a configuration error (exit 2).
+- On an `edited` pull request event only the `commit-lane` job runs; `checks` and `audit` skip.
 
 ### Changed
 
