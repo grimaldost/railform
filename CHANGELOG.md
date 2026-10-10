@@ -72,6 +72,15 @@ All notable changes to this project are recorded here, in the
   `railform.toml` at HEAD removes or excepts a glob that the frame at `REF` had.
   Names compare case-insensitively, and a malformed glob (an empty segment, a `.` or `..`
   segment, a leading or trailing `/`, or a backslash) is a configuration error, exit 2.
+- The `private-refs` verb (`src/railform/private_refs.py`): a paths half that fails a
+  home-directory path of any of six shapes (`X:\Users\<name>\`, `X:/Users/<name>/`, the
+  JSON-escaped form, `X--Users-<name>-`, `/Users/<name>/`, `/home/<name>/`) unless the user segment
+  is in `private_refs.placeholders` or plainly a placeholder, and a names half that reads a private
+  list only from the file `private_refs.names_file_env` names, matches whole tokens, and is silent
+  without the file (`--require-names` fails it with `names-file-missing`). Scope: the given paths,
+  else `--diff` (changed files at the tip and the range's commit messages), else every tracked
+  file; `--text` adds files. Findings never print a matched name or the user segment of a home path.
+- A `private-refs` step in the `checks` job of CI.
 
 ### Changed
 

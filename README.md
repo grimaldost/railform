@@ -170,6 +170,31 @@ trailing `/`, or a backslash), from the frame or from `--glob`, is a configurati
 The check is blind to the inside of a submodule: git lists a submodule as its own path, so a
 change to files in its contents is not seen unless the submodule path itself is changed.
 
+## The private-reference check
+
+`railform private-refs [PATH ...] [--diff BASE...HEAD] [--text FILE ...] [--require-names]` keeps
+two kinds of private reference out of a public repository. It checks the given paths; otherwise,
+with `--diff`, the files the range changes (read at its tip) and the range's commit messages;
+otherwise every tracked file. `--text` adds files to any scope, such as a pull request's title and
+body. Binary files are skipped. Put the paths before the options.
+
+- **Home paths.** A home-directory path fails (`home-path`) unless its user segment is in
+  `private_refs.placeholders` (default: `me`, `x`, `someone`, `alice`, `user`, `runner`) or
+  plainly a placeholder (it contains `<`, `>`, `$`, `%`, `{`, `}` or `*`). The six shapes are
+  `X:\Users\<name>\`, `X:/Users/<name>/`, the JSON-escaped `X:\Users\<name>`, the project-slug
+  form `X--Users-<name>-`, `/Users/<name>/` and `/home/<name>/`, with any drive letter and
+  without regard to case for the Windows ones.
+- **Private names.** The file that the variable named by `private_refs.names_file_env` (default
+  `RAILFORM_PRIVATE_NAMES`) points to lists one term per line; blank lines and lines starting
+  with `#` are ignored. A term matches case-insensitively as a whole token, so a term `alice`
+  matches `by alice.` and not `aliceworks`. Without the variable or the file this half is silent,
+  which is why it is silent in CI; `--require-names` turns a missing file into a failure
+  (`names-file-missing`). railform tracks no names list and ports none.
+
+No output contains a matched name or the user segment of a matched home path: a home-path finding
+shows the shape with `<name>` in its place, and a private-name finding gives only the term's line
+number in the names file.
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the gate commands and the commit rules, and
