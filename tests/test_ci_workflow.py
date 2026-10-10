@@ -81,5 +81,6 @@ def test_dependabot_watches_github_actions_weekly() -> None:
             'package-ecosystem': 'github-actions',
             'directory': '/',
             'schedule': {'interval': 'weekly'},
+            'commit-message': {'prefix': 'ci'},
         }
     ]
