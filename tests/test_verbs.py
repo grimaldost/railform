@@ -149,21 +149,26 @@ def test_a_bad_argument_to_a_found_verb_exits_2_usage_with_one_verdict_line(
     assert 'required' in captured.err
 
 
+@pytest.fixture
+def unwritten_verb(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A verb in the table whose module does not exist, whichever verbs have landed."""
+    monkeypatch.setattr(cli, 'VERBS', (*cli.VERBS, 'not-written'))
+
+
 @pytest.mark.parametrize(
     'argv',
-    [['--help'], ['-h'], ['fake-verb', '--help'], ['fake-verb', '-h'], ['frame', '--help']],
+    [['--help'], ['-h'], ['fake-verb', '--help'], ['fake-verb', '-h'], ['not-written', '--help']],
 )
 def test_help_prints_no_verdict_line_exits_0_and_leaves_the_ledger_alone(
     argv: list[str],
     fake_verb: None,
+    unwritten_verb: None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     ledger = tmp_path / 'ledger.txt'
     monkeypatch.setenv('RAILFORM_LEDGER', str(ledger))
-    if _implemented('frame'):
-        pytest.skip('the frame verb has landed; its own tests cover its help')
     assert main(argv) == 0
     captured = capsys.readouterr()
     assert captured.out.strip() != ''
