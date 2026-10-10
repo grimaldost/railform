@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from railform import frame
 from railform.cli import main
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -172,8 +173,8 @@ def test_binary_files_are_skipped(scratch_repo: Path, capsys: pytest.CaptureFixt
 def test_two_hits_in_one_line_and_the_same_path_in_two_shapes_are_reported_once_each(
     scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # The path `D:/Users/<name>/...` is matched by two shapes (the drive shape and the bare
-    # `/Users/<name>` inside it) and counts once, so two paths give two findings.
+    # `home("slash")` is a drive path with a slash. The drive shape and the bare `/Users/` shape
+    # inside it both match it, and it counts once, so two paths give two findings.
     stage(scratch_repo, 'a.txt', f'{home("slash")} and {home("linux")}\n')
     _, _, findings = check(capsys)
     assert len(findings) == 2
@@ -229,6 +230,97 @@ def test_the_system_folders_are_default_placeholders(
     for shape in SHAPE_NAMES:
         stage(scratch_repo, f'{shape}.md', home(shape, name) + '\n')
     assert check(capsys)[0] == 0
+
+
+@pytest.mark.parametrize(
+    'line',
+    [
+        f'PS C:{BACKSLASH}Users{BACKSLASH}{STRANGER}>',
+        f'C:{BACKSLASH}Users{BACKSLASH}{STRANGER}> dir',
+        f'<code>/home/{STRANGER}</code>',
+        f'/home/{STRANGER}<br>',
+        f'(see /home/{STRANGER})',
+        f'[/Users/{STRANGER}]',
+        f'"/home/{STRANGER}",',
+        f'/home/{STRANGER}; /home/{STRANGER}|',
+        f'`/home/{STRANGER}`',
+        f'`C:/Users/{STRANGER}`',
+        f'/Users/{STRANGER}:',
+        f'/Users/{STRANGER}.',
+    ],
+)
+def test_punctuation_next_to_a_name_does_not_hide_a_leak(
+    line: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, 'a.txt', line + '\n')
+    code, out, _ = check(capsys)
+    assert code == 1
+    assert STRANGER not in out
+
+
+@pytest.mark.parametrize(
+    'line',
+    [
+        '/home/me,',
+        '/Users/me.',
+        '/Users/me..',
+        '(e.g. /home/user)',
+        'HOME=/home/me;',
+        '[/Users/me]',
+        '/Users/me:',
+        'the `/home/` folder and the `/Users/` folder',
+        '<code>/home/<name></code>',
+        '/home/{user}/ and /Users/<name>/',
+        '/home/...',
+    ],
+)
+def test_punctuation_next_to_a_placeholder_is_not_part_of_the_name(
+    line: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, 'a.txt', line + '\n')
+    code, out, _ = check(capsys)
+    assert (code, verdict(out)) == (0, 'railform-verdict: private-refs pass ok')
+
+
+def test_a_slug_segment_also_stops_at_punctuation(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, 'a.txt', f'`C--Users-{STRANGER}-x` and C--Users-(me)-x\n')
+    code, out, findings = check(capsys)
+    assert code == 1
+    assert len(findings) == 1
+    assert STRANGER not in out
+
+
+def test_a_frame_load_error_does_not_print_a_home_path(
+    scratch_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail(root: Path) -> dict[str, object]:
+        raise frame.FrameError(f'railform.toml: cannot read: {home("linux")}')
+
+    monkeypatch.setattr(frame, 'load', fail)
+    code = main(['private-refs'])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == 'railform-verdict: private-refs fail usage\n'
+    assert STRANGER not in captured.err
+    assert '/home/<name>/' in captured.err
+
+
+def test_a_private_name_inside_a_home_path_shape_is_hidden_there(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The term is not the user segment but sits in the shape that is shown: `clip` hides it.
+    names_file.write_text('users\n', encoding='utf-8')
+    stage(scratch_repo, 'a.txt', f'{home("backslash")}\n')
+    code, out, findings = check(capsys)
+    assert code == 1
+    assert findings == [
+        f'a.txt:1: home path C:{BACKSLASH}<name>{BACKSLASH}<name>',
+        'a.txt:1: private name (names file line 1)',
+    ]
+    assert 'Users' not in out
+    assert STRANGER not in out
 
 
 def test_crlf_input_is_read_line_by_line(

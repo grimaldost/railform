@@ -10,9 +10,11 @@ for the Windows ones (a backslash and a doubled backslash are the JSON-escaped f
     X:\\Users\\<name>      X:/Users/<name>      X:\\\\Users\\\\<name>
     X--Users-<name>-     /Users/<name>        /home/<name>
 
-A segment ends at a separator, whitespace, a quote or the end of the line (the slug form ends at
-the next dash), so `cd C:\\Users\\<name>` is caught. `/home/` counts only where it is not preceded
-by a word character, `.` or `-`, so `src/home/views/` and a URL's `/home/` pass.
+A segment ends at a separator, whitespace, a quote, a backtick, one of `<>(){}[],;:|` or the end of
+the line (the slug form also ends at the next dash), so `cd C:\\Users\\<name>` and `<name><br>` are
+caught while `(see /home/me)` passes; a trailing full stop is dropped before the comparison.
+`/home/` counts only where it is not preceded by a word character, `.` or `-`, so
+`src/home/views/` and a URL's `/home/` pass.
 
 A user segment passes when it is in `private_refs.placeholders` (case-insensitive) or is plainly a
 placeholder: it contains one of `<`, `>`, `$`, `%`, `{`, `}` or `*`.
@@ -52,15 +54,18 @@ REDACTED = '<name>'
 # A user segment containing one of these is a placeholder, whatever the list says.
 _PLACEHOLDER_MARKS = frozenset('<>$%{}*')
 
-# A segment runs to the next separator, whitespace, quote (backtick included) or the end of the
-# line.
-_SEGMENT = r'[^\\/\s"\'`]+'
+# A segment runs to the next separator, whitespace, quote, backtick, bracket or punctuation mark,
+# or the end of the line: `<>(){}[],;:|` end it, so a prompt `C:\Users\x>`, HTML `/home/x<br>` and
+# prose `(see /home/me)` read right, and `<name>` or `{user}` simply make no match. `$`, `%` and
+# `*` stay in a segment and mark a placeholder.
+_STOP = r'\\/\s"\'`<>(){}\[\],;:|'
+_SEGMENT = f'[^{_STOP}]+'
 # The six shapes. The Windows ones ignore case; `/Users/` and `/home/` are exact.
 _SHAPES = (
     re.compile(rf'[A-Za-z]:\\Users\\(?P<name>{_SEGMENT})', re.IGNORECASE),
     re.compile(rf'[A-Za-z]:/Users/(?P<name>{_SEGMENT})', re.IGNORECASE),
     re.compile(rf'[A-Za-z]:\\\\Users\\\\(?P<name>{_SEGMENT})', re.IGNORECASE),
-    re.compile(r'[A-Za-z]--Users-(?P<name>[^-\\/\s"\'`]+)-', re.IGNORECASE),
+    re.compile(rf'[A-Za-z]--Users-(?P<name>[^-{_STOP}]+)-', re.IGNORECASE),
     re.compile(rf'/Users/(?P<name>{_SEGMENT})'),
     # Not after a word character, `.` or `-`: `src/home/views/` and `https://x.test/home/a/` pass.
     re.compile(rf'(?<![\w.-])/home/(?P<name>{_SEGMENT})'),
@@ -94,7 +99,11 @@ class Source:
 
 
 def _is_placeholder(name: str, placeholders: frozenset[str]) -> bool:
-    return name.lower() in placeholders or any(char in _PLACEHOLDER_MARKS for char in name)
+    # A full stop at the end is prose (`/Users/me.`), not part of the name.
+    name = name.rstrip('.')
+    if not name or any(char in _PLACEHOLDER_MARKS for char in name):
+        return True
+    return name.lower() in placeholders
 
 
 def home_path_hits(line: str, placeholders: frozenset[str]) -> list[Span]:

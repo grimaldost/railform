@@ -86,6 +86,9 @@ All notable changes to this project are recorded here, in the
   the end of the line (`cd C:\Users\<name>` and `HOME=/home/<name>` are caught); `/home/` is read
   only where it is not preceded by a word character, `.` or `-`; `--text` takes one file per flag
   and repeats; a usage error redacts a given path like a finding does.
+- `private-refs`: a segment also ends at a backtick and at any of `<>(){}[],;:|`, and a trailing
+  full stop is dropped before the placeholder comparison, so `C:\Users\<name>>`, `/home/<name><br>`
+  and `<code>/home/<name></code>` are caught while `/home/me,` and `(e.g. /home/user)` pass.
 - The default `private_refs.placeholders` gains the system folders `public`, `default`, `shared`
   and `runneradmin`, which are not people. This extends the spec's six names.
 
