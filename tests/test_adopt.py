@@ -677,7 +677,8 @@ def test_red_proof_a_job_named_railform_outside_the_region_is_drift(
     write(adopted.root, CI, text + extra)
     code, line, out = run_adopt(capsys, '--check')
     assert (code, line) == (1, f'{VERDICT} fail drift')
-    assert 'a job named railform sits outside the railform marker lines' in out
+    # A second `railform:` key in `jobs:` is first of all a repeated key.
+    assert 'the key railform repeats the one on line' in out
 
 
 # --- refusals before any write -----------------------------------------------------------------
@@ -920,6 +921,162 @@ def test_red_proof_a_job_outside_the_region_that_casefolds_to_an_owned_name_is_d
     code, line, out = run_adopt(capsys, '--check')
     assert (code, line) == (1, f'{VERDICT} fail drift')
     assert 'sits outside the railform marker lines' in out
+
+
+# --- third review round ------------------------------------------------------------------------
+
+_SECOND_KEYS = {
+    'second-repos': (
+        'python-package',
+        PRE_COMMIT,
+        'repos:\n  - repo: local\n    hooks:\n      - id: nothing\n        name: nothing\n'
+        '        entry: nothing\n        language: fail\n',
+    ),
+    'second-ignore': (
+        'python-scripts',
+        DEPENDABOT,
+        '    ignore:\n      - dependency-name: actions/setup-python\n',
+    ),
+    'duplicate-job-id': (
+        'python-package',
+        CI,
+        '  docs:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo shadow\n',
+    ),
+}
+
+
+@pytest.mark.parametrize('case', sorted(_SECOND_KEYS))
+def test_red_proof_a_repeated_key_is_drift_and_refused(
+    case: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # YAML keeps the last of a repeated key: a second `repos:` would silence every railform hook
+    # while the first still held the region.
+    project_type, path, appended = _SECOND_KEYS[case]
+    build(scratch_repo, project_type)
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    edited = read(scratch_repo, path) + appended
+    write(scratch_repo, path, edited)
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert 'repeats the one on line' in out
+    assert run_adopt(capsys)[1] == f'{VERDICT} fail usage'
+    assert read(scratch_repo, path) == edited
+
+
+@pytest.mark.parametrize('configured', ['.githooks.', '.GitHooks. ', '.githooks/./'])
+def test_red_proof_a_hooks_path_that_windows_reads_as_hooks_dir_gets_no_stub(
+    configured: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    git(scratch_repo, 'config', '--local', 'core.hooksPath', configured)
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0, out
+    assert 'stub' not in out
+    assert 'arm this clone' not in out  # the clone is armed, folded
+    effective = frame.load(scratch_repo)
+    for hook in HOOKS:
+        assert read(scratch_repo, f'.githooks/{hook}') == wrapper.render(effective, hook)
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+
+
+def test_red_proof_a_tracked_hook_under_a_case_variant_of_hooks_dir_gets_no_stub(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Without the fold, `.GitHooks` would be the previous directory and its stubs would land on
+    # the wrappers on a case-insensitive filesystem; the guard before any write stops that too.
+    build(scratch_repo, 'python-package')
+    _track(scratch_repo, '.GitHooks/pre-commit', '#!/bin/sh\necho old\n', executable=True)
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0, out
+    assert 'stub written' not in out
+    assert '.GitHooks/pre-commit: not taken as the previous hooks directory' in out
+
+
+def test_a_hooks_path_under_hooks_dir_is_the_previous_directory(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    git(scratch_repo, 'config', '--local', 'core.hooksPath', '.githooks/legacy')
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0
+    for hook in HOOKS:
+        assert f'.githooks/legacy/{hook}: stub written' in out
+        assert 'railform arm' in read(scratch_repo, f'.githooks/legacy/{hook}')
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+
+
+def test_every_skipped_candidate_is_reported(
+    scratch_repo: Path, tmp_path_factory: pytest.TempPathFactory, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    outside = tmp_path_factory.mktemp('hooks-outside')
+    git(scratch_repo, 'config', '--local', 'core.hooksPath', outside.as_posix())
+    _track(scratch_repo, 'docs/pre-commit', 'notes\n', executable=False)
+    _track(scratch_repo, 'skills/x/pre-push', '#!/bin/sh\n', executable=True)
+    _track(scratch_repo, '.githooks/old/commit-msg', '#!/bin/sh\n', executable=True)
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0
+    assert 'lies outside the repository or inside .git' in out
+    assert 'docs/pre-commit: not taken as the previous hooks directory (tracked as 100644)' in out
+    assert 'skills/x/pre-push: not taken as the previous hooks directory (a path a session' in out
+    assert '.githooks/old/commit-msg: not taken as the previous hooks directory (hooks.dir' in out
+    assert 'stub written' not in out
+
+
+def test_red_proof_a_dependabot_region_in_an_update_for_another_directory_is_drift(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    text = read(scratch_repo, DEPENDABOT)
+    owned = region(text)
+    other = (
+        '  - package-ecosystem: github-actions\n    directory: /tools/unused\n'
+        '    schedule:\n      interval: weekly\n'
+    )
+    moved = text.replace(owned, '') + other + owned
+    write(scratch_repo, DEPENDABOT, moved)
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert 'github-actions update whose directory is /' in out
+    assert run_adopt(capsys)[1] == f'{VERDICT} fail usage'
+    assert read(scratch_repo, DEPENDABOT) == moved
+
+
+def test_the_dependabot_entry_goes_to_the_update_of_the_root_directory(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write(
+        scratch_repo,
+        DEPENDABOT,
+        'version: 2\nupdates:\n'
+        '  - package-ecosystem: github-actions\n    directory: /docs\n'
+        '    schedule:\n      interval: weekly\n'
+        '  - package-ecosystem: github-actions\n    directories: ["/", "/tools"]\n'
+        '    schedule:\n      interval: weekly\n',
+    )
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    updates = yaml.safe_load(read(scratch_repo, DEPENDABOT))['updates']
+    assert 'ignore' not in updates[0]
+    assert updates[1]['ignore'] == [{'dependency-name': 'grimaldost/railform'}]
+    assert len(updates) == 2
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+
+
+def test_red_proof_an_own_railform_ignore_outside_the_region_does_not_hide_a_moved_region(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-scripts')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    text = read(scratch_repo, DEPENDABOT)
+    own = '      - dependency-name: grimaldost/railform\n'
+    with_own = text.replace('        versions: ["5.x"]\n', '        versions: ["5.x"]\n' + own)
+    owned = region(with_own)
+    moved = with_own.replace(owned, '') + '    allow:\n' + owned
+    actions = yaml.safe_load(moved)['updates'][1]
+    assert {'dependency-name': 'grimaldost/railform'} in actions['ignore']  # the adopter's own
+    write(scratch_repo, DEPENDABOT, moved)
+    assert run_adopt(capsys, '--check')[:2] == (1, f'{VERDICT} fail drift')
 
 
 # --- staging the wrappers ----------------------------------------------------------------------
