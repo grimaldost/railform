@@ -28,6 +28,7 @@ test = ['pytest>=8.0']
 dev = [
     { include-group = 'lint' },
     { include-group = 'test' },
+    'pre-commit>=4.6.2',
 ]
 
 [tool.ruff]
