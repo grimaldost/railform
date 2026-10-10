@@ -84,9 +84,14 @@ wrapper = ""
 pre_commit_version = ""
 
 [branch]
-# Provisional: §8 measures the merged branch names and replaces this pattern.
-pattern = '^(feat|fix|docs|chore|refactor|test|ci|build|perf|style|revert|release)/[a-z0-9][a-z0-9._/-]*$'
-allow = ["dependabot/**"]
+# A Python `re` pattern the whole branch name must match: a lowercase category, a slash and a
+# lowercase slug. Measured (development-rails spec, §8) over the head branches of 454 merged pull
+# requests: the commit types alone as categories accepted 93% of them, this shape all of them.
+pattern = '^[a-z][a-z0-9-]*/[a-z0-9][a-z0-9._/-]*$'
+# Globs of names that pass whatever the pattern says: the branches bots create. `**` spans `/`,
+# `*` and `?` do not. Dependabot's are `dependabot/<ecosystem>/<dependency>`, and GitHub's web
+# editor names its own `<user>-patch-<N>`.
+allow = ["dependabot/**", "*-patch-*"]
 
 [private_refs]
 names_file_env = "RAILFORM_PRIVATE_NAMES"
