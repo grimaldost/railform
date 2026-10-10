@@ -12,9 +12,18 @@ amendment withdrew the clause that asked the rail to refuse such a push, and
 `test_the_limit_a_push_of_foo_with_no_new_commit_is_accepted` asserts the limit, so that an
 upgrade of pre-commit that changes it is noticed.
 
-The first run needs the network: pre-commit clones the hygiene hooks from GitHub and builds
-each hook environment with pip, and uv resolves the fixtures' tools. These tests are marked
-`slow` and run by default, in CI too. Git is isolated by `tests/conftest.py`.
+Every session needs the network: `PRE_COMMIT_HOME` is fresh each session, so pre-commit clones
+the hygiene hooks from GitHub and builds each hook environment with pip, and uv resolves the
+fixtures' tools. Without the network every test fails at once with one message; run
+`pytest -m "not slow"` offline. These tests are marked `slow` and run by default, in CI too.
+
+Isolation. Git is isolated by `tests/conftest.py`. pre-commit runs its own clones without
+`GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`, so the hooks also run with `HOME`, `USERPROFILE`
+and `XDG_CONFIG_HOME` pointing at a temporary directory that holds an empty `.gitconfig`. The
+system git configuration still reaches pre-commit's clones. Outside the temporary directories
+the tests write caches only: pip's cache and virtualenv's app-data where the platform keeps them
+outside the home directory, and uv's cache and managed Pythons, pinned to the developer's own
+(`UV_CACHE_DIR`, `UV_PYTHON_INSTALL_DIR`) so uv stays warm.
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from migration_fixtures import PIN, PRE_COMMIT, TYPES, build
+from railform.adopt import HYGIENE_URL
 from railform.cli import main
 
 if TYPE_CHECKING:
@@ -43,18 +53,48 @@ IDENTITY = {
     'user.email': 'fixture@example.com',
     'commit.gpgsign': 'false',
 }
-DEPENDABOT_BRANCH = 'dependabot/github_actions/actions/checkout-4.2.2'
+DEPENDABOT_BRANCHES = (
+    'dependabot/github_actions/actions/checkout-4.2.2',
+    # An uppercase dependency name, which branch.pattern refuses: only branch.allow passes it.
+    'dependabot/pip/Django-4.2',
+)
 NOTE = 'notes.md'
 HOOKS = ('pre-commit', 'commit-msg', 'pre-push')
 # Variables that would point uv at railform's own environment, or make pre-commit skip hooks.
 DROPPED = {'VIRTUAL_ENV', 'UV_PROJECT_ENVIRONMENT', 'UV_FROZEN', 'UV_LOCKED', 'UV_NO_SYNC', 'SKIP'}
+OFFLINE = 'these tests need the network; run `pytest -m "not slow"` offline'
 
 
-def _environment(pre_commit_home: Path) -> dict[str, str]:
+def _uv_dir(kind: str) -> str:
+    """Where uv keeps its `cache` or its managed `python` interpreters for the developer."""
+    done = subprocess.run(
+        ['uv', kind, 'dir'], capture_output=True, text=True, encoding='utf-8', check=True
+    )
+    return done.stdout.strip()
+
+
+@pytest.fixture(scope='session')
+def outside(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
+    """The variables that point the hooks' tools away from the developer's home and caches."""
+    home = tmp_path_factory.mktemp('home')
+    (home / '.gitconfig').write_bytes(b'')
+    (home / '.config').mkdir()
+    return {
+        'PRE_COMMIT_HOME': str(tmp_path_factory.mktemp('pre-commit-home')),
+        'HOME': str(home),
+        'USERPROFILE': str(home),
+        'XDG_CONFIG_HOME': str(home / '.config'),
+        'UV_CACHE_DIR': _uv_dir('cache'),
+        'UV_PYTHON_INSTALL_DIR': _uv_dir('python'),
+    }
+
+
+def _environment(outside: dict[str, str]) -> dict[str, str]:
+    """The environment of every hook-running command: the test's own, git already isolated by
+    `tests/conftest.py`, with `outside` on top."""
     env = {key: value for key, value in os.environ.items() if key not in DROPPED}
     env.pop('PRE_COMMIT_REMOTE_BRANCH', None)
-    env['PRE_COMMIT_HOME'] = str(pre_commit_home)
-    return env
+    return env | outside
 
 
 def _run(
@@ -82,12 +122,6 @@ def _git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
 def _identify(repo: Path) -> None:
     for key, value in IDENTITY.items():
         _git(repo, 'config', key, value)
-
-
-@pytest.fixture(scope='session')
-def pre_commit_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """pre-commit's cache for this session: each hook environment is built once."""
-    return tmp_path_factory.mktemp('pre-commit-home')
 
 
 @pytest.fixture(scope='session')
@@ -122,32 +156,54 @@ def railform_under_test(
     return _session_cache['railform']  # type: ignore[return-value]
 
 
+def _require_network(cache: dict[str, object], cwd: Path, env: dict[str, str]) -> None:
+    """Fail at once, with one message, when the first network step of the session failed.
+
+    The first step is reaching the hygiene hooks' repository, which pre-commit clones; asked
+    once per session, so an offline run never waits through the retries of pre-commit or uv.
+    """
+    if 'network' not in cache:
+        done = _run(cwd, ['git', 'ls-remote', '--quiet', HYGIENE_URL, 'HEAD'], env)
+        cache['network'] = '' if done.returncode == 0 else done.stderr.strip()
+    if cache['network']:
+        pytest.fail(f'{OFFLINE} (git ls-remote {HYGIENE_URL}: {cache["network"]})', pytrace=False)
+
+
 @pytest.fixture
 def fixture_origin(
     tmp_path_factory: pytest.TempPathFactory,
-    pre_commit_home: Path,
+    outside: dict[str, str],
     railform_under_test: tuple[Path, str],
     _session_cache: dict[str, object],
 ) -> Callable[[str], Path]:
     """Build, once per session and type, the adopted migration fixture as a committed repository
-    whose railform hooks come from the railform under test."""
+    whose railform hooks come from the railform under test. A build that failed fails every
+    later test of its type at once, with the first failure."""
 
     def origin(project_type: str) -> Path:
+        _require_network(_session_cache, tmp_path_factory.getbasetemp(), _environment(outside))
         key = f'origin:{project_type}'
         if key not in _session_cache:
-            _session_cache[key] = _build_origin(
-                tmp_path_factory.mktemp(f'origin-{project_type}'),
-                project_type,
-                railform_under_test,
-                pre_commit_home,
-            )
-        return _session_cache[key]  # type: ignore[return-value]
+            try:
+                _session_cache[key] = _build_origin(
+                    tmp_path_factory.mktemp(f'origin-{project_type}'),
+                    project_type,
+                    railform_under_test,
+                    outside,
+                )
+            except Exception as exc:
+                _session_cache[key] = exc
+                raise
+        built = _session_cache[key]
+        if isinstance(built, Exception):
+            pytest.fail(f'building the {project_type} fixture failed earlier: {built}')
+        return built  # type: ignore[return-value]
 
     return origin
 
 
 def _build_origin(
-    root: Path, project_type: str, railform: tuple[Path, str], pre_commit_home: Path
+    root: Path, project_type: str, railform: tuple[Path, str], outside: dict[str, str]
 ) -> Path:
     _git(root, 'init', '-q', '-b', 'main')
     _identify(root)
@@ -164,7 +220,7 @@ def _build_origin(
     config.write_bytes(text.encode('utf-8'))
     if project_type != 'plugin-marketplace':
         # The wrapper runs pre-commit from the fixture's own locked dev group.
-        locked = _run(root, ['uv', 'lock'], _environment(pre_commit_home))
+        locked = _run(root, ['uv', 'lock'], _environment(outside))
         assert locked.returncode == 0, locked.stderr
     # Stage the rest, never re-staging from the working tree what adopt staged as executable:
     # its index entries are the ones a clone checks out, whatever the working tree's mode reads.
@@ -204,8 +260,8 @@ def clone(
 
 
 @pytest.fixture
-def env(pre_commit_home: Path) -> dict[str, str]:
-    return _environment(pre_commit_home)
+def env(outside: dict[str, str]) -> dict[str, str]:
+    return _environment(outside)
 
 
 def _commit(
@@ -275,6 +331,19 @@ def test_red_proof_a_staged_home_path_is_refused_and_only_staged_files_are_judge
     assert _head(clone) == before
 
 
+def test_red_proof_a_commit_that_only_deletes_a_wrapper_is_refused(
+    clone: Path, env: dict[str, str]
+) -> None:
+    # pre-commit leaves a deleted path out of the staged files, so the commit stages no file a
+    # hook could match: only `always_run: true` makes the hooks check run.
+    before = _head(clone)
+    _git(clone, 'rm', '-q', '--', '.githooks/pre-push')
+    refused = _run(clone, ['git', 'commit', '-q', '-m', 'chore: drop the pre-push wrapper'], env)
+    assert refused.returncode != 0
+    assert 'railform-verdict: hooks-check fail missing' in refused.stdout + refused.stderr
+    assert _head(clone) == before
+
+
 # --- push ----------------------------------------------------------------------------------------
 
 
@@ -309,7 +378,7 @@ def test_the_limit_a_push_of_foo_with_no_new_commit_is_accepted(
 ) -> None:
     # Every commit of foo is on origin/main already, so pre-commit runs no pre-push hook at all.
     # The spec's round-6 amendment records this limit; the commit-lane job of the reusable
-    # workflow judges the head branch of every pull request instead.
+    # workflow (§9, not yet built) will judge the head branch of every pull request instead.
     _git(clone, 'branch', 'foo')
     accepted = _push(clone, env, 'foo')
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
@@ -317,11 +386,26 @@ def test_the_limit_a_push_of_foo_with_no_new_commit_is_accepted(
     assert _remote_has(clone, 'foo')
 
 
+@pytest.mark.parametrize('branch', DEPENDABOT_BRANCHES)
 def test_red_proof_a_dependabot_branch_with_a_new_commit_is_accepted(
+    clone: Path, env: dict[str, str], branch: str
+) -> None:
+    _git(clone, 'switch', '-q', '-c', branch)
+    _committed(clone, env, 'ci: bump a dependency')
+    accepted = _push(clone, env, branch)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert _remote_has(clone, branch)
+
+
+def test_red_proof_an_empty_commit_on_foo_is_refused_on_push(
     clone: Path, env: dict[str, str]
 ) -> None:
-    _git(clone, 'switch', '-q', '-c', DEPENDABOT_BRANCH)
-    _committed(clone, env, 'ci: bump actions/checkout')
-    accepted = _push(clone, env, DEPENDABOT_BRANCH)
-    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
-    assert _remote_has(clone, DEPENDABOT_BRANCH)
+    # The pushed commit changes no file, so only `always_run: true` makes pre-commit run the
+    # branch rail on this push.
+    _git(clone, 'switch', '-q', '-c', 'foo')
+    done = _run(clone, ['git', 'commit', '-q', '--allow-empty', '-m', 'docs: an empty commit'], env)
+    assert done.returncode == 0, done.stdout + done.stderr
+    refused = _push(clone, env, 'foo')
+    assert refused.returncode != 0
+    assert 'railform-verdict: branch-name fail branch' in refused.stdout + refused.stderr
+    assert not _remote_has(clone, 'foo')
