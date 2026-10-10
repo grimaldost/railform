@@ -56,7 +56,7 @@ def _toml_without(glob: str) -> str:
 
 def _toml_with(*extra: str) -> str:
     globs = [*frame.effective_frame(None)['session_loaded'], *extra]
-    items = ', '.join(f'"{g}"' for g in globs)
+    items = ', '.join('"' + g.replace('\\', '\\\\') + '"' for g in globs)
     return f'session_loaded = [{items}]\n'
 
 
@@ -118,8 +118,11 @@ def test_red_proof_a_rename_out_of_skills_fails(
     (repo / 'archive').mkdir()
     _git(repo, 'mv', 'skills/review/SKILL.md', 'archive/SKILL.md')
     head = _commit(repo)
-    # The moved file is identical, so only the diff without rename detection still lists the
-    # old path, under skills/.
+    # The moved file is identical, so rename detection reports only the new path and the old
+    # one, under skills/, is listed only by the diff without it. Asserted here so that the proof
+    # cannot pass vacuously under a global diff.renames=false.
+    detected = _git(repo, 'diff', '-M', '--name-only', base, head)
+    assert detected.splitlines() == ['archive/SKILL.md']
     code, verdict, findings = _judge(capsys, base, head)
     assert (code, verdict) == (1, 'session-loaded')
     assert [f.split(':')[0] for f in findings] == ['skills/review/SKILL.md']
@@ -194,6 +197,21 @@ def test_red_proof_an_exceptions_row_for_the_guard_fails_guard_narrowed(
     code, verdict, findings = _judge(capsys, base, head)
     assert (code, verdict) == (1, 'guard-narrowed')
     assert any('excepts' in f for f in findings)
+
+
+def test_red_proof_an_exceptions_row_alone_narrows_the_guard(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = _base(repo)
+    # session_loaded itself is untouched: only the exceptions row excepts globs.
+    kept = frame.effective_frame(None)['session_loaded'][1:]
+    items = ', '.join(f'"{g}"' for g in kept)
+    toml = f'[[exceptions]]\nkey = "session_loaded"\nvalue = [{items}]\nreason = "a fixture"\n'
+    _write(repo, 'railform.toml', toml)
+    head = _commit(repo)
+    code, verdict, findings = _judge(capsys, base, head)
+    assert (code, verdict) == (1, 'guard-narrowed')
+    assert any('excepts' in f and SKILLS_GLOB in f for f in findings)
 
 
 def test_red_proof_the_frame_comes_from_frame_from_never_from_the_head(
@@ -315,6 +333,9 @@ def test_globs_match_anywhere_and_only_at_segment_boundaries(
         ('doc*.md', 'docs/docs.md', True),
         ('a.b', 'aXb', False),
         ('a+b', 'a+b', True),
+        ('**/skills/**', '.claude/Skills/x/SKILL.md', True),
+        ('**/CLAUDE.md', 'claude.md', True),
+        ('src/Keel/*', 'SRC/keel/a.md', True),
     ],
 )
 def test_matching(glob: str, path: str, expected: bool) -> None:
@@ -435,6 +456,42 @@ def test_an_unknown_ref_exits_2(repo: Path, capsys: pytest.CaptureFixture[str]) 
     base = _base(repo)
     assert _run(capsys, '--diff', f'{base}...nope', '--frame-from', base)[::2] == (2, 'usage')
     assert _run(capsys, '--diff', f'{base}...{base}', '--frame-from', 'nope')[::2] == (2, 'usage')
+
+
+@pytest.mark.parametrize(
+    'glob',
+    [
+        'src/keel/templates/',
+        '/src/keel/templates/**',
+        './src/keel/templates/**',
+        'src/./templates/**',
+        'src/../templates/**',
+        'src//templates/**',
+        r'src\keel\templates\**',
+        '..',
+        '/',
+    ],
+)
+def test_a_malformed_extra_glob_exits_2(
+    glob: str, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = _base(repo)
+    _write(repo, 'src/keel/templates/spec.md', 'two\n')
+    head = _commit(repo)
+    argv = ['--diff', f'{base}...{head}', '--frame-from', base, '--glob', glob]
+    assert _run(capsys, *argv)[::2] == (2, 'usage')
+
+
+@pytest.mark.parametrize('glob', ['docs/', '/docs/**', './docs/**', r'docs\**', 'a//b'])
+def test_a_malformed_glob_in_the_frame_exits_2(
+    glob: str, repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(repo, 'railform.toml', _toml_with(glob))
+    guarded = _commit(repo)
+    assert _run(capsys, '--diff', f'{guarded}...{guarded}', '--frame-from', guarded)[::2] == (
+        2,
+        'usage',
+    )
 
 
 def test_an_empty_glob_exits_2(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
