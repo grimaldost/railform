@@ -100,12 +100,28 @@ All notable changes to this project are recorded here, in the
   the previous hooks directory, the tag-watch caller once the package carries its template, and
   the first `railform.toml`. Everything outside the owned parts is kept byte for byte, and a
   second run changes nothing. `--pin` moves every reference at once. `--check` fails with
-  `drift`, `pin-mismatch` or `extra-pr-workflow`, and skips the pin comparisons in a repository
-  that calls the workflow by local path.
+  `drift`, `pin-mismatch` or `extra-pr-workflow`, and skips the pin comparisons in a
+  self-hosted repository (`ci.self_hosted`).
 - Migration fixtures for the three project types, built at test time, and tests that adopt keeps
   their extras and that each type's pipeline steps pass in the adopted fixture. The pipeline
   tests carry the new `slow` marker (they need the network or a warm uv cache) and run by
   default.
+- The frame key `ci.self_hosted`, a preset-governed boolean, false by default. Only with it true
+  does adopt write the `railform` job as a call by local path; without it such a call is
+  `drift`.
+- From PR07's review, `railform adopt` now:
+  - confirms that the `ci.yml` region holds the jobs `railform` and `gate` themselves;
+  - reports a missing pin site as `drift`;
+  - counts `pull_request_target` and unparseable workflow files as extra;
+  - picks the previous hooks directory only from `100755` entries outside `hooks.dir` and the
+    `session_loaded` globs, and never overwrites a tracked file there that is not `100755`;
+  - refuses a target behind a symlink or junction, and a `hooks.dir` inside `.git`, before any
+    write;
+  - stages the wrappers as their exact bytes;
+  - gives the `gate` step `shell: bash` and an `always() &&` condition.
+- The test harness removes git's repository-locating variables and isolates the global and
+  system configuration for every test, so a `GIT_DIR` inherited from a hook can no longer make
+  `git init` mark another repository bare.
 
 ### Changed
 

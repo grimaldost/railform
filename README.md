@@ -212,9 +212,11 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
   (`pre-commit/pre-commit-hooks` v5.0.0, pinned by its commit).
 - In `.github/dependabot.yml`, an ignore entry for `grimaldost/railform` in the `github-actions`
   update. Adopt adds that update when there is none.
-- Whole files: the hook wrappers in `hooks.dir`, tracked as `100755`, and
+- Whole files: the hook wrappers in `hooks.dir`, staged as their exact bytes and tracked as
+  `100755` (so `core.autocrlf` and `core.safecrlf` never touch them), and
   `.github/workflows/railform-tag-watch.yml` once the package carries its template. Adopt never
-  writes that file over an existing one; `--pin` moves only its `uses:` commit.
+  writes that file over an existing one and `--pin` moves its `uses:` commit; `--check` compares
+  the whole file with the template. Until a template ships there is nothing to judge.
 - `railform.toml`, on the first run only, with the project type and `python.versions`. A `src/`
   layout is `python-package`, another `pyproject.toml` is `python-scripts`, and no
   `pyproject.toml` is `plugin-marketplace`; `--type` overrides the guess. The versions are the floor
@@ -233,18 +235,25 @@ nothing.
 - `railform adopt --pin <sha>` moves every reference at once: the `uses:` commit, the
   `railform-sha` input, the pre-commit `rev` and the tag-watch caller. Without `--pin`, adopt keeps
   the pin the workflow already names, so the first run needs `--pin`.
-- `railform adopt --check` fails with `drift` when an owned part differs, with `pin-mismatch` when
-  the pins differ from each other, and with `extra-pr-workflow` while another workflow file runs
-  on `pull_request`. A job's `needs:` cannot reach another workflow file, so move such a job into
-  `ci.yml` (the next adopt adds it to `gate`), or list the file in `ci.extra_workflows` with an
-  `exceptions` row.
-- Where the hooks lived before (the local `core.hooksPath`, or another tracked directory with a
-  file named after a hook), adopt leaves a stub for each hook. The stub prints the `railform arm`
-  command and fails, so a clone armed to the old directory cannot commit unchecked.
-- A repository whose `railform` job calls `./.github/workflows/python-ci.yml` by local path is
-  self-hosted, as railform itself is. Adopt keeps that call and passes the commit under test as
-  the input, its pre-commit entry is `repo: local` running `uv run --frozen railform <verb>`,
-  `--pin` rewrites nothing, and `--check` skips the pin comparisons and says so.
+- `railform adopt --check` fails with `drift` when an owned part differs or is missing (a pin site
+  included), or when the `ci.yml` region does not hold the jobs `railform` and `gate` themselves
+  under `jobs:`; with `pin-mismatch` when the pins differ from each other; and with
+  `extra-pr-workflow` while another workflow file runs on `pull_request` or
+  `pull_request_target`, or cannot be parsed. A job's `needs:` cannot reach another workflow
+  file, so move such a job into `ci.yml` (the next adopt adds it to `gate`), or list the file in
+  `ci.extra_workflows`, by name or by path, with an `exceptions` row.
+- Where the hooks lived before, adopt leaves a stub for each hook. That is the local
+  `core.hooksPath`, or else the tracked directory, outside `hooks.dir` and outside every
+  `session_loaded` glob, with the most `100755` files named after a hook. The stub prints the
+  `railform arm` command and fails, so a clone armed to the old directory cannot commit
+  unchecked. A tracked file there that is not `100755` is reported and left alone.
+- Adopt refuses, before writing anything, a target path with a symlink or junction on the way and
+  a `hooks.dir` inside `.git`.
+- railform itself calls its own workflow by local path. With `ci.self_hosted = true` (and an
+  `exceptions` row), adopt writes the `railform` job as a call to
+  `./.github/workflows/python-ci.yml` with the commit under test as the input, the pre-commit entry
+  becomes `repo: local` running `uv run --frozen railform <verb>`, `--pin` rewrites nothing, and
+  `--check` skips the pin comparisons and says so. Without the key, a local-path call is `drift`.
 
 ## Development
 
