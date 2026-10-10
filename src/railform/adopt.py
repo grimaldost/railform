@@ -10,20 +10,23 @@ Development-rails spec, §7, invented here; interface contract, section 9. Adopt
   marker lines;
 - in `.github/dependabot.yml`, the ignore entry for railform in the `github-actions` update,
   between marker lines (and that update block, when there is none);
-- whole files: the hook wrappers in `hooks.dir` (100755 in the git index),
-  `.github/workflows/railform-tag-watch.yml` (only when the package carries its template, and
-  never over an existing file), and the first `railform.toml`.
+- whole files: the hook wrappers in `hooks.dir` (staged as their exact bytes, 100755 in the git
+  index), `.github/workflows/railform-tag-watch.yml` (only once the package carries its template,
+  and never written over an existing file), and the first `railform.toml`.
 
 Everything outside those parts is kept byte for byte, line endings included: files are read and
 written as bytes, and lines adopt adds take the file's own line ending. A stub replaces each hook
-in the previous hooks directory, so that a clone armed there fails until it runs `railform arm`.
+in the previous hooks directory, so that a clone armed there fails until it runs `railform arm`;
+a tracked file there that is not 100755 is reported and left alone. Adopt refuses, before any
+write, a target path with a symlink or junction on the way and a hooks directory inside `.git`.
 
 `railform adopt --check` writes nothing. It fails with `drift` when an owned part differs from
-what adopt would write, with `pin-mismatch` when the pins differ from each other (or the only
-difference in an owned part is a pin), and with `extra-pr-workflow` when another workflow file
-runs on `pull_request` and `ci.extra_workflows` does not list it. A repository whose `railform`
-job calls the workflow by local path is self-hosted (railform itself): adopt keeps that call,
-`--pin` rewrites nothing, and `--check` skips the pin comparisons and says so.
+what adopt would write (a missing pin site included), with `pin-mismatch` when the pins differ
+from each other (or the only difference in an owned part is a pin), and with
+`extra-pr-workflow` when another workflow file runs on `pull_request` or `pull_request_target`,
+or cannot be parsed, and `ci.extra_workflows` does not list it. With `ci.self_hosted` true
+(railform itself), the `railform` job calls the workflow by local path, `--pin` rewrites
+nothing, and `--check` skips the pin comparisons and says so.
 """
 
 from __future__ import annotations
@@ -274,27 +277,49 @@ class _Ci:
     region: _Region | None
     jobs_key: Any
     jobs: Any
-    self_hosted: bool
     uses: str | None
     railform_sha: str | None
 
 
-def _read_ci(text: str | None) -> _Ci:
-    doc = _doc(CI_PATH, text if text is not None else '\n'.join(_fill('ci.yml')) + '\n')
-    root = _compose(doc)
-    region = _find_region(doc)
+def _jobs(doc: _Doc, root: Any) -> tuple[Any, Any]:
     found = _entry(root, 'jobs')
     if found is None:
         raise AdoptError(f'{CI_PATH}: has no jobs: mapping')
     jobs_key, jobs = found
     if not (_is_empty(jobs) or _is_block(jobs, yaml.MappingNode)):
         raise AdoptError(f'{CI_PATH}: write jobs: as a block mapping')
-    railform_job = _entry(jobs, 'railform')
-    uses = _entry(railform_job[1], 'uses') if railform_job else None
-    self_hosted = uses is not None and _scalar(uses[1]) == LOCAL_WORKFLOW
+    return jobs_key, jobs
+
+
+def _read_ci(text: str | None) -> _Ci:
+    doc = _doc(CI_PATH, text if text is not None else '\n'.join(_fill('ci.yml')) + '\n')
+    root = _compose(doc)
+    region = _find_region(doc)
+    jobs_key, jobs = _jobs(doc, root)
     pinned = _search(doc, region, _USES_LINE)
     railform_sha = _search(doc, region, _INPUT_LINE)
-    return _Ci(doc, root, region, jobs_key, jobs, self_hosted, pinned, railform_sha)
+    return _Ci(doc, root, region, jobs_key, jobs, pinned, railform_sha)
+
+
+def _confirm_jobs(text: str) -> None:
+    """The owned region of `text` holds the jobs `railform` and `gate` themselves: keys of
+    `jobs:`, at the jobs' own indentation, on lines inside the region (and once each)."""
+    doc = _doc(CI_PATH, text)
+    region = _find_region(doc)
+    _, jobs = _jobs(doc, _compose(doc))
+    keys = [] if _is_empty(jobs) else [key for key, _ in jobs.value]
+    for name in OWNED_JOBS:
+        found = [key for key in keys if key.value == name]
+        if (
+            region is None
+            or len(found) != 1
+            or not region.holds(found[0].start_mark.line)
+            or found[0].start_mark.column != region.indent
+        ):
+            raise AdoptError(
+                f'{CI_PATH}: the owned region does not hold the job {name} directly under jobs: '
+                '(a region under another job or inside a block scalar is not a job)'
+            )
 
 
 def _search(doc: _Doc, region: _Region | None, pattern: re.Pattern[str]) -> str | None:
@@ -404,7 +429,9 @@ def _plan_ci(ci: _Ci, uses: str, railform_sha: str) -> str:
         indent = ci.jobs_key.start_mark.column + 2 if not keys else keys[0].start_mark.column
         after = ci.jobs_key.start_mark.line + 1
         edits.append(_Edit(after, after, _region_lines(body, indent)))
-    return _apply(doc, edits)
+    planned = _apply(doc, edits)
+    _confirm_jobs(planned)
+    return planned
 
 
 # --- .pre-commit-config.yaml -------------------------------------------------------------------
@@ -553,14 +580,19 @@ def _plan_dependabot(text: str | None) -> str:
 # --- railform-tag-watch.yml --------------------------------------------------------------------
 
 
+def _render_tag_watch(pin: str) -> str:
+    return '\n'.join(_fill(TAG_WATCH_NAME, PIN=pin)) + '\n'
+
+
 def _plan_tag_watch(text: str | None, pin: str) -> str | None:
-    """The tag-watch caller: written new from the package's template, never over an existing
-    file, whose `uses:` SHA alone is moved to the pin. None when there is nothing to write."""
-    if text is not None:
-        return _TAG_WATCH_USES.sub(lambda match: match.group(1) + pin, text)
+    """The tag-watch caller, a whole file adopt owns once the package carries its template (§16):
+    written new from the template, never written over an existing file, whose `uses:` commit
+    alone moves with the pin. None when there is nothing to write."""
     if _template_text(TAG_WATCH_NAME) is None:
         return None
-    return '\n'.join(_fill(TAG_WATCH_NAME, PIN=pin)) + '\n'
+    if text is None:
+        return _render_tag_watch(pin)
+    return _TAG_WATCH_USES.sub(lambda match: match.group(1) + pin, text)
 
 
 # --- the repository ----------------------------------------------------------------------------
@@ -599,10 +631,14 @@ def _index_entry(root: Path, path: str) -> tuple[str, str] | None:
     return None
 
 
-def _object_id(root: Path, data: bytes) -> str:
+def _object_id(root: Path, data: bytes, *, write: bool = False) -> str:
+    """The blob id of `data` as it is, with no filter; with `write`, also stored as an object."""
+    command = ['git', 'hash-object', '-t', 'blob', '--no-filters', '--stdin']
+    if write:
+        command.insert(2, '-w')
     try:
         done = subprocess.run(
-            ['git', 'hash-object', '-t', 'blob', '--no-filters', '--stdin'],
+            command,
             cwd=root,
             input=data,
             capture_output=True,
@@ -616,7 +652,12 @@ def _object_id(root: Path, data: bytes) -> str:
 
 
 def _put_executable(root: Path, path: str, text: str) -> bool:
-    """Write `text` to `path` and record it as 100755 in the index; True when anything changed."""
+    """Write `text` to `path` and record those exact bytes as 100755 in the index; True when
+    anything changed.
+
+    The blob is written with `--no-filters` and staged with `--cacheinfo`, so `core.autocrlf` and
+    `core.safecrlf` never rewrite the wrapper or refuse it.
+    """
     data = text.encode('utf-8')
     file = root / path
     changed = False
@@ -635,12 +676,17 @@ def _put_executable(root: Path, path: str, text: str) -> bool:
             file.chmod(mode | 0o111)
             changed = True
     if _index_entry(root, path) != (EXECUTABLE, _object_id(root, data)):
-        done = git(root, 'update-index', '--add', '--chmod=+x', '--', path)
+        oid = _object_id(root, data, write=True)
+        done = git(root, 'update-index', '--add', '--cacheinfo', f'{EXECUTABLE},{oid},{path}')
         if done.returncode != 0:
             detail = done.stderr.decode('utf-8', 'replace').strip()
             raise GitError(f'git update-index failed for {path}: {detail}')
         changed = True
     return changed
+
+
+def _in_git_dir(directory: str) -> bool:
+    return directory.split('/', 1)[0].casefold() == '.git'
 
 
 def _relative_dir(value: str) -> str | None:
@@ -649,15 +695,53 @@ def _relative_dir(value: str) -> str | None:
         directory = hooks_dir({'hooks': {'dir': value}})
     except WrapperError:
         return None
-    if directory == '.git' or directory.startswith('.git/'):
-        return None
-    return directory
+    return None if _in_git_dir(directory) else directory
 
 
-def _previous_hooks_dir(root: Path, directory: str, names: list[str]) -> str | None:
-    """Where the hooks lived before (contract section 9): the local core.hooksPath when it is set
-    and differs from hooks.dir, else the tracked directory, other than hooks.dir, that holds the
-    most files named after a hook (the first by name on a tie)."""
+def _index_entries(root: Path) -> dict[str, str]:
+    """Every path in the git index (stage 0) and the mode recorded for it."""
+    done = git(root, 'ls-files', '-s', '-z')
+    if done.returncode != 0:
+        raise GitError(f'git ls-files failed: {done.stderr.decode("utf-8", "replace").strip()}')
+    entries: dict[str, str] = {}
+    for entry in done.stdout.split(b'\0'):
+        meta, _, name = entry.partition(b'\t')
+        fields = meta.split()
+        if len(fields) == 3 and fields[2] == b'0':
+            entries[name.decode('utf-8', 'replace')] = fields[0].decode('ascii')
+    return entries
+
+
+def _glob_pattern(glob: str) -> re.Pattern[str]:
+    """A `session_loaded` glob (contract section 8): `**` spans segments, `*` stays in one."""
+    parts = glob.casefold().split('/')
+    pattern = ''
+    for index, part in enumerate(parts):
+        last = index == len(parts) - 1
+        if part == '**':
+            pattern += '.*' if last else '(?:[^/]*/)*'
+            continue
+        pattern += ''.join('[^/]*' if char == '*' else re.escape(char) for char in part)
+        if not last:
+            pattern += '/'
+    return re.compile(pattern)
+
+
+def _session_loaded(path: str, globs: list[str]) -> bool:
+    """Whether a glob matches `path`, or a suffix of it that starts at a `/`, casefolded."""
+    folded = path.casefold()
+    suffixes = [folded] + [folded[i + 1 :] for i, char in enumerate(folded) if char == '/']
+    patterns = [_glob_pattern(glob) for glob in globs]
+    return any(pattern.fullmatch(suffix) for pattern in patterns for suffix in suffixes)
+
+
+def _previous_hooks_dir(
+    root: Path, frame: dict[str, Any], directory: str, entries: dict[str, str]
+) -> str | None:
+    """Where the hooks lived before (contract section 9, as decided on PR07's review): the local
+    core.hooksPath when it is set and differs from hooks.dir; else the tracked directory, outside
+    hooks.dir and outside every `session_loaded` glob, that holds the most `100755` entries named
+    after a hook (the first by name on a tie)."""
     done = git(root, 'config', '--local', '--get', 'core.hooksPath')
     if done.returncode not in (0, 1):
         raise GitError(f'git config failed: {done.stderr.decode("utf-8", "replace").strip()}')
@@ -666,17 +750,34 @@ def _previous_hooks_dir(root: Path, directory: str, names: list[str]) -> str | N
         relative = _relative_dir(configured)
         if relative is not None and relative != directory:
             return relative
-    done = git(root, 'ls-files', '-z')
-    if done.returncode != 0:
-        raise GitError(f'git ls-files failed: {done.stderr.decode("utf-8", "replace").strip()}')
+    names = frame['hooks']['names']
     counts: dict[str, int] = {}
-    for raw in done.stdout.split(b'\0'):
-        parent, _, base = raw.decode('utf-8', 'replace').rpartition('/')
-        if parent and parent != directory and base in names:
+    for path, mode in entries.items():
+        parent, _, base = path.rpartition('/')
+        if (
+            mode == EXECUTABLE
+            and base in names
+            and parent
+            and parent != directory
+            and not parent.startswith(directory + '/')
+            and not _session_loaded(path, frame['session_loaded'])
+        ):
             counts[parent] = counts.get(parent, 0) + 1
     if not counts:
         return None
     return min(counts, key=lambda parent: (-counts[parent], parent))
+
+
+def _refuse_links(root: Path, paths: list[str]) -> None:
+    """Refuse, before any write, a target path with a symlink or junction on the way."""
+    base = os.path.realpath(root)
+    for path in paths:
+        expected = os.path.join(base, *path.split('/'))
+        if os.path.normcase(os.path.realpath(root / path)) != os.path.normcase(expected):
+            raise AdoptError(
+                f'{path}: a symlink or junction lies on the way to this file; adopt writes only '
+                'plain paths inside the repository'
+            )
 
 
 def _stub(directory: str) -> str:
@@ -687,44 +788,45 @@ def _stub(directory: str) -> str:
     return '\n'.join(_fill('hook-stub.sh', MESSAGE=shlex.quote(message))) + '\n'
 
 
+PR_EVENTS = ('pull_request', 'pull_request_target')
+_ADVICE = 'move its jobs into ci.yml, or list it in ci.extra_workflows with an exceptions row'
+
+
 def _runs_on_pull_request(data: object) -> bool:
     if not isinstance(data, dict):
         return False
     triggers = data.get('on', data.get(True))
     if isinstance(triggers, str):
-        return triggers == 'pull_request'
+        return triggers in PR_EVENTS
     if isinstance(triggers, (list, dict)):
-        return 'pull_request' in triggers
+        return any(event in triggers for event in PR_EVENTS)
     return False
 
 
-def _extra_pr_workflows(root: Path, allowed: list[str]) -> tuple[list[str], list[str]]:
-    """The other workflow files that run on pull_request and are not listed, and notes about
-    files that cannot be read (GitHub runs none of those)."""
+def _extra_pr_workflows(root: Path, allowed: list[str]) -> list[str]:
+    """One message per other workflow file that runs on a pull request event, or cannot be
+    parsed (so may), and that `ci.extra_workflows` does not list by name or by path."""
     folder = root / WORKFLOWS_DIR
     if not folder.is_dir():
-        return [], []
+        return []
     found: list[str] = []
-    notes: list[str] = []
     for file in sorted(folder.iterdir(), key=lambda path: path.name):
         if not file.is_file() or file.suffix not in ('.yml', '.yaml') or file.name == 'ci.yml':
             continue
         path = f'{WORKFLOWS_DIR}/{file.name}'
+        if file.name in allowed or path in allowed:
+            continue
         try:
             data = yaml.safe_load(file.read_bytes().decode('utf-8'))
         except (OSError, UnicodeDecodeError, yaml.YAMLError):
-            notes.append(f'{path}: cannot be parsed, so it is not judged')
+            found.append(f'{path}: cannot be parsed, so it may run on pull requests; ' + _ADVICE)
             continue
-        if _runs_on_pull_request(data) and file.name not in allowed and path not in allowed:
-            found.append(path)
-    return found, notes
-
-
-def _extra_message(path: str) -> str:
-    return (
-        f'{path}: runs on pull_request beside ci.yml, where gate cannot need its jobs; move them '
-        'into ci.yml, or list the file in ci.extra_workflows with an exceptions row'
-    )
+        if _runs_on_pull_request(data):
+            found.append(
+                f'{path}: runs on pull requests beside ci.yml, where gate cannot need its jobs; '
+                + _ADVICE
+            )
+    return found
 
 
 # --- seeding -----------------------------------------------------------------------------------
@@ -802,6 +904,11 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         )
     frame = frame_module.effective_frame(config)
     directory, names, wrappers = _wrappers(frame)
+    if _in_git_dir(directory):
+        raise AdoptError(
+            f'hooks.dir {directory!r} lies inside .git, where nothing is tracked; choose a '
+            'directory of the repository'
+        )
 
     ci_text = _read(root, CI_PATH)
     ci = _read_ci(ci_text)
@@ -810,11 +917,12 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
     dependabot_text = _read(root, DEPENDABOT_PATH)
     tag_watch_text = _read(root, TAG_WATCH_PATH)
     planned: list[tuple[str, str | None, str | None]] = []
-    if ci.self_hosted:
+    notes: list[str] = []
+    if frame['ci']['self_hosted']:
         if pin is not None:
-            findings.append(
-                f'{CI_PATH}: self-hosted (the railform job calls {LOCAL_WORKFLOW}); '
-                '--pin rewrites nothing'
+            notes.append(
+                f'self-hosted (ci.self_hosted is true): the railform job calls {LOCAL_WORKFLOW} '
+                'and --pin rewrites nothing'
             )
         planned.append((CI_PATH, ci_text, _plan_ci(ci, LOCAL_WORKFLOW, SELF_HOSTED_SHA)))
         planned.append((PRE_COMMIT_PATH, pre_text, _plan_pre_commit(pre, None, directory)))
@@ -833,16 +941,26 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         planned.append((PRE_COMMIT_PATH, pre_text, _plan_pre_commit(pre, pin, directory)))
         planned.append((TAG_WATCH_PATH, tag_watch_text, _plan_tag_watch(tag_watch_text, pin)))
     planned.append((DEPENDABOT_PATH, dependabot_text, _plan_dependabot(dependabot_text)))
-    previous = _previous_hooks_dir(root, directory, names)
-    stubs = {f'{previous}/{hook}': _stub(directory) for hook in names} if previous else {}
+    entries = _index_entries(root)
+    previous = _previous_hooks_dir(root, frame, directory, entries)
+    stubs: dict[str, str] = {}
+    for hook in names if previous else []:
+        path = f'{previous}/{hook}'
+        mode = entries.get(path)
+        if mode is not None and mode != EXECUTABLE:
+            notes.append(f'{path}: tracked as {mode}, not a hook wrapper; left as it is, no stub')
+        else:
+            stubs[path] = _stub(directory)
+    writes = [(path, new) for path, old, new in planned if new is not None and new != old]
+    targets = [path for path, _ in writes] + list(wrappers) + list(stubs)
+    _refuse_links(root, [frame_module.CONFIG_NAME, *targets] if seed is not None else targets)
 
     if seed is not None:
         _write(root, frame_module.CONFIG_NAME, seed)
         findings.append(f'{frame_module.CONFIG_NAME}: written (the first run seeds it)')
-    for path, old, new in planned:
-        if new is not None and new != old:
-            _write(root, path, new)
-            findings.append(f'{path}: written')
+    for path, new in writes:
+        _write(root, path, new)
+        findings.append(f'{path}: written')
     for path, text in wrappers.items():
         if _put_executable(root, path, text):
             findings.append(f'{path}: written, 100755 in the git index')
@@ -851,10 +969,10 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
             findings.append(f'{path}: stub written; it fails until the clone runs railform arm')
     if not findings:
         findings.append('nothing to change')
-    extra, notes = _extra_pr_workflows(root, frame['ci']['extra_workflows'])
     findings += notes
     findings += [
-        _extra_message(path) + '; railform adopt --check fails until then' for path in extra
+        message + '; railform adopt --check fails until then'
+        for message in _extra_pr_workflows(root, frame['ci']['extra_workflows'])
     ]
     configured = hooks_path(root)
     if configured is None or _relative_dir(configured) != directory:
@@ -868,10 +986,16 @@ def _differences(path: str, old: str, new: str, region: _Region | None) -> list[
     if actual == expected:
         return []
     if region is None:
-        return [
-            f'{path}: has no region owned by railform (the `# >>> railform` markers); run '
-            'railform adopt'
-        ]
+        return [_NO_REGION.format(path=path)]
+    return _first_difference(path, actual, expected)
+
+
+_NO_REGION = '{path}: has no region owned by railform (the `# >>> railform` markers); run adopt'
+
+
+def _first_difference(path: str, actual: list[str], expected: list[str]) -> list[str]:
+    if actual == expected:
+        return []
     index = next(
         (i for i, (a, e) in enumerate(zip(actual, expected, strict=False)) if a != e),
         min(len(actual), len(expected)),
@@ -893,26 +1017,35 @@ def _check(root: Path) -> Verdict:
     def drift(message: str) -> None:
         problems.append((DRIFT, message))
 
-    pins: list[tuple[str, str | None]] = []
-    self_hosted = False
+    pins: list[tuple[str, str]] = []
+    self_hosted = frame['ci']['self_hosted']
     ci_text = _read(root, CI_PATH)
     if ci_text is None:
         drift(f'{CI_PATH}: missing; run railform adopt')
     else:
         try:
             ci = _read_ci(ci_text)
-            self_hosted = ci.self_hosted
-            if self_hosted:
+            if ci.region is None:
+                drift(_NO_REGION.format(path=CI_PATH))
+            elif self_hosted:
                 expected = _plan_ci(ci, LOCAL_WORKFLOW, SELF_HOSTED_SHA)
+                for message in _differences(CI_PATH, ci_text, expected, ci.region):
+                    drift(message)
+            elif ci.uses is None:
+                drift(
+                    f'{CI_PATH}: the railform job does not call {REMOTE_WORKFLOW} at a pin (a call '
+                    'by local path needs ci.self_hosted = true)'
+                )
+            elif ci.railform_sha is None:
+                drift(f'{CI_PATH}: the railform job passes no railform-sha input')
             else:
-                uses = f'{REMOTE_WORKFLOW}@{ci.uses or "<no pin>"}'
-                expected = _plan_ci(ci, uses, ci.railform_sha or '<no pin>')
-                pins += [
-                    (f'{CI_PATH}: the uses: SHA', ci.uses),
-                    (f'{CI_PATH}: the railform-sha input', ci.railform_sha),
-                ]
-            for message in _differences(CI_PATH, ci_text, expected, ci.region):
-                drift(message)
+                expected = _plan_ci(ci, f'{REMOTE_WORKFLOW}@{ci.uses}', ci.railform_sha)
+                for message in _differences(CI_PATH, ci_text, expected, ci.region):
+                    drift(message)
+            if not self_hosted and ci.uses is not None:
+                pins.append((f'{CI_PATH}: the uses: SHA', ci.uses))
+            if not self_hosted and ci.railform_sha is not None:
+                pins.append((f'{CI_PATH}: the railform-sha input', ci.railform_sha))
         except AdoptError as exc:
             drift(str(exc))
 
@@ -922,11 +1055,15 @@ def _check(root: Path) -> Verdict:
     else:
         try:
             pre = _read_pre_commit(pre_text)
-            rev = None if self_hosted else pre.rev or '<no pin>'
-            expected = _plan_pre_commit(pre, rev, directory)
-            for message in _differences(PRE_COMMIT_PATH, pre_text, expected, pre.region):
-                drift(message)
-            if not self_hosted:
+            if pre.region is None:
+                drift(_NO_REGION.format(path=PRE_COMMIT_PATH))
+            elif not self_hosted and pre.rev is None:
+                drift(f'{PRE_COMMIT_PATH}: the railform entry has no rev')
+            else:
+                expected = _plan_pre_commit(pre, None if self_hosted else pre.rev, directory)
+                for message in _differences(PRE_COMMIT_PATH, pre_text, expected, pre.region):
+                    drift(message)
+            if not self_hosted and pre.rev is not None:
                 pins.append((f'{PRE_COMMIT_PATH}: the rev of the railform entry', pre.rev))
         except AdoptError as exc:
             drift(str(exc))
@@ -943,15 +1080,21 @@ def _check(root: Path) -> Verdict:
         except AdoptError as exc:
             drift(str(exc))
 
-    if not self_hosted:
+    # The tag-watch caller is judged whole once the package carries its template (§16); until
+    # then there is nothing to judge.
+    if not self_hosted and _template_text(TAG_WATCH_NAME) is not None:
         tag_watch_text = _read(root, TAG_WATCH_PATH)
-        if tag_watch_text is not None:
-            pins += [
-                (f'{TAG_WATCH_PATH}: the uses: SHA', match.group(2))
-                for match in _TAG_WATCH_USES.finditer(tag_watch_text)
-            ]
-        elif _template_text(TAG_WATCH_NAME) is not None:
+        shas = [m.group(2) for m in _TAG_WATCH_USES.finditer(tag_watch_text or '')]
+        if tag_watch_text is None:
             drift(f'{TAG_WATCH_PATH}: missing; run railform adopt')
+        elif not shas:
+            drift(f'{TAG_WATCH_PATH}: calls no railform workflow at a pin')
+        else:
+            actual = tag_watch_text.replace('\r\n', '\n').split('\n')
+            expected_lines = _render_tag_watch(shas[0]).split('\n')
+            for message in _first_difference(TAG_WATCH_PATH, actual, expected_lines):
+                drift(message)
+            pins += [(f'{TAG_WATCH_PATH}: the uses: SHA', sha) for sha in shas]
 
     for path, text in wrappers.items():
         current = _read_bytes_text(root, path)
@@ -967,15 +1110,14 @@ def _check(root: Path) -> Verdict:
 
     if self_hosted:
         notes.append(
-            f'{CI_PATH}: self-hosted (the railform job calls {LOCAL_WORKFLOW}); '
+            f'self-hosted (ci.self_hosted is true, the railform job calls {LOCAL_WORKFLOW}): '
             'the pin comparisons are skipped'
         )
     else:
         problems += [(PIN_MISMATCH, message) for message in _pin_problems(pins)]
 
-    extra, unreadable = _extra_pr_workflows(root, frame['ci']['extra_workflows'])
-    notes += unreadable
-    problems += [(EXTRA_PR_WORKFLOW, _extra_message(path)) for path in extra]
+    extra = _extra_pr_workflows(root, frame['ci']['extra_workflows'])
+    problems += [(EXTRA_PR_WORKFLOW, message) for message in extra]
     findings = (*notes, *(message for _, message in problems))
     if not problems:
         return Verdict.ok(VERB, findings)
@@ -992,18 +1134,17 @@ def _read_bytes_text(root: Path, path: str) -> str | None:
         raise AdoptError(f'{path}: cannot read: {exc}') from exc
 
 
-def _pin_problems(pins: list[tuple[str, str | None]]) -> list[str]:
-    """Every pin site must hold one 40-hex commit: the workflow's `uses:` SHA, or the first site
-    that has one when that line is gone."""
-    present = [(where, value) for where, value in pins if value is not None]
-    if not present:
+def _pin_problems(pins: list[tuple[str, str]]) -> list[str]:
+    """Every pin site present holds one 40-hex commit: the workflow's `uses:` SHA, or the first
+    site present when that line is gone (a missing site is drift, reported on its own)."""
+    if not pins:
         return []
-    reference_site, reference = present[0]
+    reference_site, reference = pins[0]
     if not SHA.fullmatch(reference):
         return [f'{reference_site} is {reference}, not a 40-hex commit']
     return [
         f'{where} is {value}, not the pin {reference} ({reference_site})'
-        for where, value in present[1:]
+        for where, value in pins[1:]
         if value != reference
     ]
 
