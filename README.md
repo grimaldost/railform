@@ -172,18 +172,21 @@ change to files in its contents is not seen unless the submodule path itself is 
 
 ## The private-reference check
 
-`railform private-refs [PATH ...] [--diff BASE...HEAD] [--text FILE ...] [--require-names]` keeps
+`railform private-refs [PATH ...] [--diff BASE...HEAD] [--text FILE]... [--require-names]` keeps
 two kinds of private reference out of a public repository. It checks the given paths; otherwise,
 with `--diff`, the files the range changes (read at its tip) and the range's commit messages;
-otherwise every tracked file. `--text` adds files to any scope, such as a pull request's title and
-body. Binary files are skipped. Put the paths before the options.
+otherwise every tracked file. `--text FILE` (repeatable, one file per flag) adds a file to any
+scope, such as a pull request's title or body. Binary files are skipped.
 
 - **Home paths.** A home-directory path fails (`home-path`) unless its user segment is in
-  `private_refs.placeholders` (default: `me`, `x`, `someone`, `alice`, `user`, `runner`) or
-  plainly a placeholder (it contains `<`, `>`, `$`, `%`, `{`, `}` or `*`). The six shapes are
-  `X:\Users\<name>\`, `X:/Users/<name>/`, the JSON-escaped `X:\Users\<name>`, the project-slug
-  form `X--Users-<name>-`, `/Users/<name>/` and `/home/<name>/`, with any drive letter and
-  without regard to case for the Windows ones.
+  `private_refs.placeholders` (default: `me`, `x`, `someone`, `alice`, `user`, `runner`, and the
+  system folders `public`, `default`, `shared` and `runneradmin`) or plainly a placeholder (it
+  contains `<`, `>`, `$`, `%`, `{`, `}` or `*`). The six shapes are `X:\Users\<name>\`,
+  `X:/Users/<name>/`, the JSON-escaped `X:\\Users\\<name>`, the project-slug form
+  `X--Users-<name>-`, `/Users/<name>/` and `/home/<name>/`, with any drive letter and without
+  regard to case for the Windows ones. A segment ends at a separator, whitespace, a quote or the
+  end of the line, so `cd C:\Users\<name>` is caught. `/home/` counts only where it is not
+  preceded by a word character, `.` or `-`, so `src/home/views/` and the `/home/` of a URL pass.
 - **Private names.** The file that the variable named by `private_refs.names_file_env` (default
   `RAILFORM_PRIVATE_NAMES`) points to lists one term per line; blank lines and lines starting
   with `#` are ignored. A term matches case-insensitively as a whole token, so a term `alice`

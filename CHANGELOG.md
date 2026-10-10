@@ -80,7 +80,14 @@ All notable changes to this project are recorded here, in the
   without the file (`--require-names` fails it with `names-file-missing`). Scope: the given paths,
   else `--diff` (changed files at the tip and the range's commit messages), else every tracked
   file; `--text` adds files. Findings never print a matched name or the user segment of a home path.
-- A `private-refs` step in the `checks` job of CI.
+- A `private-refs` step in the `checks` job of CI, right after the sync so a failing test never
+  hides a leak.
+- `private-refs` details settled on review: a segment ends at a separator, whitespace, a quote or
+  the end of the line (`cd C:\Users\<name>` and `HOME=/home/<name>` are caught); `/home/` is read
+  only where it is not preceded by a word character, `.` or `-`; `--text` takes one file per flag
+  and repeats; a usage error redacts a given path like a finding does.
+- The default `private_refs.placeholders` gains the system folders `public`, `default`, `shared`
+  and `runneradmin`, which are not people. This extends the spec's six names.
 
 ### Changed
 
