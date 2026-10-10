@@ -7,8 +7,12 @@ unless the user segment is a placeholder, so it catches a developer's home on a 
 as on the developer's machine. The six shapes, with any drive letter and without regard to case
 for the Windows ones (a backslash and a doubled backslash are the JSON-escaped form):
 
-    X:\\Users\\<name>\\     X:/Users/<name>/     X:\\\\Users\\\\<name>
-    X--Users-<name>-     /Users/<name>/       /home/<name>/
+    X:\\Users\\<name>      X:/Users/<name>      X:\\\\Users\\\\<name>
+    X--Users-<name>-     /Users/<name>        /home/<name>
+
+A segment ends at a separator, whitespace, a quote or the end of the line (the slug form ends at
+the next dash), so `cd C:\\Users\\<name>` is caught. `/home/` counts only where it is not preceded
+by a word character, `.` or `-`, so `src/home/views/` and a URL's `/home/` pass.
 
 A user segment passes when it is in `private_refs.placeholders` (case-insensitive) or is plainly a
 placeholder: it contains one of `<`, `>`, `$`, `%`, `{`, `}` or `*`.
@@ -48,15 +52,18 @@ REDACTED = '<name>'
 # A user segment containing one of these is a placeholder, whatever the list says.
 _PLACEHOLDER_MARKS = frozenset('<>$%{}*')
 
-_SEGMENT = r'[^\\/\s"\']+'
+# A segment runs to the next separator, whitespace, quote (backtick included) or the end of the
+# line.
+_SEGMENT = r'[^\\/\s"\'`]+'
 # The six shapes. The Windows ones ignore case; `/Users/` and `/home/` are exact.
 _SHAPES = (
-    re.compile(rf'[A-Za-z]:\\Users\\(?P<name>{_SEGMENT})\\', re.IGNORECASE),
-    re.compile(rf'[A-Za-z]:/Users/(?P<name>{_SEGMENT})/', re.IGNORECASE),
+    re.compile(rf'[A-Za-z]:\\Users\\(?P<name>{_SEGMENT})', re.IGNORECASE),
+    re.compile(rf'[A-Za-z]:/Users/(?P<name>{_SEGMENT})', re.IGNORECASE),
     re.compile(rf'[A-Za-z]:\\\\Users\\\\(?P<name>{_SEGMENT})', re.IGNORECASE),
-    re.compile(r'[A-Za-z]--Users-(?P<name>[^-\\/\s"\']+)-', re.IGNORECASE),
-    re.compile(rf'/Users/(?P<name>{_SEGMENT})/'),
-    re.compile(rf'/home/(?P<name>{_SEGMENT})/'),
+    re.compile(r'[A-Za-z]--Users-(?P<name>[^-\\/\s"\'`]+)-', re.IGNORECASE),
+    re.compile(rf'/Users/(?P<name>{_SEGMENT})'),
+    # Not after a word character, `.` or `-`: `src/home/views/` and `https://x.test/home/a/` pass.
+    re.compile(rf'(?<![\w.-])/home/(?P<name>{_SEGMENT})'),
 )
 
 
@@ -138,9 +145,18 @@ class Names:
 
 
 def redact(text: str, spans: Iterable[Span]) -> str:
-    """`text` with the hidden part of each span replaced by `<name>`."""
-    for span in sorted(spans, key=lambda s: s.hidden_start, reverse=True):
-        text = text[: span.hidden_start] + REDACTED + text[span.hidden_end :]
+    """`text` with the hidden part of each span replaced by `<name>`.
+
+    Overlapping or touching hidden parts are merged first, so each stretch is replaced once.
+    """
+    merged: list[list[int]] = []
+    for span in sorted(spans, key=lambda s: (s.hidden_start, s.hidden_end)):
+        if merged and span.hidden_start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], span.hidden_end)
+        else:
+            merged.append([span.hidden_start, span.hidden_end])
+    for start, end in reversed(merged):
+        text = text[:start] + REDACTED + text[end:]
     return text
 
 
@@ -160,10 +176,13 @@ class Checker:
         findings: list[tuple[str, str]] = []
         for number, line in enumerate(source.text.split('\n'), start=1):
             line = line.rstrip('\r')
+            name_hits = self.names.hits(line)
             for span in home_path_hits(line, self.placeholders):
-                shape = redact(line[span.start : span.end], [shift(span, span.start)])
+                # The shown part hides a private name as well, if one falls inside it.
+                window = [clip(hit, span.start, span.end) for hit in [span, *name_hits]]
+                shape = redact(line[span.start : span.end], [w for w in window if w is not None])
                 findings.append((HOME_PATH, f'{label}:{number}: home path {shape}'))
-            for span in self.names.hits(line):
+            for span in name_hits:
                 findings.append(
                     (
                         PRIVATE_NAME,
@@ -173,15 +192,13 @@ class Checker:
         return findings
 
 
-def shift(span: Span, offset: int) -> Span:
-    """`span` moved left by `offset`, to index into a substring that starts there."""
-    return Span(
-        span.start - offset,
-        span.end - offset,
-        span.hidden_start - offset,
-        span.hidden_end - offset,
-        span.term_line,
-    )
+def clip(span: Span, start: int, end: int) -> Span | None:
+    """The part of `span`'s hidden stretch inside [start, end), moved to index from `start`."""
+    low = max(span.hidden_start, start)
+    high = min(span.hidden_end, end)
+    if low >= high:
+        return None
+    return Span(low - start, high - start, low - start, high - start)
 
 
 # --- git and the files -------------------------------------------------------------------------
@@ -333,8 +350,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.description = (
         'Fail when text carries a home-directory path (unless its user segment is a '
         'placeholder) or a term from the private names file. Scope: the given paths; else '
-        'the files and commit messages of --diff; else every tracked file. Put paths before '
-        'the options.'
+        'the files and commit messages of --diff; else every tracked file.'
     )
     parser.add_argument('paths', nargs='*', metavar='PATH', help='files to check (staged names)')
     parser.add_argument(
@@ -343,10 +359,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         '--text',
         metavar='FILE',
-        nargs='+',
         action='append',
         default=[],
-        help='also check these files, such as a pull request title and body',
+        help='also check this file, such as a pull request title or body (repeatable)',
     )
     parser.add_argument(
         '--require-names',
@@ -360,26 +375,32 @@ def run(args: argparse.Namespace) -> Verdict:
         root = frame.repository_root()
         effective = frame.load(root)
     except (frame.FrameError, frame.FrameSchemaError) as exc:
-        return Verdict.usage(VERB, f'{VERB}: {exc}')
+        # No frame yet, so no placeholder list: every home-shaped path in the message is hidden.
+        return Verdict.usage(
+            VERB, f'{VERB}: {Checker(frozenset(), Names(None, ())).label(str(exc))}'
+        )
     settings = effective['private_refs']
     placeholders = frozenset(str(name).lower() for name in settings['placeholders'])
     variable = str(settings['names_file_env'])
+    names: Names | None = None
+    checker = Checker(placeholders, Names(None, ()))
     try:
         names = _read_names(variable)
+        checker = Checker(placeholders, names or Names(None, ()))
         if args.paths:
             sources = sources_for_paths(root, list(args.paths))
         elif args.diff:
             sources = sources_for_diff(root, args.diff)
         else:
             sources = _tracked_sources(root)
-        sources += sources_for_text([name for group in args.text for name in group])
+        sources += sources_for_text(list(args.text))
     except UsageError as exc:
-        return Verdict.usage(VERB, f'{VERB}: {exc}')
+        # A message may carry a path the user gave: it is redacted like a finding's label.
+        return Verdict.usage(VERB, f'{VERB}: {checker.label(str(exc))}')
     findings: list[tuple[str, str]] = []
     if names is None and args.require_names:
         shown = f'${variable}' if variable else 'private_refs.names_file_env'
         findings.append((NAMES_FILE_MISSING, f'the names file named by {shown} is not readable'))
-    checker = Checker(placeholders, names or Names(None, ()))
     for source in sources:
         findings.extend(checker.scan(source))
     if not findings:

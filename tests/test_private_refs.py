@@ -119,7 +119,7 @@ def test_a_finding_shows_the_shape_and_hides_the_user_segment(
 ) -> None:
     stage(scratch_repo, 'a.txt', f'first\nat {home("backslash")}\n')
     _, out, findings = check(capsys)
-    assert findings == [f'a.txt:2: home path C:{BACKSLASH}Users{BACKSLASH}<name>{BACKSLASH}']
+    assert findings == [f'a.txt:2: home path C:{BACKSLASH}Users{BACKSLASH}<name>']
     assert STRANGER not in out
 
 
@@ -172,10 +172,102 @@ def test_binary_files_are_skipped(scratch_repo: Path, capsys: pytest.CaptureFixt
 def test_two_hits_in_one_line_and_the_same_path_in_two_shapes_are_reported_once_each(
     scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # `D:/Users/<name>/` also contains `/Users/<name>/`: one hit, not two.
+    # The path `D:/Users/<name>/...` is matched by two shapes (the drive shape and the bare
+    # `/Users/<name>` inside it) and counts once, so two paths give two findings.
     stage(scratch_repo, 'a.txt', f'{home("slash")} and {home("linux")}\n')
     _, _, findings = check(capsys)
     assert len(findings) == 2
+
+
+@pytest.mark.parametrize(
+    ('line', 'fails'),
+    [
+        (f'cd C:{BACKSLASH}Users{BACKSLASH}{STRANGER}', True),
+        (f'cd C:{BACKSLASH}Users{BACKSLASH}me', False),
+        (f'HOME=/home/{STRANGER}', True),
+        ('HOME=/home/me', False),
+        (f'"/Users/{STRANGER}"', True),
+        (f"'D:/Users/{STRANGER}'", True),
+        (f'open /home/{STRANGER} and go', True),
+        ('open /home/runner and go', False),
+        (f'file:///home/{STRANGER}/', True),
+    ],
+)
+def test_a_segment_also_ends_at_whitespace_a_quote_or_the_end_of_the_line(
+    line: str, fails: bool, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, 'a.txt', line + '\n')
+    code, out, _ = check(capsys)
+    assert code == int(fails)
+    assert STRANGER not in out
+
+
+@pytest.mark.parametrize(
+    ('line', 'fails'),
+    [
+        ('../home/components/Button', False),
+        ('import x from "src/home/views/index"', False),
+        ('https://docs.example.com/home/getting-started/', False),
+        ('x.com/home/y/ and my-app/home/z/', False),
+        (f'file:///home/{STRANGER}/', True),
+        (f'cd /home/{STRANGER}/code', True),
+        (f'/mnt/c/Users/{STRANGER}/code', True),
+        (f'app/Users/{STRANGER}/code', True),
+    ],
+)
+def test_the_home_shape_is_not_read_inside_a_relative_path_or_a_url(
+    line: str, fails: bool, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, 'a.txt', line + '\n')
+    assert check(capsys)[0] == int(fails)
+
+
+@pytest.mark.parametrize('name', ['Public', 'Default', 'shared', 'RunnerAdmin'])
+def test_the_system_folders_are_default_placeholders(
+    name: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for shape in SHAPE_NAMES:
+        stage(scratch_repo, f'{shape}.md', home(shape, name) + '\n')
+    assert check(capsys)[0] == 0
+
+
+def test_crlf_input_is_read_line_by_line(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (scratch_repo / 'win.txt').write_bytes(f'first\r\ncd {home("backslash")}\r\n'.encode())
+    git(scratch_repo, 'add', 'win.txt')
+    code, out, findings = check(capsys)
+    assert code == 1
+    assert findings == [f'win.txt:2: home path C:{BACKSLASH}Users{BACKSLASH}<name>']
+    assert '\r' not in out
+
+
+def test_a_usage_error_never_prints_the_user_segment_of_a_given_path(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = f'{home("linux")}.missing'
+    for argv in (['--text', missing], [missing]):
+        code = main(['private-refs', *argv])
+        captured = capsys.readouterr()
+        assert code == 2
+        assert captured.out == 'railform-verdict: private-refs fail usage\n'
+        assert STRANGER not in captured.err
+        assert '/home/<name>/' in captured.err
+
+
+def test_overlapping_hits_are_hidden_once(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The private term is the user segment itself: the name is replaced once, not garbled.
+    names_file.write_text(f'{STRANGER}\n', encoding='utf-8')
+    stage(scratch_repo, 'a.txt', f'{home("linux")}\n')
+    code, out, findings = check(capsys)
+    assert code == 1
+    assert STRANGER not in out
+    assert findings == [
+        'a.txt:1: home path /home/<name>',
+        'a.txt:1: private name (names file line 1)',
+    ]
 
 
 @pytest.mark.parametrize('name', ['me', 'x', 'someone', 'alice', 'user', 'runner', 'Alice', 'ME'])
@@ -438,7 +530,31 @@ def test_text_files_join_any_scope(
     assert code == 1
     assert len(findings) == 1
     assert STRANGER not in out
-    assert check(capsys, 'a.txt', '--text', str(title), str(body))[0] == 1
+    assert check(capsys, 'a.txt', '--text', str(title), '--text', str(body))[0] == 1
+
+
+def test_text_takes_one_file_per_flag_so_trailing_names_stay_paths(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # pre-commit appends the staged file names after the options.
+    stage(scratch_repo, 'dirty.txt', home('linux') + '\n')
+    title = tmp_path / 'title.txt'
+    title.write_text('feat: something\n', encoding='utf-8')
+    code, _, findings = check(capsys, '--text', str(title), 'dirty.txt')
+    assert code == 1
+    assert [line.split(':')[0] for line in findings] == ['dirty.txt']
+
+
+def test_a_home_path_inside_a_label_is_redacted(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    body = tmp_path / f'{home("slug")}.txt'
+    body.write_text(f'at {home("linux")}\n', encoding='utf-8')
+    code, out, findings = check(capsys, '--text', str(body))
+    assert code == 1
+    assert STRANGER not in out
+    assert len(findings) == 1
+    assert '<name>' in findings[0].split(':1:')[0]
 
 
 def test_a_text_file_that_cannot_be_read_is_a_usage_error(
@@ -472,7 +588,8 @@ def _tracked_in_railform() -> list[str]:
 def test_no_names_list_is_tracked_in_railform() -> None:
     suspicious = re.compile(
         r'(private|owner|secret|deny|block|banned|forbidden)[-_.]?(names?|terms?|words?|list)'
-        r'|(names?|terms?)[-_.]?(file|list)',
+        r'|(names?|terms?)[-_.]?(file|list)'
+        r'|^names?\.',
         re.IGNORECASE,
     )
     tracked = _tracked_in_railform()
