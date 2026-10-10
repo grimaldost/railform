@@ -198,6 +198,54 @@ No output contains a matched name or the user segment of a matched home path: a 
 shows the shape with `<name>` in its place, and a private-name finding gives only the term's line
 number in the names file.
 
+## Adopting
+
+`railform adopt` writes the parts of a repository that railform owns, and `railform adopt --check`
+fails when any of them differs from what adopt would write. Adopt owns only these:
+
+- In `.github/workflows/ci.yml`, two jobs. `railform` calls
+  `grimaldost/railform/.github/workflows/python-ci.yml` at the pin and passes the same pin as the
+  input `railform-sha`. `gate` needs every other job in the file, runs with `if: always()`, and
+  fails when a needed job failed or was cancelled; it is the one status a branch ruleset requires.
+  The `pull_request` trigger also gains `types: [opened, synchronize, reopened, edited]`.
+- In `.pre-commit-config.yaml`, the railform entry at the pin and the hygiene entry
+  (`pre-commit/pre-commit-hooks` v5.0.0, pinned by its commit).
+- In `.github/dependabot.yml`, an ignore entry for `grimaldost/railform` in the `github-actions`
+  update. Adopt adds that update when there is none.
+- Whole files: the hook wrappers in `hooks.dir`, tracked as `100755`, and
+  `.github/workflows/railform-tag-watch.yml` once the package carries its template. Adopt never
+  writes that file over an existing one; `--pin` moves only its `uses:` commit.
+- `railform.toml`, on the first run only, with the project type and `python.versions`. A `src/`
+  layout is `python-package`, another `pyproject.toml` is `python-scripts`, and no
+  `pyproject.toml` is `plugin-marketplace`; `--type` overrides the guess. The versions are the floor
+  of `requires-python` and `python.newest`. After the first run the file is the repository's.
+
+Each owned part of the three shared files sits between two marker lines:
+
+```yaml
+# >>> railform: owned by `railform adopt`; `railform adopt --check` fails on any edit
+# <<< railform
+```
+
+Everything outside them is kept byte for byte, line endings included, and a second run changes
+nothing.
+
+- `railform adopt --pin <sha>` moves every reference at once: the `uses:` commit, the
+  `railform-sha` input, the pre-commit `rev` and the tag-watch caller. Without `--pin`, adopt keeps
+  the pin the workflow already names, so the first run needs `--pin`.
+- `railform adopt --check` fails with `drift` when an owned part differs, with `pin-mismatch` when
+  the pins differ from each other, and with `extra-pr-workflow` while another workflow file runs
+  on `pull_request`. A job's `needs:` cannot reach another workflow file, so move such a job into
+  `ci.yml` (the next adopt adds it to `gate`), or list the file in `ci.extra_workflows` with an
+  `exceptions` row.
+- Where the hooks lived before (the local `core.hooksPath`, or another tracked directory with a
+  file named after a hook), adopt leaves a stub for each hook. The stub prints the `railform arm`
+  command and fails, so a clone armed to the old directory cannot commit unchecked.
+- A repository whose `railform` job calls `./.github/workflows/python-ci.yml` by local path is
+  self-hosted, as railform itself is. Adopt keeps that call and passes the commit under test as
+  the input, its pre-commit entry is `repo: local` running `uv run --frozen railform <verb>`,
+  `--pin` rewrites nothing, and `--check` skips the pin comparisons and says so.
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the gate commands and the commit rules, and

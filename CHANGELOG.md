@@ -91,6 +91,21 @@ All notable changes to this project are recorded here, in the
   and `<code>/home/<name></code>` are caught while `/home/me,` and `(e.g. /home/user)` pass.
 - The default `private_refs.placeholders` gains the system folders `public`, `default`, `shared`
   and `runneradmin`, which are not people. This extends the spec's six names.
+- The `adopt` verb and its templates in `src/railform/templates/`. `railform adopt [--type T]
+  [--pin SHA]` writes, between marker lines, the `railform` and `gate` jobs of `ci.yml` (the call
+  to the reusable workflow at the pin with the pin as the input `railform-sha`, and the required
+  status that needs every other job), the `pull_request` trigger types, the railform and hygiene
+  entries of `.pre-commit-config.yaml` (pre-commit-hooks v5.0.0 at its commit), and the Dependabot
+  ignore entry for railform; it writes the hook wrappers as `100755` in the git index, a stub in
+  the previous hooks directory, the tag-watch caller once the package carries its template, and
+  the first `railform.toml`. Everything outside the owned parts is kept byte for byte, and a
+  second run changes nothing. `--pin` moves every reference at once. `--check` fails with
+  `drift`, `pin-mismatch` or `extra-pr-workflow`, and skips the pin comparisons in a repository
+  that calls the workflow by local path.
+- Migration fixtures for the three project types, built at test time, and tests that adopt keeps
+  their extras and that each type's pipeline steps pass in the adopted fixture. The pipeline
+  tests carry the new `slow` marker (they need the network or a warm uv cache) and run by
+  default.
 
 ### Changed
 
