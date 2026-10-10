@@ -228,7 +228,26 @@ def _compose(doc: _Doc) -> Any:
         raise AdoptError(f'{doc.path}: cannot be parsed as YAML: {detail}') from exc
     if not isinstance(node, yaml.MappingNode):
         raise AdoptError(f'{doc.path}: the top level is not a mapping')
+    _unique(doc, node)
     return node
+
+
+def _unique(doc: _Doc, node: Any) -> None:
+    """Refuse a mapping that repeats a key. YAML keeps the last one, and so do GitHub,
+    pre-commit and Dependabot, so a repeated `repos:`, `ignore:` or job id would hide the owned
+    region from the tool while adopt read the first."""
+    if not isinstance(node, yaml.MappingNode):
+        return
+    seen: dict[str, int] = {}
+    for key, _ in node.value:
+        if not isinstance(key, yaml.ScalarNode):
+            continue
+        if key.value in seen:
+            raise AdoptError(
+                f'{doc.path}:{key.start_mark.line + 1}: the key {key.value} repeats the one on '
+                f'line {seen[key.value]}; YAML keeps the last, so adopt refuses the file'
+            )
+        seen[key.value] = key.start_mark.line + 1
 
 
 def _entry(node: Any, key: str) -> tuple[Any, Any] | None:
@@ -293,6 +312,7 @@ def _jobs(doc: _Doc, root: Any) -> tuple[Any, Any]:
     jobs_key, jobs = found
     if not (_is_empty(jobs) or _is_block(jobs, yaml.MappingNode)):
         raise AdoptError(f'{CI_PATH}: write jobs: as a block mapping')
+    _unique(doc, jobs)
     return jobs_key, jobs
 
 
@@ -375,7 +395,10 @@ def _trigger_edits(ci: _Ci) -> list[_Edit]:
         return [_Edit(key.start_mark.line, _last_line(doc, value) + 1, tuple(lines))]
     if not _is_block(value, yaml.MappingNode):
         raise AdoptError(f'{CI_PATH}: write the on: block as a block mapping')
+    _unique(doc, value)
     pr = _entry(value, 'pull_request')
+    if pr is not None:
+        _unique(doc, pr[1])
     if pr is None:
         column = value.value[0][0].start_mark.column
         lines = (' ' * column + 'pull_request:', ' ' * (column + 2) + types_line)
@@ -533,6 +556,8 @@ def _confirm_pre_commit(text: str, *, self_hosted: bool) -> None:
     if (
         region is None
         or [_scalar((_entry(item, 'repo') or (None, None))[1]) for item in inside] != expected
+        # Defensive: items of one block list share a column, and a region moved under another
+        # construct already fails the clause above; this pins the column adopt writes.
         or any(item.start_mark.column != region.indent + 2 for item in inside)
     ):
         raise AdoptError(
@@ -560,8 +585,19 @@ def _plan_dependabot(text: str | None) -> str:
     return planned
 
 
+def _serves_root(item: Any) -> bool:
+    """Whether a Dependabot update's `directory` is `/`, or its `directories` list holds `/`."""
+    if _scalar((_entry(item, 'directory') or (None, None))[1]) == '/':
+        return True
+    directories = _entry(item, 'directories')
+    if directories is None or not isinstance(directories[1], yaml.SequenceNode):
+        return False
+    return any(_scalar(node) == '/' for node in directories[1].value)
+
+
 def _updates(doc: _Doc) -> tuple[Any, Any, list[Any], list[Any]]:
-    """The `updates` key and value, its items, and the items of the github-actions ecosystem."""
+    """The `updates` key and value, its items, and the github-actions updates of the repository
+    root, the ones that own the railform entry."""
     found = _entry(_compose(doc), 'updates')
     if found is None:
         raise AdoptError(f'{DEPENDABOT_PATH}: has no updates: list')
@@ -569,17 +605,20 @@ def _updates(doc: _Doc) -> tuple[Any, Any, list[Any], list[Any]]:
     if not (_is_empty(updates) or _is_block(updates, yaml.SequenceNode)):
         raise AdoptError(f'{DEPENDABOT_PATH}: write updates: as a block list')
     items = [] if _is_empty(updates) else updates.value
+    for item in items:
+        _unique(doc, item)
     actions = [
         item
         for item in items
         if _scalar((_entry(item, 'package-ecosystem') or (None, None))[1]) == 'github-actions'
+        and _serves_root(item)
     ]
     return updates_key, updates, items, actions
 
 
 def _confirm_dependabot(text: str) -> None:
     """The owned region of `text` holds the railform entry as an element of the `ignore:` list of
-    a github-actions update."""
+    the github-actions update whose directory is the repository root."""
     doc = _doc(DEPENDABOT_PATH, text)
     region = _find_region(doc)
     for item in _updates(doc)[3]:
@@ -591,7 +630,7 @@ def _confirm_dependabot(text: str) -> None:
                 return
     raise AdoptError(
         f'{DEPENDABOT_PATH}: the owned region does not hold the railform entry as an element of '
-        'the github-actions update ignore: list'
+        'the github-actions update ignore: list (the update whose directory is /)'
     )
 
 
@@ -611,7 +650,7 @@ def _dependabot_text(text: str | None) -> str:
         if item is None:
             raise AdoptError(
                 f'{DEPENDABOT_PATH}:{region.begin + 1}: the owned region is not inside the '
-                'github-actions update'
+                'github-actions update whose directory is /'
             )
         ignore = _entry(item, 'ignore')
         own_key = ignore is not None and not region.holds(ignore[0].start_mark.line)
@@ -752,16 +791,30 @@ def _put_executable(root: Path, path: str, text: str) -> bool:
     return changed
 
 
+def _fold(path: str) -> str:
+    """A repository-relative path as Windows reads it: each segment without its trailing dots
+    and spaces, then casefolded, so `.GitHooks.` and `.githooks` compare equal."""
+    return '/'.join(segment.rstrip(' .').casefold() for segment in path.split('/'))
+
+
 def _in_git_dir(directory: str) -> bool:
-    """Whether the first segment names `.git`, as Windows reads it: casefolded, with trailing
-    dots and spaces dropped."""
-    return directory.split('/', 1)[0].rstrip(' .').casefold() == '.git'
+    """Whether the first segment, folded, names `.git`."""
+    return _fold(directory).split('/', 1)[0] == '.git'
 
 
 def _same_or_under(path: str, directory: str) -> bool:
-    """Whether `path` is `directory` or lies under it, compared casefolded."""
-    folded, base = path.casefold(), directory.casefold()
+    """Whether `path` is `directory` or lies under it, both folded."""
+    folded, base = _fold(path), _fold(directory)
     return folded == base or folded.startswith(base + '/')
+
+
+def _same_directory(root: Path, path: str, directory: str) -> bool:
+    """Whether two repository-relative directories are one: decided by the filesystem when both
+    exist, else by the fold."""
+    first, second = root / path, root / directory
+    if first.exists() and second.exists():
+        return os.path.samefile(first, second)
+    return _fold(path) == _fold(directory)
 
 
 def _relative_dir(value: str) -> str | None:
@@ -812,34 +865,48 @@ def _session_loaded(path: str, globs: list[str]) -> bool:
 
 def _previous_hooks_dir(
     root: Path, frame: dict[str, Any], directory: str, entries: dict[str, str]
-) -> str | None:
-    """Where the hooks lived before (contract section 9, as decided on PR07's review): the local
-    core.hooksPath when it is set and differs from hooks.dir; else the tracked directory, outside
-    hooks.dir and outside every `session_loaded` glob, that holds the most `100755` entries named
-    after a hook (the first by name on a tie)."""
+) -> tuple[str | None, list[str]]:
+    """Where the hooks lived before (contract section 9, as decided on PR07's reviews), and a
+    finding line for every candidate passed over.
+
+    The local core.hooksPath when it is set and is not the same directory as hooks.dir (a
+    subdirectory of it included); else the tracked directory, outside hooks.dir and outside
+    every `session_loaded` glob, that holds the most `100755` entries named after a hook (the
+    first by name on a tie).
+    """
+    skipped: list[str] = []
     done = git(root, 'config', '--local', '--get', 'core.hooksPath')
     if done.returncode not in (0, 1):
         raise GitError(f'git config failed: {done.stderr.decode("utf-8", "replace").strip()}')
     configured = done.stdout.decode('utf-8', 'replace').rstrip('\r\n')
     if configured:
         relative = _relative_dir(configured)
-        if relative is not None and not _same_or_under(relative, directory):
-            return relative
+        if relative is None:
+            skipped.append(
+                'core.hooksPath lies outside the repository or inside .git; not taken as the '
+                'previous hooks directory'
+            )
+        elif not _same_directory(root, relative, directory):
+            return relative, skipped
     names = frame['hooks']['names']
     counts: dict[str, int] = {}
     for path, mode in entries.items():
         parent, _, base = path.rpartition('/')
-        if (
-            mode == EXECUTABLE
-            and base in names
-            and parent
-            and not _same_or_under(parent, directory)
-            and not _session_loaded(path, frame['session_loaded'])
-        ):
+        if base not in names or not parent or parent == directory:
+            continue  # not named after a hook, at the root, or a wrapper itself
+        if mode != EXECUTABLE:
+            reason = f'tracked as {mode}'
+        elif _same_or_under(parent, directory):
+            reason = f'hooks.dir {directory} itself, as Windows reads it, or under it'
+        elif _session_loaded(path, frame['session_loaded']):
+            reason = 'a path a session loads'
+        else:
             counts[parent] = counts.get(parent, 0) + 1
+            continue
+        skipped.append(f'{path}: not taken as the previous hooks directory ({reason})')
     if not counts:
-        return None
-    return min(counts, key=lambda parent: (-counts[parent], parent))
+        return None, skipped
+    return min(counts, key=lambda parent: (-counts[parent], parent)), skipped
 
 
 def _refuse_links(root: Path, paths: list[str]) -> None:
@@ -1016,7 +1083,8 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         planned.append((TAG_WATCH_PATH, tag_watch_text, _plan_tag_watch(tag_watch_text, pin)))
     planned.append((DEPENDABOT_PATH, dependabot_text, _plan_dependabot(dependabot_text)))
     entries = _index_entries(root)
-    previous = _previous_hooks_dir(root, frame, directory, entries)
+    previous, skipped = _previous_hooks_dir(root, frame, directory, entries)
+    notes += skipped
     stubs: dict[str, str] = {}
     for hook in names if previous else []:
         path = f'{previous}/{hook}'
@@ -1027,11 +1095,13 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
             notes.append(f'{path}: exists and is not tracked; left as it is, no stub')
         else:
             stubs[path] = _stub(directory)
-    wrapper_paths = {path.casefold() for path in wrappers}
-    if any(path.casefold() in wrapper_paths for path in stubs):
+    # Defensive: the choice above already passes over any directory that folds to hooks.dir, so
+    # no stub can land on a wrapper today; this stops it before any write if that ever changes.
+    wrapper_paths = {_fold(path) for path in wrappers}
+    if any(_fold(path) in wrapper_paths for path in stubs):
         raise AdoptError(
             f'a stub in {previous} would land on a wrapper in {directory}; the two directories '
-            'differ only by case'
+            'are one as Windows reads them'
         )
     writes = [(path, new) for path, old, new in planned if new is not None and new != old]
     targets = [path for path, _ in writes] + list(wrappers) + list(stubs)
@@ -1057,7 +1127,8 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         for message in _extra_pr_workflows(root, frame['ci']['extra_workflows'])
     ]
     configured = hooks_path(root)
-    if configured is None or _relative_dir(configured) != directory:
+    relative = _relative_dir(configured) if configured is not None else None
+    if relative is None or not _same_directory(root, relative, directory):
         findings.append(f'arm this clone with `railform arm` (core.hooksPath to {directory})')
     return Verdict.ok(VERB, tuple(findings))
 
