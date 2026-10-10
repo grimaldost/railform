@@ -718,7 +718,9 @@ def test_red_proof_a_target_behind_a_link_is_refused_before_any_write(
         assert read(scratch_repo, path) == text
 
 
-@pytest.mark.parametrize('directory', ['.git/hooks', '.GIT/hooks', '.Git'])
+@pytest.mark.parametrize(
+    'directory', ['.git/hooks', '.GIT/hooks', '.Git', '.git./hooks', '.git /hooks', '.git. .']
+)
 def test_red_proof_a_hooks_directory_inside_git_is_refused_before_any_write(
     directory: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -726,11 +728,198 @@ def test_red_proof_a_hooks_directory_inside_git_is_refused_before_any_write(
     config = f'[project]\ntype = "python-package"\n\n[hooks]\ndir = "{directory}"\n'
     write(scratch_repo, 'railform.toml', config)
     before = snapshot(scratch_repo)
-    assert run_adopt(capsys, '--pin', PIN)[:2] == (2, f'{VERDICT} fail usage')
+    assert main(['adopt', '--pin', PIN]) == 2
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == [f'{VERDICT} fail usage']
+    # Windows drops trailing dots and spaces, so `.git.` is `.git`: the message says so.
+    assert 'lies inside .git' in captured.err
     assert snapshot(scratch_repo) == before
     assert not (scratch_repo / '.git' / 'hooks' / 'pre-commit').exists()
     for path, text in fixture.original.items():
         assert read(scratch_repo, path) == text
+
+
+# --- second review round -----------------------------------------------------------------------
+
+
+def test_red_proof_a_pre_commit_region_inside_another_entry_is_drift(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    text = read(scratch_repo, PRE_COMMIT)
+    owned = region(text)
+    rest = text.replace(owned, '')
+    moved = rest.replace(
+        '        entry: "TODO"\n', '        entry: |\n          TODO\n' + _shifted(owned, 8)
+    )
+    assert [repo['repo'] for repo in yaml.safe_load(moved)['repos']] == ['local']
+    write(scratch_repo, PRE_COMMIT, moved)
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert 'does not hold the railform and hygiene entries as items of repos:' in out
+    assert run_adopt(capsys)[1] == f'{VERDICT} fail usage'
+    assert read(scratch_repo, PRE_COMMIT) == moved
+
+
+def test_red_proof_a_dependabot_entry_moved_under_allow_is_drift(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-scripts')  # its github-actions update has an ignore: list
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    text = read(scratch_repo, DEPENDABOT)
+    owned = region(text)
+    moved = text.replace(owned, '') + '    allow:\n' + owned
+    actions = yaml.safe_load(moved)['updates'][1]
+    assert {'dependency-name': 'grimaldost/railform'} in actions['allow']
+    assert {'dependency-name': 'grimaldost/railform'} not in actions['ignore']
+    write(scratch_repo, DEPENDABOT, moved)
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert 'not hold the railform entry as an element of the github-actions update ignore' in out
+    assert run_adopt(capsys)[1] == f'{VERDICT} fail usage'
+    assert read(scratch_repo, DEPENDABOT) == moved
+
+
+@pytest.mark.parametrize('ignored', [False, True], ids=['plain', 'gitignored'])
+def test_red_proof_an_untracked_hook_in_the_previous_directory_is_left(
+    ignored: bool, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    if ignored:
+        write(scratch_repo, '.gitignore', 'tools/\n')
+    own_hook = '#!/bin/sh\necho my own hook\n'
+    write(scratch_repo, 'tools/hooks/pre-commit', own_hook)
+    git(scratch_repo, 'config', '--local', 'core.hooksPath', 'tools/hooks')
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0
+    assert 'tools/hooks/pre-commit: exists and is not tracked; left as it is' in out
+    assert read(scratch_repo, 'tools/hooks/pre-commit') == own_hook
+    assert git(scratch_repo, 'ls-files', '--', 'tools/hooks/pre-commit') == ''
+    assert 'railform arm' in read(scratch_repo, 'tools/hooks/commit-msg')
+
+
+def test_red_proof_a_hooks_path_that_differs_only_by_case_is_not_the_previous_directory(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    git(scratch_repo, 'config', '--local', 'core.hooksPath', '.GitHooks')
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0
+    assert 'stub' not in out
+    effective = frame.load(scratch_repo)
+    for hook in HOOKS:
+        assert read(scratch_repo, f'.githooks/{hook}') == wrapper.render(effective, hook)
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+
+
+def test_red_proof_a_hook_named_file_under_hooks_dir_gets_no_stub(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    _track(scratch_repo, '.githooks/old/pre-commit', '#!/bin/sh\necho old\n', executable=True)
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0
+    assert 'stub' not in out
+    assert read(scratch_repo, '.githooks/old/pre-commit') == '#!/bin/sh\necho old\n'
+
+
+def test_red_proof_a_wrapper_committed_with_crlf_is_drift(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = '.githooks/pre-commit'
+    crlf = read(adopted.root, path).replace('\n', '\r\n').encode('utf-8')
+    oid = (
+        subprocess.run(
+            ['git', 'hash-object', '-w', '--no-filters', '--stdin'],
+            cwd=adopted.root,
+            input=crlf,
+            capture_output=True,
+            check=True,
+        )
+        .stdout.decode('ascii')
+        .strip()
+    )
+    git(adopted.root, 'update-index', '--cacheinfo', f'100755,{oid},{path}')
+    (adopted.root / path).write_bytes(crlf)  # what a CRLF checkout of that blob holds
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{path}: the index holds other bytes' in out
+
+
+def test_red_proof_rewriting_an_on_block_with_comments_is_refused(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = (
+        'on:\n'
+        '  # the events this workflow runs on\n'
+        '  - push  # every push\n'
+        '  - pull_request  # every pull request\n'
+        'jobs:\n'
+        '  x:\n'
+        '    runs-on: ubuntu-latest\n'
+        '    steps:\n'
+        '      - run: echo x\n'
+    )
+    write(scratch_repo, CI, text)
+    assert main(['adopt', '--pin', PIN]) == 2
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == [f'{VERDICT} fail usage']
+    assert 'would drop its comments' in captured.err
+    assert read(scratch_repo, CI) == text
+    assert not (scratch_repo / 'railform.toml').exists()
+
+
+def test_the_seed_follows_python_newest_in_the_frame(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shipped = frame.default_frame_text()
+    assert shipped.count(f'newest = "{NEWEST}"') == 1
+    monkeypatch.setattr(
+        frame,
+        'default_frame_text',
+        lambda: shipped.replace(f'newest = "{NEWEST}"', 'newest = "3.99"'),
+    )
+    write(scratch_repo, 'pyproject.toml', '[project]\nname = "x"\nrequires-python = ">=3.11"\n')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    assert frame.read_config(scratch_repo)['python'] == {'versions': ['3.11', '3.99']}
+
+
+@pytest.mark.parametrize(
+    ('path', 'pattern', 'sentinel'),
+    [
+        (CI, r'railform-sha: [0-9a-f]{40}', 'railform-sha: <no pin>'),
+        (CI, r'python-ci\.yml@[0-9a-f]{40}', 'python-ci.yml@<no pin>'),
+        (PRE_COMMIT, r'rev: [0-9a-f]{40}', 'rev: <no pin>'),
+    ],
+    ids=['railform-sha', 'uses', 'pre-commit-rev'],
+)
+def test_red_proof_a_literal_no_pin_sentinel_is_drift(
+    path: str, pattern: str, sentinel: str, adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = read(adopted.root, path)
+    edited = re.sub(pattern, sentinel, text, count=1)
+    assert edited != text
+    write(adopted.root, path, edited)
+    assert run_adopt(capsys, '--check')[:2] == (1, f'{VERDICT} fail drift')
+
+
+@pytest.mark.parametrize(
+    'job',
+    [
+        '  checks:\n    name: Gate\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n',
+        '  GATE:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n',
+        '  lint:\n    name: railform\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n',
+    ],
+    ids=['name-gate', 'id-gate', 'name-railform'],
+)
+def test_red_proof_a_job_outside_the_region_that_casefolds_to_an_owned_name_is_drift(
+    job: str, adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write(adopted.root, CI, read(adopted.root, CI) + job)
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert 'sits outside the railform marker lines' in out
 
 
 # --- staging the wrappers ----------------------------------------------------------------------
