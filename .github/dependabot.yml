@@ -1,0 +1,10 @@
+# Only github-actions: the Python dependencies are locked in uv.lock and move by hand with the
+# lock, and railform is never published to an index.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
