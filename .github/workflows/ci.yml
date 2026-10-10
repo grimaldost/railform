@@ -22,6 +22,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - run: uv lock --check
       - run: uv sync --frozen --python ${{ matrix.python }}
+      - run: uv run --frozen railform private-refs
       - run: uv run --frozen ruff format --check .
       - run: uv run --frozen ruff check .
       - run: uv run --frozen ty check src

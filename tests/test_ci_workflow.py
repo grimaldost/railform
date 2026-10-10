@@ -43,6 +43,7 @@ def test_the_checks_job_runs_the_gate_commands_in_order(workflow: dict[Any, Any]
     assert runs == [
         'uv lock --check',
         'uv sync --frozen --python ${{ matrix.python }}',
+        'uv run --frozen railform private-refs',
         'uv run --frozen ruff format --check .',
         'uv run --frozen ruff check .',
         'uv run --frozen ty check src',

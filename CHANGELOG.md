@@ -72,6 +72,25 @@ All notable changes to this project are recorded here, in the
   `railform.toml` at HEAD removes or excepts a glob that the frame at `REF` had.
   Names compare case-insensitively, and a malformed glob (an empty segment, a `.` or `..`
   segment, a leading or trailing `/`, or a backslash) is a configuration error, exit 2.
+- The `private-refs` verb (`src/railform/private_refs.py`): a paths half that fails a
+  home-directory path of any of six shapes (`X:\Users\<name>\`, `X:/Users/<name>/`, the
+  JSON-escaped form, `X--Users-<name>-`, `/Users/<name>/`, `/home/<name>/`) unless the user segment
+  is in `private_refs.placeholders` or plainly a placeholder, and a names half that reads a private
+  list only from the file `private_refs.names_file_env` names, matches whole tokens, and is silent
+  without the file (`--require-names` fails it with `names-file-missing`). Scope: the given paths,
+  else `--diff` (changed files at the tip and the range's commit messages), else every tracked
+  file; `--text` adds files. Findings never print a matched name or the user segment of a home path.
+- A `private-refs` step in the `checks` job of CI, right after the sync so a failing test never
+  hides a leak.
+- `private-refs` details settled on review: a segment ends at a separator, whitespace, a quote or
+  the end of the line (`cd C:\Users\<name>` and `HOME=/home/<name>` are caught); `/home/` is read
+  only where it is not preceded by a word character, `.` or `-`; `--text` takes one file per flag
+  and repeats; a usage error redacts a given path like a finding does.
+- `private-refs`: a segment also ends at a backtick and at any of `<>(){}[],;:|`, and a trailing
+  full stop is dropped before the placeholder comparison, so `C:\Users\<name>>`, `/home/<name><br>`
+  and `<code>/home/<name></code>` are caught while `/home/me,` and `(e.g. /home/user)` pass.
+- The default `private_refs.placeholders` gains the system folders `public`, `default`, `shared`
+  and `runneradmin`, which are not people. This extends the spec's six names.
 
 ### Changed
 
