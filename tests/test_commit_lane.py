@@ -1,0 +1,602 @@
+"""The commit lane: `commit-msg`, `commit-range` and `pr-text` and the logic they share.
+
+The attribution cases are ported from keel's `tests/test_commit_msg_lane.py` at c3313fd (run here
+over the frame's pattern set) and from mantis-research's
+`tests/unit/test_commit_message_gate.py` at bbcbc6c. The model names in them are adversarial
+fixtures for the gate, not attributions.
+"""
+
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from railform import commit_lane, frame
+from railform.cli import main
+
+ATTRIBUTED_TRAILER = 'Co-Authored-By: Claude <noreply@anthropic.com>'
+GENERATION_STAMP = 'Generated with [Claude Code](https://claude.com/claude-code)'
+SCISSORS = '# ------------------------ >8 ------------------------'
+GIT_ENV = {
+    'GIT_AUTHOR_NAME': 'Alice Example',
+    'GIT_AUTHOR_EMAIL': 'alice@example.com',
+    'GIT_COMMITTER_NAME': 'Alice Example',
+    'GIT_COMMITTER_EMAIL': 'alice@example.com',
+}
+VERDICT = re.compile(r'railform-verdict: (?P<verb>\S+) (?P<status>pass|fail) (?P<code>\S+)')
+
+
+# --- helpers -----------------------------------------------------------------------------------
+
+
+def git(*args: str) -> str:
+    done = subprocess.run(
+        ['git', '-c', 'commit.gpgsign=false', *args],
+        capture_output=True,
+        text=True,
+        encoding='utf-8',
+        check=True,
+        env={**os.environ, **GIT_ENV},
+    )
+    return done.stdout.strip()
+
+
+def commit(message: str, name: str = 'COMMIT_MSG') -> str:
+    """An empty commit with exactly `message` (hooks off); returns its hash."""
+    Path(name).write_text(message, encoding='utf-8')
+    git('commit', '--allow-empty', '--no-verify', '--cleanup=verbatim', '-F', name)
+    Path(name).unlink()
+    return git('rev-parse', 'HEAD')
+
+
+def write_event(path: Path, pull_request: object) -> Path:
+    path.write_text(json.dumps({'pull_request': pull_request}), encoding='utf-8')
+    return path
+
+
+def run_verb(
+    capsys: pytest.CaptureFixture[str], *argv: str
+) -> tuple[int, list[str], tuple[str, str]]:
+    """Run a verb; returns the exit code, its findings and the (status, code) of its verdict."""
+    code = main(list(argv))
+    lines = capsys.readouterr().out.splitlines()
+    match = VERDICT.fullmatch(lines[-1])
+    assert match is not None, lines
+    assert match['verb'] == argv[0]
+    assert sum(1 for line in lines if line.startswith('railform-verdict:')) == 1
+    return code, lines[:-1], (match['status'], match['code'])
+
+
+def message_file(text: str, name: str = 'msg.txt') -> str:
+    Path(name).write_text(text, encoding='utf-8')
+    return name
+
+
+@pytest.fixture
+def history(scratch_repo: Path) -> Path:
+    """A scratch repository with one conventional commit tagged `base`."""
+    commit('chore: start the history')
+    git('tag', 'base')
+    return scratch_repo
+
+
+def rules() -> commit_lane.Rules:
+    return commit_lane.rules_from_frame(frame.effective_frame(None))
+
+
+# --- the attribution patterns, ported from keel -------------------------------------------------
+
+REJECTED = (
+    'Co-Authored-By: Claude <noreply@anthropic.com>',
+    'Signed-off-by: Claude',
+    'Assisted-by: GPT-5',
+    'Generated-by: Copilot',
+    'Generated with [Claude Code](https://claude.com/claude-code)',
+    'Generated with Claude',
+)
+ORDINARY = (
+    'fix(release): hold the tag to its section',
+    'The fold follows ADR-0018; co-authored the spec with the operator.',
+    'Generated fixtures with the staging script.',
+    'Signed-off-by: Alice Example',
+)
+
+
+@pytest.mark.parametrize('line', REJECTED)
+def test_commit_msg_rejects_trailers_and_stamps(
+    line: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = message_file(f'feat: add a thing\n\n{line}\n')
+    code, findings, verdict = run_verb(capsys, 'commit-msg', path)
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+    assert findings == [f'msg.txt:3: attribution line: {line}']
+
+
+@pytest.mark.parametrize('line', ORDINARY)
+def test_commit_msg_passes_an_ordinary_line(line: str, capsys: pytest.CaptureFixture[str]) -> None:
+    path = message_file(f'feat: add a thing\n\n{line}\n')
+    assert run_verb(capsys, 'commit-msg', path) == (0, [], ('pass', 'ok'))
+
+
+def test_an_attributed_subject_line_fails_too(capsys: pytest.CaptureFixture[str]) -> None:
+    path = message_file('feat: Generated with Claude\n')
+    code, _, verdict = run_verb(capsys, 'commit-msg', path)
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+
+
+# --- the same cases, ported from mantis-research ----------------------------------------
+
+
+def test_the_co_author_trailer_is_the_one_line_reported() -> None:
+    message = f'feat: add a thing\n\n{ATTRIBUTED_TRAILER}\n'
+    lines = commit_lane.numbered_lines(message)
+    assert commit_lane.attribution_findings(lines, rules()) == [
+        (3, f'attribution line: {ATTRIBUTED_TRAILER}')
+    ]
+
+
+def test_a_standalone_generated_with_line_is_reported() -> None:
+    lines = commit_lane.numbered_lines('feat: add a thing\n\nGenerated with Claude Code\n')
+    assert commit_lane.attribution_findings(lines, rules()) == [
+        (3, 'attribution line: Generated with Claude Code')
+    ]
+
+
+def test_the_generation_stamp_with_a_link_is_reported() -> None:
+    lines = commit_lane.numbered_lines(f'feat: add a thing\n\n{GENERATION_STAMP}\n')
+    assert commit_lane.attribution_findings(lines, rules()) == [
+        (3, f'attribution line: {GENERATION_STAMP}')
+    ]
+
+
+def test_naming_the_claude_cli_as_subject_matter_is_not_attribution() -> None:
+    message = 'fix(adapter): retry the claude CLI on rate limit\n\nThe adapter now waits.\n'
+    lines = commit_lane.numbered_lines(message)
+    assert commit_lane.attribution_findings(lines, rules()) == []
+
+
+def test_a_human_co_author_passes() -> None:
+    message = 'feat: add a thing\n\nCo-Authored-By: Ada Lovelace <ada@example.com>\n'
+    lines = commit_lane.numbered_lines(message)
+    assert commit_lane.attribution_findings(lines, rules()) == []
+
+
+def test_each_offending_line_is_reported_with_its_number() -> None:
+    message = f'feat: x\n\n{ATTRIBUTED_TRAILER}\nfine\n{GENERATION_STAMP}\n'
+    found = commit_lane.attribution_findings(commit_lane.numbered_lines(message), rules())
+    assert [number for number, _ in found] == [3, 5]
+
+
+# --- the subject rule ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    'subject',
+    [
+        'feat: add a thing',
+        'fix(commit-lane): handle a merge',
+        'feat!: drop the old flag',
+        'refactor(frame)!: rename a key',
+        'release: 1.2.3',
+        'docs(spec): a scope with spaces?',
+        'ci: x',
+    ],
+)
+def test_a_conventional_subject_passes(subject: str, capsys: pytest.CaptureFixture[str]) -> None:
+    path = message_file(f'{subject}\n\nA body.\n')
+    assert run_verb(capsys, 'commit-msg', path) == (0, [], ('pass', 'ok'))
+
+
+@pytest.mark.parametrize(
+    'subject',
+    [
+        'add a thing',
+        'Feat: add a thing',
+        'feat add a thing',
+        'feat:add a thing',
+        'feat: ',
+        'feat():',
+        'feat(): nothing',
+        'wip: not a type',
+        'feat(a)(b): two scopes',
+        'Merge branch main',
+    ],
+)
+def test_a_subject_outside_the_rule_fails(subject: str, capsys: pytest.CaptureFixture[str]) -> None:
+    path = message_file(f'{subject}\n')
+    code, findings, verdict = run_verb(capsys, 'commit-msg', path)
+    assert (code, verdict) == (1, ('fail', 'subject'))
+    assert findings == [f'msg.txt:1: {commit_lane.SUBJECT_MESSAGE}']
+
+
+def test_an_empty_message_fails_the_subject_rule(capsys: pytest.CaptureFixture[str]) -> None:
+    path = message_file('\n\n')
+    code, _, verdict = run_verb(capsys, 'commit-msg', path)
+    assert (code, verdict) == (1, ('fail', 'subject'))
+
+
+def test_the_subject_is_the_first_line_that_is_not_blank(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = message_file('\n\nfeat: after two blank lines\n')
+    assert run_verb(capsys, 'commit-msg', path)[0] == 0
+
+
+def test_a_merge_in_progress_is_exempt_from_the_subject_rule(
+    history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (history / '.git' / 'MERGE_HEAD').write_text(git('rev-parse', 'HEAD') + '\n', encoding='utf-8')
+    path = message_file("Merge branch 'topic'\n")
+    assert run_verb(capsys, 'commit-msg', path) == (0, [], ('pass', 'ok'))
+    # The exemption is the subject rule's only: a merge message is still checked for attribution.
+    path = message_file(f"Merge branch 'topic'\n\n{ATTRIBUTED_TRAILER}\n")
+    code, _, verdict = run_verb(capsys, 'commit-msg', path)
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+
+
+def test_when_both_rules_fail_the_verdict_names_the_subject(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = message_file(f'add a thing\n\n{ATTRIBUTED_TRAILER}\n')
+    code, findings, verdict = run_verb(capsys, 'commit-msg', path)
+    assert (code, verdict) == (1, ('fail', 'subject'))
+    assert len(findings) == 2
+
+
+# --- git comments and the scissors line ----------------------------------------------------------
+
+
+def test_comment_lines_are_ignored(capsys: pytest.CaptureFixture[str]) -> None:
+    text = f'feat: add a thing\n\n# {ATTRIBUTED_TRAILER}\n#{GENERATION_STAMP}\nA body.\n'
+    path = message_file(text)
+    assert run_verb(capsys, 'commit-msg', path) == (0, [], ('pass', 'ok'))
+
+
+def test_a_comment_before_the_subject_is_not_the_subject(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = message_file('# Please enter the commit message\nfeat: add a thing\n')
+    assert run_verb(capsys, 'commit-msg', path) == (0, [], ('pass', 'ok'))
+
+
+def test_everything_after_the_scissors_line_is_ignored(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    diff = f'diff --git a/x b/x\n+{ATTRIBUTED_TRAILER}\n+Generated with Claude\n'
+    path = message_file(
+        f'feat: add a thing\n\n{SCISSORS}\n# Do not modify or remove the line.\n{diff}'
+    )
+    assert run_verb(capsys, 'commit-msg', path) == (0, [], ('pass', 'ok'))
+
+
+def test_the_scissors_line_hides_nothing_above_it(capsys: pytest.CaptureFixture[str]) -> None:
+    path = message_file(f'feat: add a thing\n\n{ATTRIBUTED_TRAILER}\n{SCISSORS}\nrest\n')
+    code, findings, verdict = run_verb(capsys, 'commit-msg', path)
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+    assert findings == [f'msg.txt:3: attribution line: {ATTRIBUTED_TRAILER}']
+
+
+def test_a_line_that_only_looks_like_the_scissors_line_hides_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    near = SCISSORS.replace('>8', '>9')
+    path = message_file(f'feat: add a thing\n\n{near}\n{ATTRIBUTED_TRAILER}\n')
+    assert run_verb(capsys, 'commit-msg', path)[2] == ('fail', 'attribution')
+
+
+def test_the_number_of_a_finding_counts_the_comment_lines(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = message_file(f'# a comment\nfeat: add a thing\n\n{ATTRIBUTED_TRAILER}\n')
+    assert run_verb(capsys, 'commit-msg', path)[1] == [
+        f'msg.txt:4: attribution line: {ATTRIBUTED_TRAILER}'
+    ]
+
+
+# --- commit-msg: arguments -----------------------------------------------------------------------
+
+
+def test_commit_msg_reports_a_missing_file_as_usage(capsys: pytest.CaptureFixture[str]) -> None:
+    code, _, verdict = run_verb(capsys, 'commit-msg', 'no-such-file')
+    assert (code, verdict) == (2, ('fail', 'usage'))
+
+
+def test_commit_msg_needs_a_file(capsys: pytest.CaptureFixture[str]) -> None:
+    assert run_verb(capsys, 'commit-msg')[2] == ('fail', 'usage')
+
+
+def test_commit_msg_names_a_file_inside_the_repository_by_its_relative_path(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (scratch_repo / '.git' / 'COMMIT_EDITMSG').write_text(f'feat: x\n\n{GENERATION_STAMP}\n')
+    code, findings, _ = run_verb(
+        capsys, 'commit-msg', str(scratch_repo / '.git' / 'COMMIT_EDITMSG')
+    )
+    assert code == 1
+    assert findings[0].startswith('.git/COMMIT_EDITMSG:3: ')
+
+
+def test_commit_msg_does_not_print_the_path_of_a_file_outside_the_repository(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    outside = tmp_path / 'elsewhere.txt'
+    outside.write_text('no type here\n', encoding='utf-8')
+    _, findings, _ = run_verb(capsys, 'commit-msg', str(outside))
+    assert findings[0].startswith('elsewhere.txt:1: ')
+
+
+def test_a_verb_outside_a_git_repository_exits_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bare_dir = tmp_path / 'not-a-repository'
+    bare_dir.mkdir()
+    (bare_dir / 'msg.txt').write_text('feat: x\n', encoding='utf-8')
+    monkeypatch.setenv('GIT_CEILING_DIRECTORIES', str(tmp_path))
+    monkeypatch.chdir(bare_dir)
+    for argv in (['commit-msg', 'msg.txt'], ['commit-range', 'a...b'], ['pr-text', '--event', 'e']):
+        code, _, verdict = run_verb(capsys, *argv)
+        assert (code, verdict) == (2, ('fail', 'usage'))
+
+
+# --- the frame decides --------------------------------------------------------------------------
+
+
+def test_dropping_a_type_from_the_frame_makes_that_subject_fail(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = message_file('feat: add a thing\n')
+    assert run_verb(capsys, 'commit-msg', path)[0] == 0
+    types = [t for t in frame.effective_frame(None)['commit']['types'] if t != 'feat']
+    quoted = ', '.join(json.dumps(t) for t in types)
+    (scratch_repo / 'railform.toml').write_text(f'[commit]\ntypes = [{quoted}]\n', encoding='utf-8')
+    code, _, verdict = run_verb(capsys, 'commit-msg', path)
+    assert (code, verdict) == (1, ('fail', 'subject'))
+    # The other types still pass.
+    assert run_verb(capsys, 'commit-msg', message_file('fix: add a thing\n'))[0] == 0
+
+
+def test_a_pattern_added_in_the_frame_is_enforced(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    default = frame.effective_frame(None)['commit']['attribution_patterns']
+    patterns = json.dumps([*default, '^Reviewed-by:'])
+    (scratch_repo / 'railform.toml').write_text(
+        f'[commit]\nattribution_patterns = {patterns}\n', encoding='utf-8'
+    )
+    path = message_file('feat: x\n\nreviewed-by: someone\n')
+    assert run_verb(capsys, 'commit-msg', path)[2] == ('fail', 'attribution')
+
+
+def test_a_pattern_that_is_not_a_regex_is_a_configuration_error(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (scratch_repo / 'railform.toml').write_text(
+        "[commit]\nattribution_patterns = ['(unclosed']\n", encoding='utf-8'
+    )
+    code, _, verdict = run_verb(capsys, 'commit-msg', message_file('feat: x\n'))
+    assert (code, verdict) == (2, ('fail', 'usage'))
+
+
+def test_a_railform_toml_that_cannot_be_parsed_is_a_configuration_error(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (scratch_repo / 'railform.toml').write_text('[commit\n', encoding='utf-8')
+    code, _, verdict = run_verb(capsys, 'commit-msg', message_file('feat: x\n'))
+    assert (code, verdict) == (2, ('fail', 'usage'))
+
+
+# --- commit-range: the red proofs of the spec, section 4 ---------------------------------------
+
+
+def test_red_proof_a_range_with_an_attributed_trailer_and_a_loose_subject_fails(
+    history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    attributed = commit(f'feat: add a thing\n\n{ATTRIBUTED_TRAILER}\n')
+    loose = commit('add another thing\n')
+    code, findings, verdict = run_verb(capsys, 'commit-range', 'base...HEAD')
+    assert code == 1
+    assert verdict == ('fail', 'subject')
+    assert findings == [
+        f'{loose[:12]}:1: {commit_lane.SUBJECT_MESSAGE}',
+        f'{attributed[:12]}:3: attribution line: {ATTRIBUTED_TRAILER}',
+    ]
+
+
+def test_each_half_of_that_range_fails_on_its_own_rule(
+    history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit(f'feat: add a thing\n\n{ATTRIBUTED_TRAILER}\n')
+    assert run_verb(capsys, 'commit-range', 'base...HEAD')[2] == ('fail', 'attribution')
+    git('reset', '--hard', 'base', '-q')
+    commit('add another thing\n')
+    assert run_verb(capsys, 'commit-range', 'base...HEAD')[2] == ('fail', 'subject')
+
+
+def test_a_clean_range_passes(history: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    commit('feat: add a thing\n\nA body.\n')
+    commit('fix(frame): repair it\n')
+    assert run_verb(capsys, 'commit-range', 'base...HEAD') == (0, [], ('pass', 'ok'))
+
+
+def test_an_empty_range_passes(history: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert run_verb(capsys, 'commit-range', 'base...HEAD') == (0, [], ('pass', 'ok'))
+
+
+def _merge_topic(message: str) -> None:
+    """Merge a conventional topic branch into a conventional mainline, with `message`."""
+    default = git('rev-parse', '--abbrev-ref', 'HEAD')
+    git('checkout', '-q', '-b', 'topic')
+    commit('feat: work on the topic\n')
+    git('checkout', '-q', default)
+    commit('fix: work on the mainline\n')
+    git('merge', '--no-ff', '--no-verify', '-m', message, 'topic')
+
+
+def test_red_proof_a_generated_merge_subject_passes_the_subject_check(
+    history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _merge_topic("Merge branch 'topic'")
+    assert len(git('rev-list', '--merges', 'base..HEAD').split()) == 1
+    assert run_verb(capsys, 'commit-range', 'base...HEAD') == (0, [], ('pass', 'ok'))
+
+
+def test_red_proof_the_same_merge_fails_when_it_carries_an_attributed_trailer(
+    history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _merge_topic(f"Merge branch 'topic'\n\n{ATTRIBUTED_TRAILER}")
+    merge = git('rev-parse', 'HEAD')
+    code, findings, verdict = run_verb(capsys, 'commit-range', 'base...HEAD')
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+    assert findings == [f'{merge[:12]}:3: attribution line: {ATTRIBUTED_TRAILER}']
+
+
+def test_a_loose_subject_on_a_single_parent_commit_still_fails_beside_a_merge(
+    history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _merge_topic("Merge branch 'topic'")
+    commit('wip')
+    assert run_verb(capsys, 'commit-range', 'base...HEAD')[2] == ('fail', 'subject')
+
+
+def test_the_range_is_what_head_adds_since_the_merge_base(
+    history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A commit that only the base side has is not the branch's, whatever its message.
+    default = git('rev-parse', '--abbrev-ref', 'HEAD')
+    git('checkout', '-q', '-b', 'topic')
+    commit('feat: the topic\n')
+    git('checkout', '-q', default)
+    commit(f'not conventional\n\n{ATTRIBUTED_TRAILER}\n')
+    git('tag', 'moved')
+    git('checkout', '-q', 'topic')
+    assert run_verb(capsys, 'commit-range', 'moved...HEAD') == (0, [], ('pass', 'ok'))
+
+
+@pytest.mark.parametrize('spec', ['base', 'base..HEAD', '...HEAD', 'base...', '', '-x...HEAD'])
+def test_a_range_that_is_not_base_dots_head_exits_2(
+    spec: str, history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, _, verdict = run_verb(capsys, 'commit-range', spec)
+    assert (code, verdict) == (2, ('fail', 'usage'))
+
+
+def test_an_unknown_revision_exits_2(history: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code, _, verdict = run_verb(capsys, 'commit-range', 'no-such-ref...HEAD')
+    assert (code, verdict) == (2, ('fail', 'usage'))
+
+
+def test_commit_range_needs_a_range(capsys: pytest.CaptureFixture[str]) -> None:
+    assert run_verb(capsys, 'commit-range')[2] == ('fail', 'usage')
+
+
+def test_commit_range_reads_every_line_of_a_message_it_does_not_strip_comments(
+    history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A stored message has had its comments stripped; a `#` line in it is text (a heading).
+    commit(f'feat: a thing\n\n# {GENERATION_STAMP}\n')
+    assert run_verb(capsys, 'commit-range', 'base...HEAD')[2] == ('fail', 'attribution')
+
+
+# --- pr-text -----------------------------------------------------------------------------------
+
+
+def test_red_proof_a_body_carrying_a_generation_stamp_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    event = write_event(
+        tmp_path / 'event.json',
+        {'title': 'feat: add a thing', 'body': f'## Summary\n\nDone.\n\n{GENERATION_STAMP}\n'},
+    )
+    code, findings, verdict = run_verb(capsys, 'pr-text', '--event', str(event))
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+    assert findings == [f'pull request body:5: attribution line: {GENERATION_STAMP}']
+
+
+def test_the_stamp_in_the_plain_words_of_the_spec_fails_too(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    event = write_event(tmp_path / 'e.json', {'title': 't', 'body': 'Generated with Claude Code'})
+    assert run_verb(capsys, 'pr-text', '--event', str(event))[2] == ('fail', 'attribution')
+
+
+def test_an_attributed_title_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    event = write_event(tmp_path / 'e.json', {'title': 'Generated with Claude', 'body': 'ok'})
+    code, findings, verdict = run_verb(capsys, 'pr-text', '--event', str(event))
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+    assert findings == ['pull request title:1: attribution line: Generated with Claude']
+
+
+def test_a_markdown_heading_in_a_body_is_text_not_a_comment(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    event = write_event(tmp_path / 'e.json', {'title': 't', 'body': '# Generated with Claude'})
+    assert run_verb(capsys, 'pr-text', '--event', str(event))[2] == ('fail', 'attribution')
+
+
+def test_a_clean_title_and_body_pass(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    event = write_event(
+        tmp_path / 'e.json',
+        {'title': 'Add the commit lane', 'body': 'Co-Authored-By: Ada Lovelace <ada@example.com>'},
+    )
+    # A title is not held to the subject rule, only to the attribution rule.
+    assert run_verb(capsys, 'pr-text', '--event', str(event)) == (0, [], ('pass', 'ok'))
+
+
+@pytest.mark.parametrize(
+    'pull_request',
+    [{'title': 'feat: x', 'body': None}, {'title': 'feat: x'}, {'body': None}, {}],
+)
+def test_a_null_or_absent_title_or_body_is_empty_text(
+    pull_request: dict[str, object], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    event = write_event(tmp_path / 'e.json', pull_request)
+    assert run_verb(capsys, 'pr-text', '--event', str(event)) == (0, [], ('pass', 'ok'))
+
+
+def test_the_event_path_defaults_to_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    event = write_event(tmp_path / 'e.json', {'title': 't', 'body': GENERATION_STAMP})
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(event))
+    assert run_verb(capsys, 'pr-text')[2] == ('fail', 'attribution')
+
+
+def test_the_event_argument_wins_over_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    dirty = write_event(tmp_path / 'dirty.json', {'title': 't', 'body': GENERATION_STAMP})
+    clean = write_event(tmp_path / 'clean.json', {'title': 't', 'body': 'fine'})
+    monkeypatch.setenv('GITHUB_EVENT_PATH', str(dirty))
+    assert run_verb(capsys, 'pr-text', '--event', str(clean))[2] == ('pass', 'ok')
+
+
+def test_without_an_event_or_the_variable_it_exits_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv('GITHUB_EVENT_PATH', raising=False)
+    code, _, verdict = run_verb(capsys, 'pr-text')
+    assert (code, verdict) == (2, ('fail', 'usage'))
+
+
+@pytest.mark.parametrize('content', ['', 'not json', '[]', '{}', '{"pull_request": null}'])
+def test_an_event_that_is_not_a_pull_request_payload_exits_2(
+    content: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    event = tmp_path / 'e.json'
+    event.write_text(content, encoding='utf-8')
+    code, _, verdict = run_verb(capsys, 'pr-text', '--event', str(event))
+    assert (code, verdict) == (2, ('fail', 'usage'))
+
+
+def test_an_event_file_that_does_not_exist_exits_2(capsys: pytest.CaptureFixture[str]) -> None:
+    assert run_verb(capsys, 'pr-text', '--event', 'missing.json')[0] == 2
+
+
+def test_a_body_that_is_not_text_exits_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    event = write_event(tmp_path / 'e.json', {'title': 't', 'body': 5})
+    assert run_verb(capsys, 'pr-text', '--event', str(event))[0] == 2
