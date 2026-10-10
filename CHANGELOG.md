@@ -47,6 +47,9 @@ All notable changes to this project are recorded here, in the
   A wrapper that pins a requirement to no version, such as `pre-commit== hook-impl`, is refused
   as a configuration error (exit 2). Ported from the commit-lane tests of the stack-radar engine;
   the stage, dev-group and frozen-`uv run` rules of that source are not ported yet.
+  `hooks.dir` is read as a normalised path (`./.githooks`, `.githooks/` and a backslash path name
+  the same directory), and `railform.wrapper` is the one module a caller needs: it renders the
+  wrapper and validates `hooks.dir`.
 
 ### Changed
 

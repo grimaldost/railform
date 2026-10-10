@@ -2,7 +2,8 @@
 
 Development-rails spec, §5; interface contract, section 7. The wrapper for a hook is a fixed
 template with the frame's `hooks.wrapper` command in it, so the check and the writer cannot
-disagree about what a correct wrapper is.
+disagree about what a correct wrapper is. A caller that writes the rendered text must write it
+as bytes, or with `newline=''`, to keep LF line endings on Windows.
 
 The template follows the wrapper radar-engine tracks in `.githooks/` (the stack-radar engine,
 https://github.com/grimaldost/stack-radar), generalized over the hook name and the command.
@@ -10,6 +11,7 @@ https://github.com/grimaldost/stack-radar), generalized over the hook name and t
 
 from __future__ import annotations
 
+import posixpath
 import re
 from typing import Any
 
@@ -59,3 +61,24 @@ def render(frame: dict[str, Any], hook: str) -> str:
     if not _HOOK_NAME.fullmatch(hook):
         raise WrapperError(f'hooks.names holds {hook!r}, which is not a hook name')
     return TEMPLATE.format(hook=hook, wrapper=command(frame))
+
+
+def hooks_dir(frame: dict[str, Any]) -> str:
+    """`hooks.dir` normalised to a repository-relative POSIX path.
+
+    Separators become `/` and `.` segments and doubled or trailing slashes go, so `./.githooks`
+    and `.githooks/` name `.githooks`. Raises WrapperError when the path is empty, is the
+    repository itself, is absolute, has a drive letter or leaves the repository.
+    """
+    directory = frame['hooks']['dir']
+    slashed = directory.replace('\\', '/')
+    path = posixpath.normpath(slashed) if slashed.strip() else '.'
+    if (
+        path == '.'
+        or path.startswith('/')
+        or ':' in path.split('/')[0]
+        or path == '..'
+        or path.startswith('../')
+    ):
+        raise WrapperError(f'hooks.dir {directory!r} is not a directory inside the repository')
+    return path

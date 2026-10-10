@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from railform import frame as frame_module
 from railform.verdict import Verdict
-from railform.wrapper import WrapperError, render
+from railform.wrapper import WrapperError, hooks_dir, render
 
 if TYPE_CHECKING:
     import argparse
@@ -60,20 +60,6 @@ def _stderr(done: subprocess.CompletedProcess[bytes]) -> str:
     return done.stderr.decode('utf-8', 'replace').strip()
 
 
-def hooks_dir(frame: dict[str, Any]) -> str:
-    """`hooks.dir` as a repository-relative path, or WrapperError when it cannot be one."""
-    directory = frame['hooks']['dir']
-    parts = directory.replace('\\', '/').split('/')
-    if (
-        not directory.strip()
-        or directory.startswith(('/', '\\'))
-        or ':' in parts[0]
-        or '..' in parts
-    ):
-        raise WrapperError(f'hooks.dir {directory!r} is not a path inside the repository')
-    return directory
-
-
 def index_mode(root: Path, path: str) -> str | None:
     """The mode the git index records for `path`, or None when it does not track it."""
     done = git(root, 'ls-files', '-s', '-z', '--', path)
@@ -97,15 +83,10 @@ def hooks_path(root: Path) -> str | None:
     return done.stdout.decode('utf-8', 'replace').rstrip('\r\n')
 
 
-def same_directory(a: str, b: str) -> bool:
-    """Whether two relative directory paths name the same directory."""
-    return posixpath.normpath(a.replace('\\', '/')) == posixpath.normpath(b.replace('\\', '/'))
-
-
 def _check_hook(
     root: Path, frame: dict[str, Any], directory: str, hook: str
 ) -> list[tuple[str, str]]:
-    path = f'{directory.rstrip("/")}/{hook}'
+    path = f'{directory}/{hook}'
     file = root / path
     if not file.is_file():
         return [(MISSING, f'{path}: the hook wrapper does not exist')]
@@ -160,7 +141,7 @@ def run(args: argparse.Namespace) -> Verdict:
             problems += _check_hook(root, frame, directory, hook)
         if args.armed:
             current = hooks_path(root)
-            if current is None or not same_directory(current, directory):
+            if current is None or posixpath.normpath(current.replace('\\', '/')) != directory:
                 shown = 'unset' if current is None else repr(current)
                 problems.append(
                     (

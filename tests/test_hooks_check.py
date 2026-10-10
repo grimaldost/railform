@@ -15,6 +15,7 @@ import pytest
 from railform import frame, wrapper
 from railform.cli import main
 
+NL = chr(10)
 HOOKS = ('pre-commit', 'commit-msg', 'pre-push')
 UV_WRAPPER = 'uv run --frozen python -m pre_commit hook-impl'
 
@@ -425,3 +426,64 @@ def test_arm_is_idempotent_and_writes_only_the_local_configuration(
     assert config_value(scratch_repo) == '.githooks'
     assert git(scratch_repo, 'config', '--get-all', 'core.hooksPath') == '.githooks'
     assert not (scratch_repo / '.githooks').exists()
+
+
+def test_an_armed_path_with_a_trailing_slash_counts_as_armed(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    put_all(scratch_repo)
+    git(scratch_repo, 'config', 'core.hooksPath', '.githooks/')
+    assert check(capsys, '--armed')[:2] == (0, 'railform-verdict: hooks-check pass ok')
+
+
+def test_an_absolute_hooks_path_to_the_hooks_directory_is_not_armed(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    put_all(scratch_repo)
+    git(scratch_repo, 'config', 'core.hooksPath', str(scratch_repo / '.githooks'))
+    assert check(capsys, '--armed')[:2] == (1, 'railform-verdict: hooks-check fail not-armed')
+
+
+@pytest.mark.parametrize('directory', ['./.githooks', '.githooks/', r'tools\.\..\.githooks'])
+def test_a_non_canonical_hooks_dir_names_the_same_directory(
+    directory: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    put_all(scratch_repo)
+    write_config(scratch_repo, f"[hooks]{NL}dir = '{directory}'{NL}")
+    assert check(capsys)[:2] == (0, 'railform-verdict: hooks-check pass ok')
+    assert check(capsys, verb='arm')[:2] == (0, 'railform-verdict: arm pass ok')
+    assert config_value(scratch_repo) == '.githooks'
+    assert check(capsys, '--armed')[:2] == (0, 'railform-verdict: hooks-check pass ok')
+
+
+def test_a_backslash_hooks_dir_is_read_as_a_path(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    put_all(scratch_repo, directory='tools/hooks')
+    write_config(scratch_repo, f"[hooks]{NL}dir = 'tools" + chr(92) + f"hooks'{NL}")
+    assert check(capsys)[:2] == (0, 'railform-verdict: hooks-check pass ok')
+
+
+def test_the_repository_itself_is_not_a_hooks_directory(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_config(scratch_repo, f"[hooks]{NL}dir = '.'{NL}")
+    assert check(capsys)[:2] == (2, 'railform-verdict: hooks-check fail usage')
+
+
+def test_arm_in_a_git_worktree_arms_the_main_clone(
+    scratch_repo: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    put_all(scratch_repo)
+    identity = ('-c', 'user.name=alice', '-c', 'user.email=alice@example.com')
+    git(scratch_repo, *identity, 'commit', '-qm', 'x')
+    linked = tmp_path_factory.mktemp('linked') / 'tree'
+    git(scratch_repo, 'worktree', 'add', '-q', '--detach', str(linked))
+    monkeypatch.chdir(linked)
+    assert check(capsys, verb='arm')[:2] == (0, 'railform-verdict: arm pass ok')
+    assert check(capsys, '--armed')[:2] == (0, 'railform-verdict: hooks-check pass ok')
+    monkeypatch.chdir(scratch_repo)
+    assert check(capsys, '--armed')[:2] == (0, 'railform-verdict: hooks-check pass ok')

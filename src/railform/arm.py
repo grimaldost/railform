@@ -10,8 +10,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from railform import frame as frame_module
-from railform.hooks_check import CONFIG_ERRORS, GitError, git, hooks_dir
+from railform.hooks_check import CONFIG_ERRORS, GitError, git
 from railform.verdict import Verdict
+from railform.wrapper import hooks_dir
 
 if TYPE_CHECKING:
     import argparse
