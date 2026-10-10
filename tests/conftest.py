@@ -1,9 +1,13 @@
 """Shared fixtures: every test runs in its own scratch repository, with git isolated from the
-developer's clone and configuration."""
+developer's clone, from any repository a parent process points at, and from every configuration
+but the scratch repository's own."""
 
 from __future__ import annotations
 
+import os
+import re
 import subprocess
+import tempfile
 from typing import TYPE_CHECKING
 
 import pytest
@@ -11,26 +15,35 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
-# The variables that point git at a repository other than the one in the current directory
-# (`git rev-parse --local-env-vars`, plus the namespace and the ceiling). Inherited from a git
-# hook or a parent git process, `GIT_DIR` would make `git init <dir>` reinitialise that other
-# repository, and mark it bare.
-LOCATING_VARIABLES = (
-    'GIT_DIR',
-    'GIT_WORK_TREE',
-    'GIT_IMPLICIT_WORK_TREE',
-    'GIT_INDEX_FILE',
-    'GIT_COMMON_DIR',
-    'GIT_OBJECT_DIRECTORY',
-    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-    'GIT_GRAFT_FILE',
-    'GIT_SHALLOW_FILE',
-    'GIT_NO_REPLACE_OBJECTS',
-    'GIT_REPLACE_REF_BASE',
-    'GIT_NAMESPACE',
-    'GIT_PREFIX',
-    'GIT_CEILING_DIRECTORIES',
-)
+# Variables git does not list as repository-local but that still redirect it: the ref namespace
+# and the ceiling of the repository search.
+EXTRA_VARIABLES = ('GIT_NAMESPACE', 'GIT_CEILING_DIRECTORIES')
+# `GIT_CONFIG_COUNT` comes with numbered pairs of these.
+_CONFIG_PAIR = re.compile(r'GIT_CONFIG_(KEY|VALUE)_\d+')
+
+
+def _local_env_vars() -> tuple[str, ...]:
+    """What `git rev-parse --local-env-vars` lists: the variables that point git at a
+    repository, an index or a configuration (`GIT_DIR`, `GIT_CONFIG`, `GIT_CONFIG_COUNT`...).
+
+    Asked once, outside any repository and with no `GIT_*` variable, so the answer cannot be
+    bent by what it lists."""
+    clean = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    with tempfile.TemporaryDirectory() as directory:
+        done = subprocess.run(
+            ['git', 'rev-parse', '--local-env-vars'],
+            cwd=directory,
+            env=clean,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    names = tuple(line.strip() for line in done.stdout.splitlines() if line.strip())
+    assert 'GIT_DIR' in names and 'GIT_CONFIG' in names, names
+    return names
+
+
+LOCATING_VARIABLES = (*_local_env_vars(), *EXTRA_VARIABLES)
 
 
 @pytest.fixture(scope='session')
@@ -46,6 +59,8 @@ def isolate_git(monkeypatch: pytest.MonkeyPatch, global_config: Path) -> None:
     no configuration but that repository's."""
     for name in LOCATING_VARIABLES:
         monkeypatch.delenv(name, raising=False)
+    for name in [key for key in os.environ if _CONFIG_PAIR.fullmatch(key)]:
+        monkeypatch.delenv(name)
     monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(global_config))
     monkeypatch.setenv('GIT_CONFIG_NOSYSTEM', '1')
 
