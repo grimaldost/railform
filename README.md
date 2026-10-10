@@ -41,7 +41,7 @@ The version in `pyproject.toml` stays `0.1.0.dev0` until the first release.
 
 ## The command
 
-`railform --version` prints the version and exits 0. Every other invocation ends its output with
+`railform --version` and `--help` (or `-h`, at the top level or after a verb) print their text and exit 0 with no verdict line; they are not checks and never reach the ledger. Every other invocation ends its output with
 exactly one line:
 
 ```
