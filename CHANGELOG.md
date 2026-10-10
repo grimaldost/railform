@@ -23,6 +23,15 @@ All notable changes to this project are recorded here, in the
 - `README.md`, `CONTRIBUTING.md` and this changelog.
 - `.gitattributes` with `* text=auto eol=lf`, so wrappers and the files `railform adopt` owns keep
   LF line endings on every system.
+- The frame: `src/railform/default_frame.toml` with every key of the development-rails spec,
+  §2, plus `ci.extra_workflows`, `python.newest`, `hooks.pre_commit_version` and
+  `meta.parameter_keys`, and the three presets `python-package`, `python-scripts` and
+  `plugin-marketplace`. `commit.attribution_patterns` is keel's no-ai-attribution set at
+  `c3313fd`, with keel's test cases ported over the frame value. `branch.pattern` is provisional
+  until the branch rail measures it.
+- The `frame` verb: `railform frame` prints the effective frame as TOML, `--json` as JSON,
+  `--check` validates `railform.toml` (`unknown-key`, `wrong-type`, `bad-exception`,
+  `unlisted-departure`), and `--github-output` appends the frame values to `$GITHUB_OUTPUT`.
 
 ### Changed
 
@@ -36,6 +45,10 @@ All notable changes to this project are recorded here, in the
   rule.
 - The tests run in a throwaway git repository, never in the developer's clone, and the scanner for
   installs by name also flags a flag with a value before the name (`uvx --python 3.12 ...`).
+- Each test gets its own scratch git repository instead of one shared by the whole session, so a
+  verb that writes files never leaks state into the next test.
+- The help tests no longer skip once `frame` exists: the case for a verb not written yet uses a
+  stand-in name, and the top-level and found-verb cases keep running.
 
 ### Removed
 
