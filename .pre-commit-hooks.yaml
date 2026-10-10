@@ -27,7 +27,11 @@
   entry: railform hooks-check
   language: python
   stages: [pre-commit]
-  # The default hooks.dir; `railform adopt` writes the repository's own in its `files:`.
+  # Run on every commit: pre-commit leaves deleted paths out of the staged files, so a commit
+  # that only deletes a wrapper, or only changes railform.toml, would skip the check otherwise.
+  always_run: true
+  # The default hooks.dir, beside the repository's own that `railform adopt` writes in its
+  # `files:`. With `always_run` it no longer decides whether the hook runs.
   files: ^\.githooks/
   pass_filenames: false
   minimum_pre_commit_version: 3.2.0

@@ -22,6 +22,7 @@ from railform import cli
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / '.pre-commit-hooks.yaml'
+TEMPLATES = ROOT / 'src' / 'railform' / 'templates'
 HOOK_IDS = (
     'railform-commit-msg',
     'railform-branch-name',
@@ -78,14 +79,37 @@ def test_private_refs_judges_the_staged_files_only(hooks: dict[str, dict[str, An
     assert 'files' not in hook
 
 
-def test_hooks_check_runs_on_changes_under_the_default_hooks_dir(
+def test_red_proof_hooks_check_always_runs_and_takes_no_file_names(
     hooks: dict[str, dict[str, Any]],
 ) -> None:
+    # pre-commit leaves deleted paths out of the staged files: a commit that only deletes a
+    # wrapper, or only changes railform.toml, must still run the check.
     hook = hooks['railform-hooks-check']
+    assert hook['always_run'] is True
     assert hook['pass_filenames'] is False
+    # The default hooks.dir is still named, though it no longer decides whether the hook runs.
     assert re.search(hook['files'], '.githooks/pre-commit')
     assert not re.search(hook['files'], 'src/.githooks/pre-commit')
     assert not re.search(hook['files'], 'githooks.md')
+
+
+@pytest.fixture(scope='module')
+def local_hooks() -> dict[str, dict[str, Any]]:
+    """The hooks of the `repo: local` entry `railform adopt` writes in a self-hosted repository."""
+    text = (TEMPLATES / 'pre-commit-local.yaml').read_text(encoding='utf-8')
+    entries = yaml.safe_load(text.replace('__HOOKS_FILES__', "'^\\.githooks/'"))
+    assert [entry['repo'] for entry in entries] == ['local']
+    return {hook['id']: hook for hook in entries[0]['hooks']}
+
+
+@pytest.mark.parametrize('hook_id', HOOK_IDS)
+def test_red_proof_the_local_entry_runs_each_hook_like_the_manifest(
+    hook_id: str, hooks: dict[str, dict[str, Any]], local_hooks: dict[str, dict[str, Any]]
+) -> None:
+    hook, local = hooks[hook_id], local_hooks[hook_id]
+    assert local['stages'] == hook['stages']
+    assert local.get('always_run', False) is hook.get('always_run', False)
+    assert local.get('pass_filenames', True) is hook.get('pass_filenames', True)
 
 
 def test_the_manifest_is_valid_for_pre_commit() -> None:

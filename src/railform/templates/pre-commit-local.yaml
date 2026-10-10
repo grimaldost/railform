@@ -17,6 +17,7 @@
       entry: uv run --frozen railform hooks-check
       language: system
       stages: [pre-commit]
+      always_run: true
       files: __HOOKS_FILES__
       pass_filenames: false
     - id: railform-private-refs
