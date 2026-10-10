@@ -214,6 +214,10 @@ def test_the_default_frame_values_the_spec_names() -> None:
         'alice',
         'user',
         'runner',
+        'public',
+        'default',
+        'shared',
+        'runneradmin',
     ]
     assert effective['python']['lint_paths'] == ['.']
     assert effective['python']['newest'] == '3.14'

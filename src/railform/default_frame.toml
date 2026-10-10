@@ -90,7 +90,9 @@ allow = ["dependabot/**"]
 
 [private_refs]
 names_file_env = "RAILFORM_PRIVATE_NAMES"
-placeholders = ["me", "x", "someone", "alice", "user", "runner"]
+placeholders = [
+  "me", "x", "someone", "alice", "user", "runner", "public", "default", "shared", "runneradmin",
+]
 
 [ci]
 os = []
