@@ -66,8 +66,10 @@ attribution_patterns = [
 ]
 
 [changelog]
-# Path prefix -> changelog file; the longest matching prefix owns a changed path.
-records = { "" = "CHANGELOG.md" }
+# Rows of a path prefix and the changelog file that records changes under it. A changed path
+# belongs to the row with the longest matching prefix; "" matches every path. A repository's
+# own list replaces this one whole, so one with only per-plugin changelogs has no root row.
+records = [{ prefix = "", file = "CHANGELOG.md" }]
 contract_surfaces = []
 trailer = "Changelog: none (<reason>)"
 consumer_affecting = "advisory"
@@ -78,7 +80,8 @@ dir = ".githooks"
 names = ["pre-commit", "commit-msg", "pre-push"]
 # `{hooks.pre_commit_version}` in the wrapper is replaced by that key's value.
 wrapper = ""
-pre_commit_version = "4.6.2"
+# The pinned pre-commit of a wrapper that runs it through uvx; set only by the type that does.
+pre_commit_version = ""
 
 [branch]
 # Provisional: §8 measures the merged branch names and replaces this pattern.
@@ -97,6 +100,7 @@ extra_workflows = []
 
 [ci.setup]
 fetch_depth = 1
+# Requirement specifiers installed into the job's environment after the sync (`uv pip install`).
 extra_installs = []
 
 [python]
@@ -110,14 +114,18 @@ lint_paths = ["."]
 type_check = ""
 
 [version]
-# Rows of a file path and a Python `re` pattern whose first group is the version there.
+# Rows of a file path, a Python `re` pattern whose first group is the version there, and
+# `authored` (default false): an authored site is checked and never rewritten.
 sites = []
 
 [release]
+# Globs of the release metadata. The release check adds every changelog.records file and every
+# version.sites path to them by itself.
 metadata_paths = []
 since = ""
-# Changelog record prefix (as in changelog.records) -> tag prefix.
-tag_prefix = { "" = "v" }
+# Rows of a path prefix (as in changelog.records) and the tag prefix of that record's releases;
+# the longest matching prefix wins, and a repository's own list replaces this one whole.
+tag_prefix = [{ prefix = "", tag = "v" }]
 enabled = true
 
 # --- presets -----------------------------------------------------------------------------------
@@ -137,7 +145,7 @@ test_command = "uv run --frozen python -m pytest -q"
 type_check = "src"
 
 [presets.python-package.release]
-metadata_paths = ["pyproject.toml", "uv.lock", "CHANGELOG.md"]
+metadata_paths = ["pyproject.toml", "uv.lock"]
 
 [presets.python-scripts.project]
 layout = "flat"
@@ -153,15 +161,16 @@ versions = ["3.11", "3.14"]
 test_command = "uv run --frozen python -m pytest -q"
 
 [presets.python-scripts.release]
-metadata_paths = ["pyproject.toml", "uv.lock", "CHANGELOG.md"]
+metadata_paths = ["pyproject.toml", "uv.lock"]
 
 # No uv project: ruff from uvx at ci.ruff_version, pre-commit from uvx at
-# hooks.pre_commit_version, and pytest run outside any project.
+# hooks.pre_commit_version, and pytest at the version railform locks, run outside any project.
 [presets.plugin-marketplace.project]
 layout = "plugins"
 
 [presets.plugin-marketplace.hooks]
 wrapper = "uvx pre-commit=={hooks.pre_commit_version} hook-impl"
+pre_commit_version = "4.6.2"
 
 [presets.plugin-marketplace.ci]
 os = ["ubuntu-latest"]
@@ -169,7 +178,7 @@ ruff_version = "0.17.0"
 
 [presets.plugin-marketplace.python]
 versions = ["3.14"]
-test_command = "uv run --no-project --with pytest python -m pytest -q"
+test_command = "uv run --no-project --with pytest==9.1.1 python -m pytest -q"
 
 [presets.plugin-marketplace.release]
-metadata_paths = [".claude-plugin/marketplace.json", "CHANGELOG.md"]
+metadata_paths = [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json"]

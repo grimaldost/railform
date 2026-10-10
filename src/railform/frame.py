@@ -17,6 +17,8 @@ Other verbs read the frame through `load(root)`.
 
 from __future__ import annotations
 
+import copy
+import functools
 import json
 import math
 import os
@@ -156,30 +158,17 @@ class _List(_Node):
 
 
 @dataclass(frozen=True)
-class _Map(_Node):
-    """A table whose keys are data (a path prefix, say), each mapped to a value of one type."""
-
-    item: _Node
-
-    def check(self, value: object, path: str, complete: bool) -> list[Problem]:
-        if not isinstance(value, dict):
-            return [Problem(WRONG_TYPE, f'{path}: expected a table, got {_kind(value)}')]
-        problems: list[Problem] = []
-        for key, item in value.items():
-            problems += self.item.check(item, _join(path, key), complete)
-        return problems
-
-
-@dataclass(frozen=True)
 class _Table(_Node):
     """A table with a closed set of keys.
 
     `require` None requires every key only when a complete frame is checked; True always
     (rows of a list); False never (exceptions rows, whose missing fields are bad exceptions).
+    A key in `optional` may be missing even then; the effective frame fills in its default.
     """
 
     fields: dict[str, _Node]
     require: bool | None = None
+    optional: tuple[str, ...] = ()
 
     def check(self, value: object, path: str, complete: bool) -> list[Problem]:
         if not isinstance(value, dict):
@@ -194,12 +183,22 @@ class _Table(_Node):
         required = complete if self.require is None else self.require
         if required:
             for key in self.fields:
-                if key not in value:
+                if key not in value and key not in self.optional:
                     problems.append(Problem(WRONG_TYPE, f'{_join(path, key)}: missing'))
         return problems
 
 
 _STRINGS = _List(_Str())
+
+# A version site's `authored` defaults to false: an authored site is checked, never rewritten
+# (the development-rails spec, §15).
+SITE_DEFAULTS = {'authored': False}
+
+
+def _rows(**fields: _Node) -> _List:
+    """An array of rows that each carry every one of `fields`."""
+    return _List(_Table(fields, require=True))
+
 
 SCHEMA = _Table(
     {
@@ -212,7 +211,7 @@ SCHEMA = _Table(
         'commit': _Table({'types': _STRINGS, 'attribution_patterns': _List(_Str(regex=True))}),
         'changelog': _Table(
             {
-                'records': _Map(_Str()),
+                'records': _rows(prefix=_Str(), file=_Str()),
                 'contract_surfaces': _STRINGS,
                 'trailer': _Str(),
                 'consumer_affecting': _Str(choices=('advisory', 'error')),
@@ -244,13 +243,21 @@ SCHEMA = _Table(
             }
         ),
         'version': _Table(
-            {'sites': _List(_Table({'path': _Str(), 'pattern': _Str(regex=True)}, require=True))}
+            {
+                'sites': _List(
+                    _Table(
+                        {'path': _Str(), 'pattern': _Str(regex=True), 'authored': _Bool()},
+                        require=True,
+                        optional=tuple(SITE_DEFAULTS),
+                    )
+                )
+            }
         ),
         'release': _Table(
             {
                 'metadata_paths': _STRINGS,
                 'since': _Str(),
-                'tag_prefix': _Map(_Str()),
+                'tag_prefix': _rows(prefix=_Str(), tag=_Str()),
                 'enabled': _Bool(),
             }
         ),
@@ -292,8 +299,14 @@ def default_frame_text() -> str:
 
 
 def _defaults() -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    """The default frame's base tables and its presets, checked against the schema."""
-    data = tomllib.loads(default_frame_text())
+    """The default frame's base tables and its presets: a fresh copy each call."""
+    return copy.deepcopy(_parsed_defaults(default_frame_text()))
+
+
+@functools.cache
+def _parsed_defaults(text: str) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Parse and check the default frame once per text; callers take deep copies."""
+    data = tomllib.loads(text)
     presets = data.pop('presets', {})
     problems = validate(data, complete=True)
     if set(presets) != set(PROJECT_TYPES):
@@ -348,9 +361,15 @@ def _unrendered(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _render(frame: dict[str, Any]) -> dict[str, Any]:
+    """Fill in what the effective frame derives: the wrapper's version and row defaults."""
     hooks = frame['hooks']
     wrapper = hooks['wrapper'].replace(WRAPPER_VERSION_FIELD, hooks['pre_commit_version'])
-    return {**frame, 'hooks': {**hooks, 'wrapper': wrapper}}
+    sites = [{**SITE_DEFAULTS, **row} for row in frame['version']['sites']]
+    return {
+        **frame,
+        'hooks': {**hooks, 'wrapper': wrapper},
+        'version': {**frame['version'], 'sites': sites},
+    }
 
 
 def effective_frame(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -506,6 +525,14 @@ def _exception_problems(config: dict[str, Any]) -> list[Problem]:
                 )
             )
             continue
+        if any(earlier['key'] == row['key'] for earlier in covering):
+            problems.append(
+                Problem(
+                    BAD_EXCEPTION,
+                    f'{where}: duplicates an earlier row that already covers this departure',
+                )
+            )
+            continue
         covering.append(row)
     for departure in found:
         if not any(
@@ -645,6 +672,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace) -> Verdict:
+    """Print, check or export the effective frame.
+
+    The printing modes (`frame`, `--json`, `--github-output`) report an unknown key or a wrong
+    type as `--check` does, exit 1: judging `railform.toml` is this verb's own job, so a schema
+    error is a violation it found. Another verb that loads the frame (`load`) gets a
+    FrameSchemaError instead and exits 2, because for that verb a broken `railform.toml` is a
+    configuration error that stops it before its own check runs. Departures and exceptions
+    rows are judged only by `--check`.
+    """
     target = os.environ.get(GITHUB_OUTPUT_ENV, '')
     if args.github_output and not target:
         return Verdict.usage(VERB, f'{VERB}: ${GITHUB_OUTPUT_ENV} is not set')

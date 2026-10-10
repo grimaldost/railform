@@ -164,9 +164,21 @@ def test_the_schema_of_each_preset(preset: str) -> None:
     for key in ('changelog.enabled', 'release.enabled'):
         assert isinstance(_get(effective, key), bool), key
     assert effective['changelog']['consumer_affecting'] in ('advisory', 'error')
-    for key in ('ci.setup', 'changelog.records', 'release.tag_prefix'):
-        assert isinstance(_get(effective, key), dict), key
+    assert isinstance(effective['ci']['setup'], dict)
+    for key, fields in (
+        ('changelog.records', {'prefix', 'file'}),
+        ('release.tag_prefix', {'prefix', 'tag'}),
+    ):
+        rows = _get(effective, key)
+        assert isinstance(rows, list), key
+        for row in rows:
+            assert set(row) == fields, key
+            assert all(isinstance(value, str) for value in row.values()), key
     assert isinstance(effective['version']['sites'], list)
+    versions = effective['python']['versions']
+    assert versions
+    newest = max(versions, key=lambda v: tuple(int(part) for part in v.split('.')))
+    assert newest == effective['python']['newest']
     assert effective['exceptions'] == []
     re.compile(effective['branch']['pattern'])
     for pattern in effective['commit']['attribution_patterns']:
@@ -226,6 +238,34 @@ def test_the_uv_types_run_pre_commit_through_uv() -> None:
     for preset in ('python-package', 'python-scripts'):
         effective = frame.effective_frame({'project': {'type': preset}})
         assert effective['hooks']['wrapper'] == 'uv run --frozen python -m pre_commit hook-impl'
+
+
+def test_only_the_plugin_marketplace_preset_pins_a_pre_commit_version(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for preset in ('python-package', 'python-scripts'):
+        effective = frame.effective_frame({'project': {'type': preset}})
+        assert effective['hooks']['pre_commit_version'] == ''
+        _write(scratch_repo, f'[project]\ntype = "{preset}"\n')
+        assert _check(capsys) == (0, 'ok', [])
+    plugins = frame.effective_frame({'project': {'type': 'plugin-marketplace'}})
+    assert plugins['hooks']['pre_commit_version'] != ''
+
+
+def test_the_plugin_marketplace_test_command_pins_the_locked_pytest() -> None:
+    lock_path = Path(__file__).resolve().parents[1] / 'uv.lock'
+    lock = tomllib.loads(lock_path.read_text(encoding='utf-8'))
+    locked = next(p['version'] for p in lock['package'] if p['name'] == 'pytest')
+    effective = frame.effective_frame({'project': {'type': 'plugin-marketplace'}})
+    assert f'--with pytest=={locked} ' in effective['python']['test_command']
+
+
+def test_the_plugin_marketplace_metadata_globs_name_the_manifests() -> None:
+    effective = frame.effective_frame({'project': {'type': 'plugin-marketplace'}})
+    assert effective['release']['metadata_paths'] == [
+        '.claude-plugin/marketplace.json',
+        'plugins/*/.claude-plugin/plugin.json',
+    ]
 
 
 def test_the_plugin_marketplace_wrapper_reads_the_pinned_pre_commit_version() -> None:
@@ -450,8 +490,10 @@ def test_parameter_keys_are_never_departures(
         '[project]\ntype = "python-package"\nlayout = "flat"\n'
         '[python]\nversions = ["3.12", "3.13"]\npackage = "something"\n'
         '[changelog]\ncontract_surfaces = ["src/x/api.py"]\n'
-        '[changelog.records]\n"" = "CHANGELOG.md"\n"plugins/a/" = "plugins/a/CHANGELOG.md"\n'
-        '[release]\nsince = "v1.0.0"\n[release.tag_prefix]\n"" = "v"\n"plugins/a/" = "a-v"\n'
+        '[[changelog.records]]\nprefix = ""\nfile = "CHANGELOG.md"\n'
+        '[[changelog.records]]\nprefix = "plugins/a/"\nfile = "plugins/a/CHANGELOG.md"\n'
+        '[release]\nsince = "v1.0.0"\n'
+        '[[release.tag_prefix]]\nprefix = "plugins/a/"\ntag = "a-v"\n'
         '[[version.sites]]\npath = "src/x/__init__.py"\npattern = "__version__ = \\"(.+)\\""\n',
     )
     assert _check(capsys) == (0, 'ok', [])
@@ -494,6 +536,42 @@ def test_ci_extra_workflows_is_preset_governed(
         body + '[[exceptions]]\nkey = "ci.extra_workflows"\nvalue = ["docs.yml"]\n'
         'reason = "the docs build stays a separate required context"\n',
     )
+    assert _check(capsys) == (0, 'ok', [])
+
+
+def test_a_version_site_may_be_authored_and_defaults_to_not_authored(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    effective = _effective(
+        scratch_repo,
+        '[[version.sites]]\npath = "a.py"\npattern = "v(.+)"\nauthored = true\n'
+        '[[version.sites]]\npath = "b.py"\npattern = "v(.+)"\n',
+        capsys,
+    )
+    assert effective['version']['sites'] == [
+        {'path': 'a.py', 'pattern': 'v(.+)', 'authored': True},
+        {'path': 'b.py', 'pattern': 'v(.+)', 'authored': False},
+    ]
+    assert _check(capsys) == (0, 'ok', [])
+
+
+def test_per_plugin_records_replace_the_root_row(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    effective = _effective(
+        scratch_repo,
+        '[project]\ntype = "plugin-marketplace"\n'
+        '[[changelog.records]]\nprefix = "plugins/a/"\nfile = "plugins/a/CHANGELOG.md"\n'
+        '[[changelog.records]]\nprefix = "plugins/b/"\nfile = "plugins/b/CHANGELOG.md"\n'
+        '[[release.tag_prefix]]\nprefix = "plugins/a/"\ntag = "a-v"\n'
+        '[[release.tag_prefix]]\nprefix = "plugins/b/"\ntag = "b-v"\n',
+        capsys,
+    )
+    records = effective['changelog']['records']
+    tags = effective['release']['tag_prefix']
+    assert [row['prefix'] for row in records] == ['plugins/a/', 'plugins/b/']
+    assert [row['prefix'] for row in tags] == ['plugins/a/', 'plugins/b/']
+    assert not any(row['prefix'] in ('', '.', './') for row in records + tags)
     assert _check(capsys) == (0, 'ok', [])
 
 
@@ -540,7 +618,10 @@ def test_an_unknown_key_at_any_depth_fails(
         '[branch]\npattern = "(unclosed"\n',
         '[commit]\nattribution_patterns = ["[bad"]\n',
         'session_loaded = "**/skills/**"\n',
-        '[changelog.records]\n"" = 1\n',
+        '[[changelog.records]]\nprefix = ""\nfile = 1\n',
+        '[[changelog.records]]\nprefix = ""\n',
+        'changelog.records = {"" = "CHANGELOG.md"}\n',
+        '[[version.sites]]\npath = "a"\npattern = "(.+)"\nauthored = "yes"\n',
         '[[version.sites]]\npath = "a"\n',
         'exceptions = {key = "a"}\n',
         '[[exceptions]]\nkey = 1\nvalue = 1\nreason = "x"\n',
@@ -632,6 +713,21 @@ def test_an_exceptions_row_value_must_match_by_type_not_only_by_equality(
         'reason = "history"\n',
     )
     assert _check(capsys)[:2] == (1, 'bad-exception')
+
+
+def test_two_rows_covering_the_same_departure_fail(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    row = '[[exceptions]]\nkey = "python.test_command"\nvalue = "true"\nreason = "migrating"\n'
+    _write(scratch_repo, _DEPARTURE + row)
+    assert _check(capsys) == (0, 'ok', [])
+    _write(scratch_repo, _DEPARTURE + row + row)
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'bad-exception')
+    assert findings == [
+        'railform.toml: exceptions[1] (python.test_command): duplicates an earlier row that '
+        'already covers this departure'
+    ]
 
 
 def test_bad_exception_comes_before_unlisted_departure(
@@ -765,7 +861,8 @@ def test_the_parameter_key_list_is_read_from_the_frame(
 
 
 def test_the_wrapper_version_is_read_from_the_frame(monkeypatch: pytest.MonkeyPatch) -> None:
-    version = frame.effective_frame(None)['hooks']['pre_commit_version']
+    plugins = frame.effective_frame({'project': {'type': 'plugin-marketplace'}})
+    version = plugins['hooks']['pre_commit_version']
     _patched_default(
         monkeypatch, f'pre_commit_version = "{version}"', 'pre_commit_version = "1.2.3"'
     )
@@ -832,3 +929,19 @@ def test_the_module_entry_point_checks_the_frame(scratch_repo: Path) -> None:
     )
     assert done.returncode == 1, done.stderr
     assert done.stdout.splitlines()[-1] == 'railform-verdict: frame fail unlisted-departure'
+
+
+def test_the_default_frame_is_parsed_once_and_never_shared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frame.effective_frame(None)
+    calls: list[str] = []
+    real = frame.tomllib.loads
+    monkeypatch.setattr(frame.tomllib, 'loads', lambda text: calls.append(text) or real(text))
+    first = frame.effective_frame(None)
+    first['commit']['types'].append('mutated')
+    first['changelog']['records'][0]['file'] = 'mutated'
+    second = frame.effective_frame(None)
+    assert 'mutated' not in second['commit']['types']
+    assert second['changelog']['records'][0]['file'] == 'CHANGELOG.md'
+    assert calls == []
