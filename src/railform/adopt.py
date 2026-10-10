@@ -21,7 +21,10 @@ a tracked file there that is not 100755 is reported and left alone. Adopt refuse
 write, a target path with a symlink or junction on the way and a hooks directory inside `.git`.
 
 `railform adopt --check` writes nothing. It fails with `drift` when an owned part differs from
-what adopt would write (a missing pin site included), with `pin-mismatch` when the pins differ
+what adopt would write (a missing pin site included), or when a region does not hold its parts
+structurally: the jobs `railform` and `gate` under `jobs:`, exactly the two entries of `repos:`,
+the railform element of a github-actions `ignore:` list. Wrappers are judged by their index
+entry: mode 100755 and the exact LF bytes. It fails with `pin-mismatch` when the pins differ
 from each other (or the only difference in an owned part is a pin), and with
 `extra-pr-workflow` when another workflow file runs on `pull_request` or `pull_request_target`,
 or cannot be parsed, and `ci.extra_workflows` does not list it. With `ci.self_hosted` true
@@ -76,6 +79,8 @@ REMOTE_WORKFLOW = f'{REPOSITORY}/.github/workflows/python-ci.yml'
 SELF_HOSTED_SHA = '${{ github.event.pull_request.head.sha || github.sha }}'
 PR_TYPES = ('opened', 'synchronize', 'reopened', 'edited')
 OWNED_JOBS = ('railform', 'gate')
+RAILFORM_URL = f'https://github.com/{REPOSITORY}'
+HYGIENE_URL = 'https://github.com/pre-commit/pre-commit-hooks'
 
 SHA = re.compile(r'[0-9a-f]{40}')
 _PIN_ARGUMENT = re.compile(r'[0-9a-fA-F]{40}')
@@ -354,6 +359,13 @@ def _trigger_edits(ci: _Ci) -> list[_Edit]:
         events = [item.value for item in items if item.value]
         if 'pull_request' not in events:
             events.append('pull_request')
+        replaced = doc.lines[key.start_mark.line : _last_line(doc, value) + 1]
+        if any('#' in line for line in replaced):
+            raise AdoptError(
+                f'{CI_PATH}:{key.start_mark.line + 1}: adding the pull_request types means '
+                'rewriting this on: block as a mapping, which would drop its comments; write it '
+                'as a mapping by hand'
+            )
         head = doc.lines[key.start_mark.line].split(':', 1)[0] + ':'
         lines = [head]
         for event in events:
@@ -407,17 +419,19 @@ def _plan_ci(ci: _Ci, uses: str, railform_sha: str) -> str:
     """The text of ci.yml as adopt writes it, with `uses` and `railform_sha` at the pin sites."""
     doc, region = ci.doc, ci.region
     edits = _trigger_edits(ci)
-    keys = [] if _is_empty(ci.jobs) else [key for key, _ in ci.jobs.value]
+    pairs = [] if _is_empty(ci.jobs) else list(ci.jobs.value)
+    keys = [key for key, _ in pairs]
     others: list[str] = []
-    for key in keys:
+    for key, job in pairs:
         if region is not None and region.holds(key.start_mark.line):
             continue
-        if key.value in OWNED_JOBS:
+        name = _scalar((_entry(job, 'name') or (None, None))[1]) or ''
+        if key.value.casefold() in OWNED_JOBS or name.casefold() in OWNED_JOBS:
             raise AdoptError(
-                f'{CI_PATH}:{key.start_mark.line + 1}: a job named {key.value} sits outside the '
-                'railform marker lines; put it between them (a railform job that calls '
-                f'{LOCAL_WORKFLOW} makes the repository self-hosted), rename it, or remove it so '
-                'that adopt writes it'
+                f'{CI_PATH}:{key.start_mark.line + 1}: a job named {key.value}'
+                f'{f" ({name})" if name else ""} sits outside the railform marker lines, beside '
+                'the jobs railform and gate it would shadow; rename it, or remove it so that '
+                'adopt writes it'
             )
         others.append(key.value)
     needs = '[' + ', '.join(_flow_item(job) for job in ['railform', *others]) + ']'
@@ -492,15 +506,39 @@ def _plan_pre_commit(pre: _PreCommit, rev: str | None, directory: str) -> str:
     doc, region = pre.doc, pre.region
     if region is not None:
         _require_inside(doc, region, pre.repos_key, pre.repos, 'repos:')
-        return _apply(
-            doc, [_Edit(region.begin, region.end + 1, _region_lines(body, region.indent))]
-        )
-    if _is_empty(pre.repos):
-        indent = pre.repos_key.start_mark.column + 2
+        edit = _Edit(region.begin, region.end + 1, _region_lines(body, region.indent))
     else:
-        indent = pre.repos.start_mark.column
-    after = pre.repos_key.start_mark.line + 1
-    return _apply(doc, [_Edit(after, after, _region_lines(body, indent))])
+        if _is_empty(pre.repos):
+            indent = pre.repos_key.start_mark.column + 2
+        else:
+            indent = pre.repos.start_mark.column
+        after = pre.repos_key.start_mark.line + 1
+        edit = _Edit(after, after, _region_lines(body, indent))
+    planned = _apply(doc, [edit])
+    _confirm_pre_commit(planned, self_hosted=rev is None)
+    return planned
+
+
+def _confirm_pre_commit(text: str, *, self_hosted: bool) -> None:
+    """The owned region of `text` holds exactly two items of `repos:`, at the list's own column:
+    the railform entry (`repo: local` when self-hosted) and the hygiene entry."""
+    doc = _doc(PRE_COMMIT_PATH, text)
+    region = _find_region(doc)
+    found = _entry(_compose(doc), 'repos')
+    items: list[Any] = []
+    if found is not None and _is_block(found[1], yaml.SequenceNode):
+        items = found[1].value
+    inside = [item for item in items if region is not None and region.holds(item.start_mark.line)]
+    expected = ['local' if self_hosted else RAILFORM_URL, HYGIENE_URL]
+    if (
+        region is None
+        or [_scalar((_entry(item, 'repo') or (None, None))[1]) for item in inside] != expected
+        or any(item.start_mark.column != region.indent + 2 for item in inside)
+    ):
+        raise AdoptError(
+            f'{PRE_COMMIT_PATH}: the owned region does not hold the railform and hygiene entries '
+            'as items of repos: (a region inside another entry or a block scalar is no entry)'
+        )
 
 
 # --- .github/dependabot.yml --------------------------------------------------------------------
@@ -517,10 +555,14 @@ def _plan_dependabot(text: str | None) -> str:
     The region holds the ignore entry for railform inside the `github-actions` update; it also
     holds the `ignore:` key when that update had none of its own.
     """
-    doc = _doc(DEPENDABOT_PATH, text if text is not None else '\n'.join(_fill('dependabot.yml')))
-    root = _compose(doc)
-    region = _find_region(doc)
-    found = _entry(root, 'updates')
+    planned = _dependabot_text(text)
+    _confirm_dependabot(planned)
+    return planned
+
+
+def _updates(doc: _Doc) -> tuple[Any, Any, list[Any], list[Any]]:
+    """The `updates` key and value, its items, and the items of the github-actions ecosystem."""
+    found = _entry(_compose(doc), 'updates')
     if found is None:
         raise AdoptError(f'{DEPENDABOT_PATH}: has no updates: list')
     updates_key, updates = found
@@ -532,6 +574,31 @@ def _plan_dependabot(text: str | None) -> str:
         for item in items
         if _scalar((_entry(item, 'package-ecosystem') or (None, None))[1]) == 'github-actions'
     ]
+    return updates_key, updates, items, actions
+
+
+def _confirm_dependabot(text: str) -> None:
+    """The owned region of `text` holds the railform entry as an element of the `ignore:` list of
+    a github-actions update."""
+    doc = _doc(DEPENDABOT_PATH, text)
+    region = _find_region(doc)
+    for item in _updates(doc)[3]:
+        ignore = _entry(item, 'ignore')
+        elements = ignore[1].value if ignore and _is_block(ignore[1], yaml.SequenceNode) else []
+        for element in elements:
+            name = _scalar((_entry(element, 'dependency-name') or (None, None))[1])
+            if name == REPOSITORY and region is not None and region.holds(element.start_mark.line):
+                return
+    raise AdoptError(
+        f'{DEPENDABOT_PATH}: the owned region does not hold the railform entry as an element of '
+        'the github-actions update ignore: list'
+    )
+
+
+def _dependabot_text(text: str | None) -> str:
+    doc = _doc(DEPENDABOT_PATH, text if text is not None else '\n'.join(_fill('dependabot.yml')))
+    region = _find_region(doc)
+    updates_key, updates, items, actions = _updates(doc)
     if region is not None:
         item = next(
             (
@@ -686,7 +753,15 @@ def _put_executable(root: Path, path: str, text: str) -> bool:
 
 
 def _in_git_dir(directory: str) -> bool:
-    return directory.split('/', 1)[0].casefold() == '.git'
+    """Whether the first segment names `.git`, as Windows reads it: casefolded, with trailing
+    dots and spaces dropped."""
+    return directory.split('/', 1)[0].rstrip(' .').casefold() == '.git'
+
+
+def _same_or_under(path: str, directory: str) -> bool:
+    """Whether `path` is `directory` or lies under it, compared casefolded."""
+    folded, base = path.casefold(), directory.casefold()
+    return folded == base or folded.startswith(base + '/')
 
 
 def _relative_dir(value: str) -> str | None:
@@ -748,7 +823,7 @@ def _previous_hooks_dir(
     configured = done.stdout.decode('utf-8', 'replace').rstrip('\r\n')
     if configured:
         relative = _relative_dir(configured)
-        if relative is not None and relative != directory:
+        if relative is not None and not _same_or_under(relative, directory):
             return relative
     names = frame['hooks']['names']
     counts: dict[str, int] = {}
@@ -758,8 +833,7 @@ def _previous_hooks_dir(
             mode == EXECUTABLE
             and base in names
             and parent
-            and parent != directory
-            and not parent.startswith(directory + '/')
+            and not _same_or_under(parent, directory)
             and not _session_loaded(path, frame['session_loaded'])
         ):
             counts[parent] = counts.get(parent, 0) + 1
@@ -949,8 +1023,16 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         mode = entries.get(path)
         if mode is not None and mode != EXECUTABLE:
             notes.append(f'{path}: tracked as {mode}, not a hook wrapper; left as it is, no stub')
+        elif mode is None and (root / path).exists():
+            notes.append(f'{path}: exists and is not tracked; left as it is, no stub')
         else:
             stubs[path] = _stub(directory)
+    wrapper_paths = {path.casefold() for path in wrappers}
+    if any(path.casefold() in wrapper_paths for path in stubs):
+        raise AdoptError(
+            f'a stub in {previous} would land on a wrapper in {directory}; the two directories '
+            'differ only by case'
+        )
     writes = [(path, new) for path, old, new in planned if new is not None and new != old]
     targets = [path for path, _ in writes] + list(wrappers) + list(stubs)
     _refuse_links(root, [frame_module.CONFIG_NAME, *targets] if seed is not None else targets)
@@ -1103,10 +1185,16 @@ def _check(root: Path) -> Verdict:
             continue
         if current.replace('\r\n', '\n') != text:
             drift(f'{path}: differs from the wrapper railform adopt writes')
+        # The index decides what a clone checks out: mode 100755 and the exact LF bytes.
         entry = _index_entry(root, path)
         if entry is None or entry[0] != EXECUTABLE:
             state = 'not tracked' if entry is None else f'tracked as {entry[0]}'
             drift(f'{path}: {state}, not {EXECUTABLE}; run railform adopt')
+        elif entry[1] != _object_id(root, text.encode('utf-8')):
+            drift(
+                f'{path}: the index holds other bytes than the wrapper railform adopt writes '
+                '(CRLF line endings, for one); run railform adopt'
+            )
 
     if self_hosted:
         notes.append(
