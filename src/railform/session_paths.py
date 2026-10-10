@@ -11,8 +11,12 @@ detection, a file moved out of a loaded path still shows up under its old name.
 
 A glob matches a path when it matches the whole repository-relative path or any suffix of it
 that starts at a `/` boundary. `**` spans any number of path segments (none included), `*` spans
-none or more characters inside one segment, and every other character compares exactly. So
-`**/hooks/**` matches `plugins/x/hooks/hooks.json` and not `.githooks/pre-commit`.
+none or more characters inside one segment, and every other character compares exactly, except
+that case is ignored (casefolded), because the filesystems sessions run on are often
+case-insensitive. So `**/hooks/**` matches `plugins/x/hooks/hooks.json` and not
+`.githooks/pre-commit`. A malformed glob (an empty segment, a `.` or `..` segment, a leading or
+trailing `/`, or a backslash) would match nothing and switch the guard off unseen, so it is a
+configuration error (exit 2), from the frame or from `--glob`.
 
 The check also fails (`guard-narrowed`) when `railform.toml` at HEAD removes a glob that the
 frame at `--frame-from` had, or adds an `exceptions` row for `session_loaded` that leaves one out.
@@ -48,7 +52,7 @@ class _UsageError(Exception):
 
 @functools.cache
 def _segment_pattern(segment: str) -> re.Pattern[str]:
-    parts = (re.escape(piece) for piece in re.split(r'\*+', segment))
+    parts = (re.escape(piece) for piece in re.split(r'\*+', segment.casefold()))
     return re.compile('[^/]*'.join(parts))
 
 
@@ -61,7 +65,23 @@ def _match_from(glob: tuple[str, ...], path: tuple[str, ...]) -> bool:
         return any(_match_from(rest, path[skip:]) for skip in range(len(path) + 1))
     if not path:
         return False
-    return _segment_pattern(head).fullmatch(path[0]) is not None and _match_from(rest, path[1:])
+    return _segment_pattern(head).fullmatch(path[0].casefold()) is not None and _match_from(
+        rest, path[1:]
+    )
+
+
+def malformed(glob: str) -> str | None:
+    """Why `glob` is malformed, or None: such a glob matches nothing and leaves the guard open."""
+    if '\\' in glob:
+        return 'contains a backslash'
+    if glob.startswith('/') or glob.endswith('/'):
+        return 'starts or ends with a slash'
+    for segment in glob.split('/'):
+        if segment == '':
+            return 'has an empty segment'
+        if segment in ('.', '..'):
+            return f'has a {segment!r} segment'
+    return None
 
 
 def matches(glob: str, path: str) -> bool:
@@ -184,6 +204,9 @@ def run(args: argparse.Namespace) -> Verdict:
         root = frame.repository_root()
         guard_frame, _ = _frame_at(root, args.frame_from)
         guard: list[str] = list(guard_frame[SESSION_LOADED])
+        for glob in [*guard, *extra]:
+            if (reason := malformed(glob)) is not None:
+                raise _UsageError(f'the glob {glob!r} {reason}')
         globs = list(dict.fromkeys([*guard, *extra]))
         paths = _changed_paths(root, base, head)
         head_frame, head_config = _frame_at(root, head)
