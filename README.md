@@ -6,9 +6,9 @@ command-line tool that runs the checks, and a default configuration (the "frame"
 checks. A repository that adopts railform pins one commit of this repository and gets the same
 CI pipeline, hook wrappers and commit checks as every other adopter at that commit.
 
-Nothing in railform is usable yet. This repository holds the package skeleton, and every verb
-exits with `not-implemented` until the section that adds it lands. Nothing is usable before
-0.1.0.
+Nothing in railform is usable yet. The package skeleton and the `frame` verb exist; every
+other verb exits with `not-implemented` until the section that adds it lands. Nothing is usable
+before 0.1.0.
 
 ## What it is
 
@@ -52,6 +52,54 @@ The exit status is 0 for a pass, 1 when the check found a violation, and 2 for a
 configuration error (a bad argument, an unknown verb, a verb not written yet, or an unhandled crash, which reads `internal-error`). Findings come
 before the verdict line, one per line. When `$RAILFORM_LEDGER` names a file, the verdict line is
 also appended to it.
+
+## The frame
+
+The frame is the configuration every check reads, as data. The effective frame of a repository
+is built in three layers: the default frame shipped in the package
+(`src/railform/default_frame.toml`), then the preset of the repository's project type
+(`python-package`, `python-scripts` or `plugin-marketplace`), then the repository's own
+`railform.toml`. Arrays replace; tables merge key by key. Without a `railform.toml`, the frame is
+the default with the `python-package` preset.
+
+A value that differs from the preset is a departure, and a departure is legal only when an
+`exceptions` row names its key and its value with a non-empty reason:
+
+```toml
+[python]
+test_command = "true"
+
+[[exceptions]]
+key = "python.test_command"
+value = "true"
+reason = "the suite runs in a separate workflow during the migration"
+```
+
+The keys in `meta.parameter_keys` (the project type and layout, the Python versions and package,
+the version sites, the changelog records and contract surfaces, and the release start and tag
+prefixes) are per repository and never depart. `session_loaded` and `private_refs.placeholders`
+may grow without an exception; dropping a default element is a departure.
+
+Some keys hold rows rather than plain values:
+
+- `changelog.records` is an array of `{ prefix, file }` rows and `release.tag_prefix` an array of
+  `{ prefix, tag }` rows. A changed path or a tag belongs to the row with the longest matching
+  `prefix` (`""` matches everything). A repository's own array replaces the default whole, so a
+  repository whose only changelogs are per plugin lists those rows and has no root row.
+- `version.sites` is an array of `{ path, pattern, authored }` rows: the pattern's first group is
+  the version, and `authored` (default `false`) marks a site that is checked and never rewritten.
+- `release.metadata_paths` holds globs of the release metadata (the manifests). The release check
+  adds every `changelog.records` file and every `version.sites` path to them by itself, so the
+  frame does not repeat them.
+
+- `railform frame` prints the effective frame as TOML, and `--json` prints it as one JSON object.
+- `railform frame --check` fails on an unknown key (`unknown-key`), a value of the wrong type
+  (`wrong-type`), an exceptions row with an empty reason or matching no departure
+  (`bad-exception`), and a departure no row lists (`unlisted-departure`), naming the first in
+  that order.
+- `railform frame --github-output` appends one `name=value` line per key to the file
+  `$GITHUB_OUTPUT` names, as `<table>_<key>`; lists, tables, booleans and numbers are written as
+  compact JSON.
 
 ## Development
 
