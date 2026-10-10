@@ -80,6 +80,18 @@ the version sites, the changelog records and contract surfaces, and the release 
 prefixes) are per repository and never depart. `session_loaded` and `private_refs.placeholders`
 may grow without an exception; dropping a default element is a departure.
 
+Some keys hold rows rather than plain values:
+
+- `changelog.records` is an array of `{ prefix, file }` rows and `release.tag_prefix` an array of
+  `{ prefix, tag }` rows. A changed path or a tag belongs to the row with the longest matching
+  `prefix` (`""` matches everything). A repository's own array replaces the default whole, so a
+  repository whose only changelogs are per plugin lists those rows and has no root row.
+- `version.sites` is an array of `{ path, pattern, authored }` rows: the pattern's first group is
+  the version, and `authored` (default `false`) marks a site that is checked and never rewritten.
+- `release.metadata_paths` holds globs of the release metadata (the manifests). The release check
+  adds every `changelog.records` file and every `version.sites` path to them by itself, so the
+  frame does not repeat them.
+
 - `railform frame` prints the effective frame as TOML, and `--json` prints it as one JSON object.
 - `railform frame --check` fails on an unknown key (`unknown-key`), a value of the wrong type
   (`wrong-type`), an exceptions row with an empty reason or matching no departure

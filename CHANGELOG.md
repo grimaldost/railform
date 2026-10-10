@@ -32,6 +32,13 @@ All notable changes to this project are recorded here, in the
 - The `frame` verb: `railform frame` prints the effective frame as TOML, `--json` as JSON,
   `--check` validates `railform.toml` (`unknown-key`, `wrong-type`, `bad-exception`,
   `unlisted-departure`), and `--github-output` appends the frame values to `$GITHUB_OUTPUT`.
+- Frame shapes that later checks read: `changelog.records` and `release.tag_prefix` are arrays of
+  `{prefix, file}` and `{prefix, tag}` rows (the longest prefix wins, and a repository's array
+  replaces the default whole); `version.sites` rows are `{path, pattern, authored}`, `authored`
+  defaulting to false; `release.metadata_paths` holds globs, to which the release check adds the
+  record files and version-site paths. `hooks.pre_commit_version` is set only in the
+  `plugin-marketplace` preset, whose test command pins the pytest railform locks. Two exceptions
+  rows that cover the same departure fail `bad-exception`.
 
 ### Changed
 
