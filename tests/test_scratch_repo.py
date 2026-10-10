@@ -2,14 +2,15 @@
 
 from pathlib import Path
 
-LEAK = 'leaked-by-an-earlier-test.txt'
+import pytest
+
+MARK = 'written-by-'
 
 
-def test_a_file_written_in_one_test(scratch_repo: Path) -> None:
-    (scratch_repo / LEAK).write_text('x', encoding='utf-8')
+@pytest.mark.parametrize('name', ['first', 'second'])
+def test_no_test_sees_a_file_another_test_wrote(name: str, scratch_repo: Path) -> None:
+    # Whichever case runs second fails against a shared repository, in any order.
     assert Path.cwd() == scratch_repo
-
-
-def test_is_not_seen_by_the_next(scratch_repo: Path) -> None:
-    assert not (scratch_repo / LEAK).exists()
     assert (scratch_repo / '.git').is_dir()
+    assert not list(scratch_repo.glob(f'{MARK}*'))
+    (scratch_repo / f'{MARK}{name}').write_text('x', encoding='utf-8')
