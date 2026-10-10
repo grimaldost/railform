@@ -146,8 +146,26 @@ All notable changes to this project are recorded here, in the
 - From the fourth review of PR07, `railform adopt` refuses a top-level `files:` or `exclude:` in
   `.pre-commit-config.yaml` that drops `.git/COMMIT_EDITMSG` or a hook wrapper (`drift` under
   `--check`), since pre-commit applies it to every hook, the railform ones included.
+- The pre-commit hook manifest, `.pre-commit-hooks.yaml`: `railform-commit-msg` (`commit-msg`),
+  `railform-branch-name` (`pre-push`, `always_run: true`, `pass_filenames: false`),
+  `railform-hooks-check` (`pre-commit`, on changes under `.githooks/`) and
+  `railform-private-refs` (`pre-commit`, on the staged files), each `language: python` with
+  `entry: railform <verb>`. `pre-commit` joins the dev dependency group.
+- The `branch-name` verb (the branch rail): `railform branch-name [-- NAME]` judges the given
+  name, else `$PRE_COMMIT_REMOTE_BRANCH` without `refs/heads/` (the name on the remote), else the
+  current branch, and fails with `branch` unless the name matches a `branch.allow` glob or the
+  whole of `branch.pattern`. An empty name fails; a detached HEAD and a pushed ref that is not a
+  branch pass and say so.
+- Tests that run the manifest's hooks through real `git commit` and `git push` in armed clones
+  of the three migration fixtures, with the hooks installed by pre-commit from the code under
+  test. They need the network and take about four minutes.
 
 ### Changed
+
+- The default `branch.pattern` is measured: `^[a-z][a-z0-9-]*/[a-z0-9][a-z0-9._/-]*$` (a
+  lowercase category, a slash and a lowercase slug) accepted all 454 head branches counted, where
+  the provisional pattern, the commit types as categories, accepted 93%. The default
+  `branch.allow` gains `*-patch-*`, the branches of GitHub's web editor, beside `dependabot/**`.
 
 - `--help` and `-h`, at the top level or after a verb, print the help text, exit 0, print no
   verdict line and never write to `$RAILFORM_LEDGER`, like `--version`.
