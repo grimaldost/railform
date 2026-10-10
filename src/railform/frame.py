@@ -229,6 +229,7 @@ SCHEMA = _Table(
                 'setup': _Table({'fetch_depth': _Count(), 'extra_installs': _STRINGS}),
                 'ruff_version': _Str(),
                 'extra_workflows': _STRINGS,
+                'self_hosted': _Bool(),
             }
         ),
         'python': _Table(

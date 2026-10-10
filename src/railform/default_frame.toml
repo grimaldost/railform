@@ -99,6 +99,8 @@ os = []
 ruff_version = ""
 # Workflow files under .github/workflows/ that may keep running on pull_request beside ci.yml.
 extra_workflows = []
+# True only in railform itself, whose ci.yml calls the reusable workflow by local path.
+self_hosted = false
 
 [ci.setup]
 fetch_depth = 1

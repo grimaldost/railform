@@ -51,3 +51,6 @@ known-first-party = ['railform']
 [tool.pytest.ini_options]
 testpaths = ['tests']
 addopts = '--strict-markers --strict-config -ra'
+markers = [
+    'slow: needs the network or a warm uv cache; runs by default',
+]

@@ -198,6 +198,80 @@ No output contains a matched name or the user segment of a matched home path: a 
 shows the shape with `<name>` in its place, and a private-name finding gives only the term's line
 number in the names file.
 
+## Adopting
+
+`railform adopt` writes the parts of a repository that railform owns, and `railform adopt --check`
+fails when any of them differs from what adopt would write. Adopt owns only these:
+
+- In `.github/workflows/ci.yml`, two jobs. `railform` calls
+  `grimaldost/railform/.github/workflows/python-ci.yml` at the pin and passes the same pin as the
+  input `railform-sha`. `gate` needs every other job in the file, runs with `if: always()`, and
+  fails when a needed job failed or was cancelled; it is the one status a branch ruleset requires.
+  The `pull_request` trigger also gains `types: [opened, synchronize, reopened, edited]`.
+- In `.pre-commit-config.yaml`, the railform entry at the pin and the hygiene entry
+  (`pre-commit/pre-commit-hooks` v5.0.0, pinned by its commit).
+- In `.github/dependabot.yml`, an ignore entry for `grimaldost/railform` in the `github-actions`
+  update. Adopt adds that update when there is none.
+- Whole files: the hook wrappers in `hooks.dir`, staged as their exact bytes and tracked as
+  `100755` (so `core.autocrlf` and `core.safecrlf` never touch them), and
+  `.github/workflows/railform-tag-watch.yml` once the package carries its template. Adopt never
+  writes that file over an existing one and `--pin` moves its `uses:` commit; `--check` compares
+  the whole file with the template. Until a template ships there is nothing to judge.
+- `railform.toml`, on the first run only, with the project type and `python.versions`. A `src/`
+  layout is `python-package`, another `pyproject.toml` is `python-scripts`, and no
+  `pyproject.toml` is `plugin-marketplace`; `--type` overrides the guess. The versions are the floor
+  of `requires-python` and `python.newest`. After the first run the file is the repository's.
+
+Each owned part of the three shared files sits between two marker lines:
+
+```yaml
+# >>> railform: owned by `railform adopt`; `railform adopt --check` fails on any edit
+# <<< railform
+```
+
+Everything outside them is kept byte for byte, line endings included, and a second run changes
+nothing.
+
+- `railform adopt --pin <sha>` moves every reference at once: the `uses:` commit, the
+  `railform-sha` input, the pre-commit `rev` and the tag-watch caller. Without `--pin`, adopt keeps
+  the pin the workflow already names, so the first run needs `--pin`.
+- `railform adopt --check` fails with `drift` when an owned part differs or is missing (a pin site
+  included). It is also `drift` when a region does not hold its parts structurally:
+  - the jobs `railform` and `gate` themselves under `jobs:`, with no other job whose id or `name:`
+    reads `railform` or `gate`;
+  - exactly the two entries of `repos:`;
+  - the railform element of the `ignore:` list of the github-actions update whose `directory` is
+    `/` (or whose `directories` list holds `/`).
+
+  A mapping adopt reads that repeats a key (the top level of an owned file, `jobs:`, an update)
+  is `drift`, and adopt refuses to write it, because YAML keeps the last one: a second `repos:`
+  would silence every railform hook.
+
+  Wrappers are judged by their index entry, mode `100755` and the exact LF bytes, so a wrapper
+  committed with CRLF is `drift`. The check fails with `pin-mismatch` when the pins differ from
+  each other, and with `extra-pr-workflow` while another workflow file runs on `pull_request` or
+  `pull_request_target`, or cannot be parsed. A job's `needs:` cannot reach another workflow
+  file, so move such a job into `ci.yml` (the next adopt adds it to `gate`), or list the file in
+  `ci.extra_workflows`, by name or by path, with an `exceptions` row.
+- Where the hooks lived before, adopt leaves a stub for each hook. That is the local
+  `core.hooksPath` when it is not the same directory as `hooks.dir` (a subdirectory of it
+  counts), or else the tracked directory, outside `hooks.dir` and outside every `session_loaded`
+  glob, with the most `100755` files named after a hook. The stub prints the `railform arm`
+  command and fails, so a clone armed to the old directory cannot commit unchecked.
+  - Directories are compared as Windows reads them: each segment without its trailing dots and
+    spaces, then casefolded. The filesystem decides when both directories exist.
+  - Every candidate passed over is reported in a finding line.
+  - A file there that is tracked but not `100755`, or not tracked at all, is reported and left
+    alone.
+- Adopt refuses, before writing anything, a target path with a symlink or junction on the way, a
+  `hooks.dir` inside `.git` (`.git.` and `.git ` included), and an `on:` block it would have to
+  rewrite as a mapping when that block holds comments.
+- railform itself calls its own workflow by local path. With `ci.self_hosted = true` (and an
+  `exceptions` row), adopt writes the `railform` job as a call to
+  `./.github/workflows/python-ci.yml` with the commit under test as the input, the pre-commit entry
+  becomes `repo: local` running `uv run --frozen railform <verb>`, `--pin` rewrites nothing, and
+  `--check` skips the pin comparisons and says so. Without the key, a local-path call is `drift`.
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the gate commands and the commit rules, and

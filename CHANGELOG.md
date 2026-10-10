@@ -91,6 +91,61 @@ All notable changes to this project are recorded here, in the
   and `<code>/home/<name></code>` are caught while `/home/me,` and `(e.g. /home/user)` pass.
 - The default `private_refs.placeholders` gains the system folders `public`, `default`, `shared`
   and `runneradmin`, which are not people. This extends the spec's six names.
+- The `adopt` verb and its templates in `src/railform/templates/`. `railform adopt [--type T]
+  [--pin SHA]` writes, between marker lines, the `railform` and `gate` jobs of `ci.yml` (the call
+  to the reusable workflow at the pin with the pin as the input `railform-sha`, and the required
+  status that needs every other job), the `pull_request` trigger types, the railform and hygiene
+  entries of `.pre-commit-config.yaml` (pre-commit-hooks v5.0.0 at its commit), and the Dependabot
+  ignore entry for railform; it writes the hook wrappers as `100755` in the git index, a stub in
+  the previous hooks directory, the tag-watch caller once the package carries its template, and
+  the first `railform.toml`. Everything outside the owned parts is kept byte for byte, and a
+  second run changes nothing. `--pin` moves every reference at once. `--check` fails with
+  `drift`, `pin-mismatch` or `extra-pr-workflow`, and skips the pin comparisons in a
+  self-hosted repository (`ci.self_hosted`).
+- Migration fixtures for the three project types, built at test time, and tests that adopt keeps
+  their extras and that each type's pipeline steps pass in the adopted fixture. The pipeline
+  tests carry the new `slow` marker (they need the network or a warm uv cache) and run by
+  default.
+- The frame key `ci.self_hosted`, a preset-governed boolean, false by default. Only with it true
+  does adopt write the `railform` job as a call by local path; without it such a call is
+  `drift`.
+- From PR07's review, `railform adopt` now:
+  - confirms that the `ci.yml` region holds the jobs `railform` and `gate` themselves;
+  - reports a missing pin site as `drift`;
+  - counts `pull_request_target` and unparseable workflow files as extra;
+  - picks the previous hooks directory only from `100755` entries outside `hooks.dir` and the
+    `session_loaded` globs, and never overwrites a tracked file there that is not `100755`;
+  - refuses a target behind a symlink or junction, and a `hooks.dir` inside `.git`, before any
+    write;
+  - stages the wrappers as their exact bytes;
+  - gives the `gate` step `shell: bash` and an `always() &&` condition.
+- The test harness removes git's repository-locating variables and isolates the global and
+  system configuration for every test, so a `GIT_DIR` inherited from a hook can no longer make
+  `git init` mark another repository bare.
+- From the second review of PR07, `railform adopt` now:
+  - confirms the pre-commit region holds exactly the railform and hygiene items of `repos:`, and
+    the Dependabot entry is an element of the github-actions `ignore:` list;
+  - reports a job outside the region whose id or `name:` casefolds to `railform` or `gate`;
+  - judges wrappers by their index entry, so a wrapper committed with CRLF is `drift`;
+  - compares hooks directories case-insensitively, and never overwrites an untracked file in the
+    previous hooks directory;
+  - refuses to rewrite an `on:` block that holds comments;
+  - reads `.git.` and `.git ` as `.git`.
+- The test harness takes its variable list from `git rev-parse --local-env-vars` (so
+  `GIT_CONFIG`, `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT` are included), and also removes
+  `GIT_CONFIG_KEY_*` and `GIT_CONFIG_VALUE_*`. The test that shows the bare-repository hazard
+  skips where the git in use does not reproduce it.
+- From the third review of PR07, `railform adopt` now:
+  - refuses a repeated key at the top level of an owned file, in `jobs:` and in a Dependabot
+    update (`drift` under `--check`), since YAML keeps the last one;
+  - places and confirms the Dependabot entry in the github-actions update whose `directory` is
+    `/` (or whose `directories` holds `/`);
+  - compares directories as Windows reads them, and lets the filesystem decide when both exist;
+  - takes a `core.hooksPath` under `hooks.dir` as the previous hooks directory;
+  - reports every candidate it passes over.
+- From the fourth review of PR07, `railform adopt` refuses a top-level `files:` or `exclude:` in
+  `.pre-commit-config.yaml` that drops `.git/COMMIT_EDITMSG` or a hook wrapper (`drift` under
+  `--check`), since pre-commit applies it to every hook, the railform ones included.
 
 ### Changed
 
