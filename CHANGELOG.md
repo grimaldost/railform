@@ -63,6 +63,15 @@ All notable changes to this project are recorded here, in the
   reading `auto` as `#`); `commit-range` asks `git log` for no signatures, so `log.showSignature`
   cannot put gpg text in the hash field; an empty `commit.types` is a configuration error (exit 2).
 - On an `edited` pull request event only the `commit-lane` job runs; `checks` and `audit` skip.
+- The `session-paths` verb (the D1 guard): `railform session-paths --diff BASE...HEAD
+  --frame-from REF [--glob PATTERN ...]` fails with `session-loaded` when the change, read with
+  `git diff --no-renames`, touches a path matching a `session_loaded` glob of the frame at
+  `REF` (the default frame if `REF` has no `railform.toml`), so a rename out of a loaded path
+  still counts and the change cannot narrow its own guard. `--glob` adds a pattern, such as a
+  series brief's, and never removes one. It also fails with `guard-narrowed` when the
+  `railform.toml` at HEAD removes or excepts a glob that the frame at `REF` had.
+  Names compare case-insensitively, and a malformed glob (an empty segment, a `.` or `..`
+  segment, a leading or trailing `/`, or a backslash) is a configuration error, exit 2.
 
 ### Changed
 
