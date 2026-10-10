@@ -70,6 +70,8 @@ All notable changes to this project are recorded here, in the
   still counts and the change cannot narrow its own guard. `--glob` adds a pattern, such as a
   series brief's, and never removes one. It also fails with `guard-narrowed` when the
   `railform.toml` at HEAD removes or excepts a glob that the frame at `REF` had.
+  Names compare case-insensitively, and a malformed glob (an empty segment, a `.` or `..`
+  segment, a leading or trailing `/`, or a backslash) is a configuration error, exit 2.
 
 ### Changed
 

@@ -6,9 +6,9 @@ command-line tool that runs the checks, and a default configuration (the "frame"
 checks. A repository that adopts railform pins one commit of this repository and gets the same
 CI pipeline, hook wrappers and commit checks as every other adopter at that commit.
 
-Nothing in railform is usable yet. The package skeleton and the `frame` and `session-paths` verbs exist; every
-other verb exits with `not-implemented` until the section that adds it lands. Nothing is usable
-before 0.1.0.
+Nothing in railform is usable yet. The package skeleton and the `frame` and `session-paths`
+verbs exist; every other verb exits with `not-implemented` until the section that adds it lands.
+Nothing is usable before 0.1.0.
 
 ## What it is
 
@@ -160,10 +160,15 @@ of `session_loaded` in the frame at `REF`. Pass the base as `REF`: the globs are
 ones the change writes. `--glob` adds a pattern (a series adds its own) and never removes one.
 
 A glob matches the whole repository-relative path or any suffix of it that starts at a `/`:
-`**` spans any number of segments, `*` none or more characters inside one segment. So
-`**/hooks/**` matches `plugins/x/hooks/hooks.json` and not `.githooks/pre-commit`. The check also
-fails with `guard-narrowed` when the `railform.toml` at HEAD removes or excepts a glob the frame
-at `REF` had.
+`**` spans any number of segments, `*` none or more characters inside one segment, and names
+compare case-insensitively. So `**/hooks/**` matches `plugins/x/hooks/hooks.json` and not
+`.githooks/pre-commit`. A malformed glob (an empty segment, a `.` or `..` segment, a leading or
+trailing `/`, or a backslash), from the frame or from `--glob`, is a configuration error (exit
+2), because it would match nothing. The check also fails with `guard-narrowed` when the
+`railform.toml` at HEAD removes or excepts a glob the frame at `REF` had.
+
+The check is blind to the inside of a submodule: git lists a submodule as its own path, so a
+change to files in its contents is not seen unless the submodule path itself is changed.
 
 ## Development
 
