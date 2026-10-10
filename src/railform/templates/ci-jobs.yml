@@ -1,0 +1,15 @@
+railform:
+  uses: __USES__
+  permissions:
+    contents: read
+  with:
+    railform-sha: __RAILFORM_SHA__
+gate:
+  if: always()
+  needs: __NEEDS__
+  runs-on: ubuntu-latest
+  permissions: {}
+  steps:
+    - name: Fail when a needed job failed or was cancelled
+      if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      run: exit 1

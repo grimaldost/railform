@@ -1,0 +1,8 @@
+- repo: https://github.com/grimaldost/railform
+  rev: __PIN__
+  hooks:
+    - id: railform-commit-msg
+    - id: railform-branch-name
+    - id: railform-hooks-check
+      files: __HOOKS_FILES__
+    - id: railform-private-refs

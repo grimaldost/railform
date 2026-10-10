@@ -1,0 +1,26 @@
+- repo: local
+  hooks:
+    - id: railform-commit-msg
+      name: railform commit-msg
+      entry: uv run --frozen railform commit-msg
+      language: system
+      stages: [commit-msg]
+    - id: railform-branch-name
+      name: railform branch-name
+      entry: uv run --frozen railform branch-name
+      language: system
+      stages: [pre-push]
+      always_run: true
+      pass_filenames: false
+    - id: railform-hooks-check
+      name: railform hooks-check
+      entry: uv run --frozen railform hooks-check
+      language: system
+      stages: [pre-commit]
+      files: __HOOKS_FILES__
+      pass_filenames: false
+    - id: railform-private-refs
+      name: railform private-refs
+      entry: uv run --frozen railform private-refs
+      language: system
+      stages: [pre-commit]
