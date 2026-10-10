@@ -181,7 +181,7 @@ def test_each_offending_line_is_reported_with_its_number() -> None:
         'feat!: drop the old flag',
         'refactor(frame)!: rename a key',
         'release: 1.2.3',
-        'docs(spec): a scope with spaces?',
+        'docs(spec): a description that ends in a question mark?',
         'ci: x',
     ],
 )
@@ -600,3 +600,101 @@ def test_a_body_that_is_not_text_exits_2(
 ) -> None:
     event = write_event(tmp_path / 'e.json', {'title': 't', 'body': 5})
     assert run_verb(capsys, 'pr-text', '--event', str(event))[0] == 2
+
+
+# --- review round: frame values, git configuration and edge cases ---------------------------------
+
+REVIEWED_BY_PATTERN = '^Reviewed-by:'
+
+
+def add_reviewed_by_pattern(repo: Path) -> None:
+    """A `railform.toml` that adds one attribution pattern to the default set."""
+    default = frame.effective_frame(None)['commit']['attribution_patterns']
+    patterns = json.dumps([*default, REVIEWED_BY_PATTERN])
+    (repo / 'railform.toml').write_text(
+        f'[commit]\nattribution_patterns = {patterns}\n', encoding='utf-8'
+    )
+
+
+def test_a_pattern_added_in_the_frame_turns_a_clean_range_into_an_attribution_failure(
+    history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit('feat: add a thing\n\nReviewed-by: someone\n')
+    assert run_verb(capsys, 'commit-range', 'base...HEAD') == (0, [], ('pass', 'ok'))
+    add_reviewed_by_pattern(history)
+    code, _, verdict = run_verb(capsys, 'commit-range', 'base...HEAD')
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+
+
+def test_a_pattern_added_in_the_frame_turns_a_clean_body_into_an_attribution_failure(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    event = write_event(tmp_path / 'e.json', {'title': 't', 'body': 'Reviewed-by: someone'})
+    assert run_verb(capsys, 'pr-text', '--event', str(event)) == (0, [], ('pass', 'ok'))
+    add_reviewed_by_pattern(scratch_repo)
+    code, _, verdict = run_verb(capsys, 'pr-text', '--event', str(event))
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+
+
+def test_commit_range_asks_git_for_no_signatures(
+    history: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[tuple[str, ...]] = []
+    real = commit_lane._git
+
+    def spy(root: Path, *args: str):
+        seen.append(args)
+        return real(root, *args)
+
+    monkeypatch.setattr(commit_lane, '_git', spy)
+    commit_lane.commits_in_range(history, 'base...HEAD')
+    (call,) = [args for args in seen if 'log' in args]
+    assert call[:2] == ('-c', 'log.showSignature=false')
+    assert '--no-show-signature' in call
+
+
+def test_log_show_signature_in_the_configuration_leaves_the_range_readable(
+    history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The spy test above holds the flags; this one holds that the setting does no harm. A commit
+    # with a real signature needs a key, which a test cannot assume.
+    git('config', 'log.showSignature', 'true')
+    commit('feat: add a thing\n')
+    assert run_verb(capsys, 'commit-range', 'base...HEAD') == (0, [], ('pass', 'ok'))
+    assert [len(c.sha) for c in commit_lane.commits_in_range(history, 'base...HEAD')] == [
+        len(git('rev-parse', 'HEAD'))
+    ]
+
+
+def test_an_empty_list_of_types_is_a_configuration_error(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (scratch_repo / 'railform.toml').write_text('[commit]\ntypes = []\n', encoding='utf-8')
+    code, _, verdict = run_verb(capsys, 'commit-msg', message_file(': anything\n'))
+    assert (code, verdict) == (2, ('fail', 'usage'))
+
+
+def test_the_comment_character_of_the_git_configuration_is_the_one_ignored(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    git('config', 'core.commentChar', ';')
+    tail = commit_lane.SCISSORS_TAIL
+    text = f'feat: add a thing\n\n; {ATTRIBUTED_TRAILER}\n# {GENERATION_STAMP}\n'
+    # With `;` as the comment character, the `#` line is text and is judged.
+    code, findings, verdict = run_verb(capsys, 'commit-msg', message_file(text))
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+    assert findings == [f'msg.txt:4: attribution line: # {GENERATION_STAMP}']
+    # The scissors line follows the same character.
+    after = f'feat: add a thing\n\n;{tail}\n{ATTRIBUTED_TRAILER}\n'
+    assert run_verb(capsys, 'commit-msg', message_file(after)) == (0, [], ('pass', 'ok'))
+
+
+@pytest.mark.parametrize('setting', [None, 'auto'])
+def test_without_a_comment_character_in_the_configuration_hash_is_the_marker(
+    setting: str | None, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    if setting is not None:
+        git('config', 'core.commentChar', setting)
+    assert commit_lane.comment_char(scratch_repo) == '#'
+    path = message_file(f'feat: add a thing\n\n# {ATTRIBUTED_TRAILER}\n')
+    assert run_verb(capsys, 'commit-msg', path) == (0, [], ('pass', 'ok'))

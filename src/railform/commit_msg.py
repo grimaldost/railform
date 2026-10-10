@@ -1,7 +1,8 @@
 """The verb `commit-msg FILE`: judge the message file git passes to the commit-msg hook.
 
-Development-rails spec, §4; the rules live in `railform.commit_lane`. Lines starting with `#` are
-git comments and are ignored, and so is everything after the scissors line.
+Development-rails spec, §4; the rules live in `railform.commit_lane`. Lines starting with the
+comment character (`core.commentChar`, else `#`) are git comments and are ignored, and so is
+everything after the scissors line.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ def run(args: argparse.Namespace) -> Verdict:
             message,
             rules,
             subject_exempt=commit_lane.is_merging(root),
-            git_comments=True,
+            comment_char=commit_lane.comment_char(root),
         )
     except commit_lane.LaneError as exc:
         return Verdict.usage(VERB, f'{VERB}: {exc}')

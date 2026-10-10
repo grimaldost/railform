@@ -37,9 +37,10 @@ if TYPE_CHECKING:
 
 SUBJECT = 'subject'
 ATTRIBUTION = 'attribution'
-# The line `git commit -v` writes before the diff it appends to the message template.
-SCISSORS = '# ------------------------ >8 ------------------------'
-COMMENT = '#'
+# What follows the comment character in the line `git commit -v` writes before the diff it
+# appends to the message template.
+SCISSORS_TAIL = ' ------------------------ >8 ------------------------'
+DEFAULT_COMMENT_CHAR = '#'
 SUBJECT_MESSAGE = 'the subject is not "type(scope)!: description" with a type of the frame'
 
 
@@ -76,6 +77,8 @@ def load_rules() -> tuple[Rules, Path]:
 
 def rules_from_frame(effective: dict[str, Any]) -> Rules:
     commit = effective['commit']
+    if not commit['types']:
+        raise LaneError('commit.types is empty: no subject could pass')
     types = '|'.join(re.escape(name) for name in commit['types'])
     # `type(scope)!: description`: a non-blank description follows the colon and one space.
     subject = re.compile(rf'(?:{types})(?:\([^()\s][^()]*\))?!?: \S')
@@ -90,18 +93,19 @@ def rules_from_frame(effective: dict[str, Any]) -> Rules:
     return Rules(subject, tuple(patterns))
 
 
-def numbered_lines(message: str, *, git_comments: bool = False) -> list[tuple[int, str]]:
+def numbered_lines(message: str, *, comment_char: str | None = None) -> list[tuple[int, str]]:
     """The lines of `message` with their 1-based numbers.
 
-    With `git_comments`, lines starting with `#` are dropped, and so is everything from the
+    With a `comment_char`, lines starting with it are dropped, and so is everything from the
     scissors line on, as git does before it stores a message.
     """
+    scissors = None if comment_char is None else comment_char + SCISSORS_TAIL
     kept = []
     for number, line in enumerate(message.splitlines(), start=1):
-        if git_comments:
-            if line.rstrip() == SCISSORS:
+        if comment_char is not None:
+            if line.rstrip() == scissors:
                 break
-            if line.startswith(COMMENT):
+            if line.startswith(comment_char):
                 continue
         kept.append((number, line))
     return kept
@@ -132,13 +136,13 @@ def check_message(
     rules: Rules,
     *,
     subject_exempt: bool = False,
-    git_comments: bool = False,
+    comment_char: str | None = None,
 ) -> tuple[list[str], list[str]]:
     """Judge one message; returns its subject findings and its attribution findings.
 
     A finding reads `<label>:<line>: <message>`.
     """
-    lines = numbered_lines(message, git_comments=git_comments)
+    lines = numbered_lines(message, comment_char=comment_char)
     subject = []
     if not subject_exempt:
         found = subject_finding(lines, rules)
@@ -182,7 +186,19 @@ def commits_in_range(root: Path, spec: str) -> list[Commit]:
     not git's symmetric difference.
     """
     base, head = split_range(spec)
-    done = _git(root, 'log', '-z', '--reverse', '--format=%H%x00%P%x00%B', f'{base}..{head}', '--')
+    # A signature shown by `log.showSignature` would land in the hash field of the output.
+    done = _git(
+        root,
+        '-c',
+        'log.showSignature=false',
+        'log',
+        '--no-show-signature',
+        '-z',
+        '--reverse',
+        '--format=%H%x00%P%x00%B',
+        f'{base}..{head}',
+        '--',
+    )
     if done.returncode != 0:
         detail = done.stderr.decode('utf-8', errors='replace').strip()
         raise LaneError(f'git cannot read the range {spec}: {detail}')
@@ -195,6 +211,16 @@ def commits_in_range(root: Path, spec: str) -> list[Commit]:
         Commit(fields[i].strip(), len(fields[i + 1].split()), fields[i + 2])
         for i in range(0, len(fields), 3)
     ]
+
+
+def comment_char(root: Path) -> str:
+    """The comment character git strips from a message: `core.commentChar`, else `#`.
+
+    `auto` (git picks a character that the message does not start a line with) reads as `#`.
+    """
+    done = _git(root, 'config', '--get', 'core.commentChar')
+    value = done.stdout.decode('utf-8', errors='replace').strip() if done.returncode == 0 else ''
+    return DEFAULT_COMMENT_CHAR if value in ('', 'auto') else value
 
 
 def is_merging(root: Path) -> bool:
