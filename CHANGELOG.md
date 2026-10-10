@@ -143,6 +143,9 @@ All notable changes to this project are recorded here, in the
   - compares directories as Windows reads them, and lets the filesystem decide when both exist;
   - takes a `core.hooksPath` under `hooks.dir` as the previous hooks directory;
   - reports every candidate it passes over.
+- From the fourth review of PR07, `railform adopt` refuses a top-level `files:` or `exclude:` in
+  `.pre-commit-config.yaml` that drops `.git/COMMIT_EDITMSG` or a hook wrapper (`drift` under
+  `--check`), since pre-commit applies it to every hook, the railform ones included.
 
 ### Changed
 

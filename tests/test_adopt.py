@@ -1079,6 +1079,46 @@ def test_red_proof_an_own_railform_ignore_outside_the_region_does_not_hide_a_mov
     assert run_adopt(capsys, '--check')[:2] == (1, f'{VERDICT} fail drift')
 
 
+# --- fourth review round -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ('line', 'dropped'),
+    [
+        ("files: '^src/'\n", '.git/COMMIT_EDITMSG'),
+        ("exclude: '.*'\n", '.git/COMMIT_EDITMSG'),
+        ("exclude: '^[.]githooks/'\n", '.githooks/pre-commit'),
+    ],
+    ids=['files-src', 'exclude-everything', 'exclude-hooks-dir'],
+)
+def test_red_proof_a_global_filter_that_drops_a_railform_path_is_refused(
+    line: str, dropped: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # pre-commit applies a top-level files: or exclude: to every hook before its own filters, so
+    # one that drops the commit message file or a wrapper skips the railform hooks silently.
+    build(scratch_repo, 'python-package')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    edited = read(scratch_repo, PRE_COMMIT) + line
+    write(scratch_repo, PRE_COMMIT, edited)
+    code, verdict, out = run_adopt(capsys, '--check')
+    assert (code, verdict) == (1, f'{VERDICT} fail drift')
+    key = line.split(':', 1)[0]
+    assert f'the top-level {key}:' in out
+    assert f'drops {dropped}' in out
+    assert run_adopt(capsys)[1] == f'{VERDICT} fail usage'
+    assert read(scratch_repo, PRE_COMMIT) == edited
+
+
+def test_a_global_filter_that_keeps_the_railform_paths_is_allowed(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    write(scratch_repo, PRE_COMMIT, read(scratch_repo, PRE_COMMIT) + "exclude: '^vendor/'\n")
+    assert run_adopt(capsys, '--pin', PIN)[:2] == (0, f'{VERDICT} pass ok')
+    assert run_adopt(capsys, '--check')[:2] == (0, f'{VERDICT} pass ok')
+    assert yaml.safe_load(read(scratch_repo, PRE_COMMIT))['exclude'] == '^vendor/'
+
+
 # --- staging the wrappers ----------------------------------------------------------------------
 
 

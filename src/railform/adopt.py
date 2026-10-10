@@ -79,6 +79,8 @@ REMOTE_WORKFLOW = f'{REPOSITORY}/.github/workflows/python-ci.yml'
 SELF_HOSTED_SHA = '${{ github.event.pull_request.head.sha || github.sha }}'
 PR_TYPES = ('opened', 'synchronize', 'reopened', 'edited')
 OWNED_JOBS = ('railform', 'gate')
+# The commit message file pre-commit's commit-msg stage hands to its hooks.
+COMMIT_MESSAGE_PATH = '.git/COMMIT_EDITMSG'
 RAILFORM_URL = f'https://github.com/{REPOSITORY}'
 HYGIENE_URL = 'https://github.com/pre-commit/pre-commit-hooks'
 
@@ -481,6 +483,47 @@ class _PreCommit:
     repos_key: Any
     repos: Any
     rev: str | None
+    # The top-level `files` and `exclude`, which pre-commit applies to every hook.
+    filters: dict[str, str]
+
+
+def _global_filters(root: Any) -> dict[str, str]:
+    filters: dict[str, str] = {}
+    for key in ('files', 'exclude'):
+        found = _entry(root, key)
+        if found is None or _is_empty(found[1]):
+            continue
+        value = _scalar(found[1])
+        if value is None:
+            raise AdoptError(f'{PRE_COMMIT_PATH}: the top-level {key}: is not a string')
+        filters[key] = value
+    return filters
+
+
+def _refuse_global_filters(pre: _PreCommit, wrapper_paths: list[str]) -> None:
+    """Refuse a top-level `files` or `exclude` that drops a path the railform hooks need: the
+    commit message file or a hook wrapper. pre-commit applies them to every hook before its own
+    filters, so such a filter would skip the owned hooks silently. Tested as pre-commit does:
+    `files` must match with `re.search`, and `exclude` must not."""
+    try:
+        files = re.compile(pre.filters.get('files', ''))
+        exclude = re.compile(pre.filters.get('exclude', '^$'))
+    except re.error as exc:
+        raise AdoptError(
+            f'{PRE_COMMIT_PATH}: a top-level files: or exclude: is not a regular expression ({exc})'
+        ) from exc
+    for path in (COMMIT_MESSAGE_PATH, *wrapper_paths):
+        if not files.search(path):
+            key, pattern = 'files', files.pattern
+        elif exclude.search(path):
+            key, pattern = 'exclude', exclude.pattern
+        else:
+            continue
+        raise AdoptError(
+            f'{PRE_COMMIT_PATH}: the top-level {key}: {pattern!r} drops {path} before any hook '
+            'sees it, so the railform hooks would skip it; narrow it, or set it on the hooks '
+            'that need it'
+        )
 
 
 def _read_pre_commit(text: str | None) -> _PreCommit:
@@ -488,13 +531,14 @@ def _read_pre_commit(text: str | None) -> _PreCommit:
     doc = _doc(PRE_COMMIT_PATH, text if text is not None else default)
     root = _compose(doc)
     region = _find_region(doc)
+    filters = _global_filters(root)
     found = _entry(root, 'repos')
     if found is None:
         raise AdoptError(f'{PRE_COMMIT_PATH}: has no repos: list')
     repos_key, repos = found
     if not (_is_empty(repos) or _is_block(repos, yaml.SequenceNode)):
         raise AdoptError(f'{PRE_COMMIT_PATH}: write repos: as a block list')
-    return _PreCommit(doc, region, repos_key, repos, _railform_rev(doc, region))
+    return _PreCommit(doc, region, repos_key, repos, _railform_rev(doc, region), filters)
 
 
 def _railform_rev(doc: _Doc, region: _Region | None) -> str | None:
@@ -1055,6 +1099,7 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
     ci = _read_ci(ci_text)
     pre_text = _read(root, PRE_COMMIT_PATH)
     pre = _read_pre_commit(pre_text)
+    _refuse_global_filters(pre, list(wrappers))
     dependabot_text = _read(root, DEPENDABOT_PATH)
     tag_watch_text = _read(root, TAG_WATCH_PATH)
     planned: list[tuple[str, str | None, str | None]] = []
@@ -1208,6 +1253,7 @@ def _check(root: Path) -> Verdict:
     else:
         try:
             pre = _read_pre_commit(pre_text)
+            _refuse_global_filters(pre, list(wrappers))
             if pre.region is None:
                 drift(_NO_REGION.format(path=PRE_COMMIT_PATH))
             elif not self_hosted and pre.rev is None:
