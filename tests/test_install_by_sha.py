@@ -17,7 +17,9 @@ TEXT_SUFFIXES = {'.md', '.yml', '.yaml', '.toml', '.py', '.txt', '.sh', '.cfg', 
 # The commands that would fetch railform by name from an index.
 INDEX_INSTALL = re.compile(
     r'(?:uvx|uv\s+tool\s+(?:install|run)|pipx\s+(?:install|run)|'
-    r'(?:uv\s+)?pip\s+install|uv\s+add)\s+(?:-\S+\s+)*railform\b'
+    r'(?:uv\s+)?pip\s+install|uv\s+add)\s+'
+    # Flags, each with at most one value token; `--from` is the pinned form and stops the match.
+    r'(?:(?!--from\b)-\S+\s+(?:[^-\s]\S*\s+)?)*railform\b'
 )
 # A railform requirement written as a requirements line: `railform`, `railform>=1`, `railform==1`.
 BARE_REQUIREMENT = re.compile(
@@ -57,6 +59,9 @@ def violations_in(text: str) -> list[str]:
     [
         'uvx railform frame',
         'uvx railform',
+        'uvx --python 3.12 railform frame',
+        'uv tool install --python 3.12 railform',
+        'uvx -q --python=3.12 railform',
         'pip install railform',
         'uv pip install railform==0.1.0',
         'uv add railform',
@@ -78,6 +83,9 @@ def test_the_scanner_flags_an_unpinned_install(line: str) -> None:
     [
         'uvx --from git+https://github.com/grimaldost/railform@' + 'a' * 40 + ' railform frame',
         'pip install git+https://github.com/grimaldost/railform@<40-hex sha>',
+        'uvx --python 3.12 --from git+https://github.com/grimaldost/railform@'
+        + 'a' * 40
+        + ' railform',
         'railform --version',
         'A shared workflow called railform.',
         'The railform repository is public.',
