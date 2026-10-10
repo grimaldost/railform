@@ -26,6 +26,7 @@ jobs:
       - run: uv run --frozen ruff check .
       - run: uv run --frozen ty check src
       - run: uv run --frozen python -m pytest -q
+      - run: uv run --frozen railform private-refs
 
   audit:
     if: github.event.action != 'edited'

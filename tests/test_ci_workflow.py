@@ -47,6 +47,7 @@ def test_the_checks_job_runs_the_gate_commands_in_order(workflow: dict[Any, Any]
         'uv run --frozen ruff check .',
         'uv run --frozen ty check src',
         'uv run --frozen python -m pytest -q',
+        'uv run --frozen railform private-refs',
     ]
 
 
