@@ -52,3 +52,11 @@ def test_the_base_branch_reaches_the_range_through_the_environment(job: dict[str
     assert step['shell'] == 'bash'
     # Whoever names the branch controls the name: it is never interpolated into the script.
     assert '${{' not in step['run']
+
+
+def test_an_edit_of_the_title_or_body_reruns_only_the_commit_lane(workflow: dict[Any, Any]) -> None:
+    skipped = "github.event.action != 'edited'"
+    assert workflow['jobs']['checks']['if'] == skipped
+    assert workflow['jobs']['audit']['if'] == skipped
+    # The commit lane is the one job that reads the text an edit changes.
+    assert workflow['jobs']['commit-lane']['if'] == "github.event_name == 'pull_request'"
