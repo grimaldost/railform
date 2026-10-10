@@ -132,7 +132,9 @@ def test_a_wrapper_that_is_not_tracked_fails_mode(
 ) -> None:
     put_all(scratch_repo)
     put(scratch_repo, '.githooks/pre-push', expected_wrapper('pre-push'), track=False)
-    git(scratch_repo, 'rm', '--cached', '-q', '--', '.githooks/pre-push')
+    # `-f`: on Linux the index entry (100755) differs from the 0644 file the test wrote, and git
+    # refuses to untrack an entry that differs from both HEAD and the file without it.
+    git(scratch_repo, 'rm', '--cached', '-f', '-q', '--', '.githooks/pre-push')
     code, line, out = check(capsys)
     assert (code, line) == (1, 'railform-verdict: hooks-check fail mode')
     assert 'not tracked' in out
