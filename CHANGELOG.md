@@ -122,6 +122,19 @@ All notable changes to this project are recorded here, in the
 - The test harness removes git's repository-locating variables and isolates the global and
   system configuration for every test, so a `GIT_DIR` inherited from a hook can no longer make
   `git init` mark another repository bare.
+- From the second review of PR07, `railform adopt` now:
+  - confirms the pre-commit region holds exactly the railform and hygiene items of `repos:`, and
+    the Dependabot entry is an element of the github-actions `ignore:` list;
+  - reports a job outside the region whose id or `name:` casefolds to `railform` or `gate`;
+  - judges wrappers by their index entry, so a wrapper committed with CRLF is `drift`;
+  - compares hooks directories case-insensitively, and never overwrites an untracked file in the
+    previous hooks directory;
+  - refuses to rewrite an `on:` block that holds comments;
+  - reads `.git.` and `.git ` as `.git`.
+- The test harness takes its variable list from `git rev-parse --local-env-vars` (so
+  `GIT_CONFIG`, `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT` are included), and also removes
+  `GIT_CONFIG_KEY_*` and `GIT_CONFIG_VALUE_*`. The test that shows the bare-repository hazard
+  skips where the git in use does not reproduce it.
 
 ### Changed
 

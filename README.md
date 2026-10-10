@@ -236,9 +236,15 @@ nothing.
   `railform-sha` input, the pre-commit `rev` and the tag-watch caller. Without `--pin`, adopt keeps
   the pin the workflow already names, so the first run needs `--pin`.
 - `railform adopt --check` fails with `drift` when an owned part differs or is missing (a pin site
-  included), or when the `ci.yml` region does not hold the jobs `railform` and `gate` themselves
-  under `jobs:`; with `pin-mismatch` when the pins differ from each other; and with
-  `extra-pr-workflow` while another workflow file runs on `pull_request` or
+  included). It is also `drift` when a region does not hold its parts structurally:
+  - the jobs `railform` and `gate` themselves under `jobs:`, with no other job whose id or `name:`
+    reads `railform` or `gate`;
+  - exactly the two entries of `repos:`;
+  - the railform element of the github-actions `ignore:` list.
+
+  Wrappers are judged by their index entry, mode `100755` and the exact LF bytes, so a wrapper
+  committed with CRLF is `drift`. The check fails with `pin-mismatch` when the pins differ from
+  each other, and with `extra-pr-workflow` while another workflow file runs on `pull_request` or
   `pull_request_target`, or cannot be parsed. A job's `needs:` cannot reach another workflow
   file, so move such a job into `ci.yml` (the next adopt adds it to `gate`), or list the file in
   `ci.extra_workflows`, by name or by path, with an `exceptions` row.
@@ -246,9 +252,11 @@ nothing.
   `core.hooksPath`, or else the tracked directory, outside `hooks.dir` and outside every
   `session_loaded` glob, with the most `100755` files named after a hook. The stub prints the
   `railform arm` command and fails, so a clone armed to the old directory cannot commit
-  unchecked. A tracked file there that is not `100755` is reported and left alone.
-- Adopt refuses, before writing anything, a target path with a symlink or junction on the way and
-  a `hooks.dir` inside `.git`.
+  unchecked. Directories are compared case-insensitively. A file there that is tracked but not
+  `100755`, or not tracked at all, is reported and left alone.
+- Adopt refuses, before writing anything, a target path with a symlink or junction on the way, a
+  `hooks.dir` inside `.git` (`.git.` and `.git ` included), and an `on:` block it would have to
+  rewrite as a mapping when that block holds comments.
 - railform itself calls its own workflow by local path. With `ci.self_hosted = true` (and an
   `exceptions` row), adopt writes the `railform` job as a call to
   `./.github/workflows/python-ci.yml` with the commit under test as the input, the pre-commit entry
