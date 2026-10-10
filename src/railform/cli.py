@@ -12,6 +12,7 @@ import importlib
 import os
 import re
 import sys
+import traceback
 from dataclasses import replace
 from typing import TYPE_CHECKING, NoReturn
 
@@ -131,5 +132,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # The verdict line is one token per field, so a verb typed with odd characters is reported
     # with them replaced.
     verb = _NOT_TOKEN.sub('?', first) or '?'
-    verdict = _run_verb(first, args[1:])
+    try:
+        verdict = _run_verb(first, args[1:])
+    except Exception:
+        # A crash must still end in one verdict line, and must never read as a pass.
+        traceback.print_exc()
+        verdict = Verdict.internal_error(verb)
     return _finish(replace(verdict, verb=verb))

@@ -49,7 +49,7 @@ railform-verdict: <verb> <pass|fail> <code>
 ```
 
 The exit status is 0 for a pass, 1 when the check found a violation, and 2 for a usage or
-configuration error (a bad argument, an unknown verb, a verb not written yet). Findings come
+configuration error (a bad argument, an unknown verb, a verb not written yet, or an unhandled crash, which reads `internal-error`). Findings come
 before the verdict line, one per line. When `$RAILFORM_LEDGER` names a file, the verdict line is
 also appended to it.
 

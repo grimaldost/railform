@@ -5,6 +5,7 @@ import importlib.util
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -154,3 +155,47 @@ def test_help_of_a_found_verb_still_ends_with_one_verdict_line(
     out = capsys.readouterr().out
     assert _verdict_lines(out) == ['railform-verdict: fake-verb pass ok']
     assert out.splitlines()[-1] == 'railform-verdict: fake-verb pass ok'
+
+
+class _CrashingVerb:
+    @staticmethod
+    def add_arguments(parser: argparse.ArgumentParser) -> None:
+        pass
+
+    @staticmethod
+    def run(args: argparse.Namespace) -> Verdict:
+        raise RuntimeError('boom')
+
+
+class _CrashingParserVerb:
+    @staticmethod
+    def add_arguments(parser: argparse.ArgumentParser) -> None:
+        raise RuntimeError('boom while adding arguments')
+
+    @staticmethod
+    def run(args: argparse.Namespace) -> Verdict:
+        return Verdict.ok('ignored')
+
+
+@pytest.mark.parametrize('module', [_CrashingVerb, _CrashingParserVerb])
+def test_an_unhandled_exception_is_one_internal_error_verdict_and_exit_2(
+    module: type, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setitem(sys.modules, 'railform.crash_verb', module)  # ty: ignore[invalid-argument-type]
+    assert main(['crash-verb']) == 2
+    captured = capsys.readouterr()
+    assert captured.out == 'railform-verdict: crash-verb fail internal-error\n'
+    assert 'Traceback (most recent call last)' in captured.err
+    assert 'boom' in captured.err
+
+
+def test_a_crash_is_appended_to_the_ledger_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger = tmp_path / 'ledger.txt'
+    monkeypatch.setenv('RAILFORM_LEDGER', str(ledger))
+    monkeypatch.setitem(sys.modules, 'railform.crash_verb', _CrashingVerb)  # ty: ignore[invalid-argument-type]
+    main(['crash-verb'])
+    assert (
+        ledger.read_text(encoding='utf-8') == 'railform-verdict: crash-verb fail internal-error\n'
+    )

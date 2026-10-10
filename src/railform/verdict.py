@@ -13,10 +13,11 @@ PREFIX = 'railform-verdict:'
 OK_CODE = 'ok'
 USAGE_CODE = 'usage'
 NOT_IMPLEMENTED_CODE = 'not-implemented'
+INTERNAL_ERROR_CODE = 'internal-error'
 
-# A usage or configuration error exits 2 (an unimplemented verb included); any other failure is
-# a violation the check found and exits 1.
-_EXIT_2_CODES = frozenset({USAGE_CODE, NOT_IMPLEMENTED_CODE})
+# A usage or configuration error exits 2 (an unimplemented verb and a crash included); any
+# other failure is a violation the check found and exits 1.
+_EXIT_2_CODES = frozenset({USAGE_CODE, NOT_IMPLEMENTED_CODE, INTERNAL_ERROR_CODE})
 _TOKEN = re.compile(r'[a-z0-9]+(-[a-z0-9]+)*')
 
 
@@ -57,6 +58,10 @@ class Verdict:
     @classmethod
     def not_implemented(cls, verb: str) -> Verdict:
         return cls(verb, 'fail', NOT_IMPLEMENTED_CODE, diagnostic=f'{verb}: not implemented yet')
+
+    @classmethod
+    def internal_error(cls, verb: str) -> Verdict:
+        return cls(verb, 'fail', INTERNAL_ERROR_CODE, diagnostic=f'{verb}: unhandled exception')
 
     @property
     def exit_code(self) -> int:
