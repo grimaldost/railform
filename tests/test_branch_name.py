@@ -27,6 +27,7 @@ IDENT = ('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com')
 DEPENDABOT_SHAPES = (
     'dependabot/github_actions/actions/checkout-4.2.2',
     'dependabot/uv/ruff-0.14.0',
+    'dependabot/pip/Django-4.2',
 )
 
 
@@ -118,17 +119,39 @@ def test_red_proof_an_empty_name_fails(
 def test_red_proof_dependabot_shapes_pass_by_branch_allow(
     name: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # The verdict says which rule passed the name: branch.allow, not the pattern, which the
+    # first two shapes also match.
+    code, status, verdict_code, out = _run(capsys, '--', name)
+    assert (code, status, verdict_code) == (0, 'pass', 'ok')
+    assert f'branch {name} matches branch.allow dependabot/**' in out
+
+
+def test_red_proof_a_dependabot_shape_the_pattern_refuses_passes(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # An uppercase dependency name: only branch.allow lets it through.
+    name = DEPENDABOT_SHAPES[-1]
+    assert re.fullmatch(frame.effective_frame(None)['branch']['pattern'], name) is None
     assert _run(capsys, '--', name)[:3] == (0, 'pass', 'ok')
 
 
-def test_the_web_editor_branch_passes_by_branch_allow(capsys: pytest.CaptureFixture[str]) -> None:
-    # GitHub's web editor names its branches `<user>-patch-<N>`; a bot made it, so the default
-    # refuses none (the spec's round-6 amendment).
-    assert _run(capsys, '--', 'Someone-patch-1')[:3] == (0, 'pass', 'ok')
+def test_the_web_editor_branch_needs_its_own_allow_glob(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # GitHub's web editor names its branches `<user>-patch-<N>`. The measured count held none,
+    # so the default does not allow them; a repository that uses the web editor declares a glob.
+    assert _run(capsys, '--', 'someone-patch-1')[:3] == (1, 'fail', 'branch')
+    (scratch_repo / 'railform.toml').write_text(
+        '[branch]\nallow = ["dependabot/**", "*-patch-*"]\n\n'
+        '[[exceptions]]\nkey = "branch.allow"\nvalue = ["dependabot/**", "*-patch-*"]\n'
+        'reason = "this repository takes changes from the web editor"\n',
+        encoding='utf-8',
+    )
+    assert _run(capsys, '--', 'someone-patch-1')[:3] == (0, 'pass', 'ok')
 
 
-def test_the_default_frame_allows_dependabot_and_the_web_editor() -> None:
-    assert frame.effective_frame(None)['branch']['allow'] == ['dependabot/**', '*-patch-*']
+def test_the_default_frame_allows_dependabot_only() -> None:
+    assert frame.effective_frame(None)['branch']['allow'] == ['dependabot/**']
 
 
 # --- where the name comes from ------------------------------------------------------------------
@@ -245,7 +268,7 @@ def test_red_proof_the_pattern_comes_from_the_frame(
 def test_red_proof_the_allow_list_comes_from_the_frame(
     scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert _run(capsys, '--', 'someone-patch-1')[:3] == (0, 'pass', 'ok')
+    assert _run(capsys, '--', 'dependabot/pip/Django-4.2')[:3] == (0, 'pass', 'ok')
     assert _run(capsys, '--', 'renovate/Some-Dep')[:3] == (1, 'fail', 'branch')
     (scratch_repo / 'railform.toml').write_text(
         '[branch]\nallow = ["renovate/**"]\n\n'
@@ -253,7 +276,7 @@ def test_red_proof_the_allow_list_comes_from_the_frame(
         'reason = "this repository uses another bot"\n',
         encoding='utf-8',
     )
-    assert _run(capsys, '--', 'someone-patch-1')[:3] == (1, 'fail', 'branch')
+    assert _run(capsys, '--', 'dependabot/pip/Django-4.2')[:3] == (1, 'fail', 'branch')
     assert _run(capsys, '--', 'renovate/Some-Dep')[:3] == (0, 'pass', 'ok')
 
 

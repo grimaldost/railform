@@ -89,9 +89,10 @@ pre_commit_version = ""
 # requests: the commit types alone as categories accepted 93% of them, this shape all of them.
 pattern = '^[a-z][a-z0-9-]*/[a-z0-9][a-z0-9._/-]*$'
 # Globs of names that pass whatever the pattern says: the branches bots create. `**` spans `/`,
-# `*` and `?` do not. Dependabot's are `dependabot/<ecosystem>/<dependency>`, and GitHub's web
-# editor names its own `<user>-patch-<N>`.
-allow = ["dependabot/**", "*-patch-*"]
+# `*` and `?` do not. Dependabot's are `dependabot/<ecosystem>/<dependency>`. A repository that
+# takes changes from GitHub's web editor (`<user>-patch-<N>`) adds its own glob with an
+# `exceptions` row; the measured count held none.
+allow = ["dependabot/**"]
 
 [private_refs]
 names_file_env = "RAILFORM_PRIVATE_NAMES"
