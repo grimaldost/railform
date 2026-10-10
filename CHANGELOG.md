@@ -135,6 +135,14 @@ All notable changes to this project are recorded here, in the
   `GIT_CONFIG`, `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT` are included), and also removes
   `GIT_CONFIG_KEY_*` and `GIT_CONFIG_VALUE_*`. The test that shows the bare-repository hazard
   skips where the git in use does not reproduce it.
+- From the third review of PR07, `railform adopt` now:
+  - refuses a repeated key at the top level of an owned file, in `jobs:` and in a Dependabot
+    update (`drift` under `--check`), since YAML keeps the last one;
+  - places and confirms the Dependabot entry in the github-actions update whose `directory` is
+    `/` (or whose `directories` holds `/`);
+  - compares directories as Windows reads them, and lets the filesystem decide when both exist;
+  - takes a `core.hooksPath` under `hooks.dir` as the previous hooks directory;
+  - reports every candidate it passes over.
 
 ### Changed
 

@@ -240,7 +240,12 @@ nothing.
   - the jobs `railform` and `gate` themselves under `jobs:`, with no other job whose id or `name:`
     reads `railform` or `gate`;
   - exactly the two entries of `repos:`;
-  - the railform element of the github-actions `ignore:` list.
+  - the railform element of the `ignore:` list of the github-actions update whose `directory` is
+    `/` (or whose `directories` list holds `/`).
+
+  A mapping adopt reads that repeats a key (the top level of an owned file, `jobs:`, an update)
+  is `drift`, and adopt refuses to write it, because YAML keeps the last one: a second `repos:`
+  would silence every railform hook.
 
   Wrappers are judged by their index entry, mode `100755` and the exact LF bytes, so a wrapper
   committed with CRLF is `drift`. The check fails with `pin-mismatch` when the pins differ from
@@ -249,11 +254,15 @@ nothing.
   file, so move such a job into `ci.yml` (the next adopt adds it to `gate`), or list the file in
   `ci.extra_workflows`, by name or by path, with an `exceptions` row.
 - Where the hooks lived before, adopt leaves a stub for each hook. That is the local
-  `core.hooksPath`, or else the tracked directory, outside `hooks.dir` and outside every
-  `session_loaded` glob, with the most `100755` files named after a hook. The stub prints the
-  `railform arm` command and fails, so a clone armed to the old directory cannot commit
-  unchecked. Directories are compared case-insensitively. A file there that is tracked but not
-  `100755`, or not tracked at all, is reported and left alone.
+  `core.hooksPath` when it is not the same directory as `hooks.dir` (a subdirectory of it
+  counts), or else the tracked directory, outside `hooks.dir` and outside every `session_loaded`
+  glob, with the most `100755` files named after a hook. The stub prints the `railform arm`
+  command and fails, so a clone armed to the old directory cannot commit unchecked.
+  - Directories are compared as Windows reads them: each segment without its trailing dots and
+    spaces, then casefolded. The filesystem decides when both directories exist.
+  - Every candidate passed over is reported in a finding line.
+  - A file there that is tracked but not `100755`, or not tracked at all, is reported and left
+    alone.
 - Adopt refuses, before writing anything, a target path with a symlink or junction on the way, a
   `hooks.dir` inside `.git` (`.git.` and `.git ` included), and an `on:` block it would have to
   rewrite as a mapping when that block holds comments.
