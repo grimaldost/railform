@@ -1,0 +1,175 @@
+# The default frame of railform (the development-rails spec, §2).
+#
+# The effective frame of a repository is this file's base tables, then the table under
+# `presets.<project.type>`, then the repository's `railform.toml`. Arrays replace; tables merge
+# key by key. `presets` itself never reaches the effective frame.
+#
+# A key whose value has no meaning for a project type is present with the empty value of its
+# type ("", [] or {}); the presets fill in the keys that differ by type.
+
+# Globs of the paths a Claude Code session loads (the D1 guard of `railform session-paths`).
+# A repository may add globs; dropping one of these is a departure.
+session_loaded = [
+    "**/skills/**",
+    "**/agents/**",
+    "**/commands/**",
+    "**/hooks/**",
+    "**/.claude-plugin/**",
+    ".claude/**",
+    "**/CLAUDE.md",
+    "**/AGENTS.md",
+    ".mcp.json",
+]
+
+# Departures from the preset that a repository declares: rows of key, value and reason.
+exceptions = []
+
+[meta]
+# Keys whose value is inherently per repository: a value set for them is never a departure.
+parameter_keys = [
+    "project.type",
+    "project.layout",
+    "python.versions",
+    "python.package",
+    "version.sites",
+    "changelog.records",
+    "changelog.contract_surfaces",
+    "release.since",
+    "release.tag_prefix",
+]
+
+[project]
+type = "python-package"
+layout = ""
+
+[commit]
+types = [
+    "feat",
+    "fix",
+    "docs",
+    "chore",
+    "refactor",
+    "test",
+    "ci",
+    "build",
+    "perf",
+    "style",
+    "revert",
+    "release",
+]
+# Python `re` patterns, matched case-insensitively against each line of a message.
+# keel's no-ai-attribution set at c3313fd (https://github.com/grimaldost/keel,
+# .pre-commit-config.yaml), its one grep alternation split into its two branches.
+attribution_patterns = [
+    '^(Co-Authored-By|Signed-off-by|Assisted-by|Generated-by):.*(Claude|GPT|Anthropic|Copilot)',
+    'Generated with \[?Claude',
+]
+
+[changelog]
+# Path prefix -> changelog file; the longest matching prefix owns a changed path.
+records = { "" = "CHANGELOG.md" }
+contract_surfaces = []
+trailer = "Changelog: none (<reason>)"
+consumer_affecting = "advisory"
+enabled = true
+
+[hooks]
+dir = ".githooks"
+names = ["pre-commit", "commit-msg", "pre-push"]
+# `{hooks.pre_commit_version}` in the wrapper is replaced by that key's value.
+wrapper = ""
+pre_commit_version = "4.6.2"
+
+[branch]
+# Provisional: §8 measures the merged branch names and replaces this pattern.
+pattern = '^(feat|fix|docs|chore|refactor|test|ci|build|perf|style|revert|release)/[a-z0-9][a-z0-9._/-]*$'
+allow = ["dependabot/**"]
+
+[private_refs]
+names_file_env = "RAILFORM_PRIVATE_NAMES"
+placeholders = ["me", "x", "someone", "alice", "user", "runner"]
+
+[ci]
+os = []
+ruff_version = ""
+# Workflow files under .github/workflows/ that may keep running on pull_request beside ci.yml.
+extra_workflows = []
+
+[ci.setup]
+fetch_depth = 1
+extra_installs = []
+
+[python]
+versions = []
+newest = "3.14"
+package = ""
+# Arguments added to the pipeline's `uv sync --frozen --python <version>`.
+sync_args = []
+test_command = ""
+lint_paths = ["."]
+type_check = ""
+
+[version]
+# Rows of a file path and a Python `re` pattern whose first group is the version there.
+sites = []
+
+[release]
+metadata_paths = []
+since = ""
+# Changelog record prefix (as in changelog.records) -> tag prefix.
+tag_prefix = { "" = "v" }
+enabled = true
+
+# --- presets -----------------------------------------------------------------------------------
+
+[presets.python-package.project]
+layout = "src"
+
+[presets.python-package.hooks]
+wrapper = "uv run --frozen python -m pre_commit hook-impl"
+
+[presets.python-package.ci]
+os = ["ubuntu-latest", "windows-latest"]
+
+[presets.python-package.python]
+versions = ["3.11", "3.14"]
+test_command = "uv run --frozen python -m pytest -q"
+type_check = "src"
+
+[presets.python-package.release]
+metadata_paths = ["pyproject.toml", "uv.lock", "CHANGELOG.md"]
+
+[presets.python-scripts.project]
+layout = "flat"
+
+[presets.python-scripts.hooks]
+wrapper = "uv run --frozen python -m pre_commit hook-impl"
+
+[presets.python-scripts.ci]
+os = ["ubuntu-latest", "windows-latest"]
+
+[presets.python-scripts.python]
+versions = ["3.11", "3.14"]
+test_command = "uv run --frozen python -m pytest -q"
+
+[presets.python-scripts.release]
+metadata_paths = ["pyproject.toml", "uv.lock", "CHANGELOG.md"]
+
+# No uv project: ruff from uvx at ci.ruff_version, pre-commit from uvx at
+# hooks.pre_commit_version, and pytest run outside any project.
+[presets.plugin-marketplace.project]
+layout = "plugins"
+
+[presets.plugin-marketplace.hooks]
+wrapper = "uvx pre-commit=={hooks.pre_commit_version} hook-impl"
+
+[presets.plugin-marketplace.ci]
+os = ["ubuntu-latest"]
+ruff_version = "0.17.0"
+
+[presets.plugin-marketplace.python]
+versions = ["3.14"]
+test_command = "uv run --no-project --with pytest python -m pytest -q"
+
+[presets.plugin-marketplace.release]
+metadata_paths = [".claude-plugin/marketplace.json", "CHANGELOG.md"]
