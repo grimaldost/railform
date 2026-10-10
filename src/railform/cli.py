@@ -96,10 +96,17 @@ def _finish(verdict: Verdict) -> int:
     return verdict.exit_code
 
 
-def _run_verb(verb: str, args: list[str]) -> Verdict:
+_HELP_FLAGS = ('-h', '--help')
+
+
+def _run_verb(verb: str, args: list[str]) -> Verdict | None:
+    """Run `verb`; None means the help text was printed, which is not a check."""
     module = _load_verb(verb)
     if module is None:
         if verb in VERBS:
+            if any(arg in _HELP_FLAGS for arg in args):
+                print(f'{PROG} {verb}: not implemented yet\n{_usage_text()}')
+                return None
             return Verdict.not_implemented(verb)
         return Verdict.usage(verb, f'{PROG}: unknown verb\n{_usage_text()}')
     parser = _VerbParser(prog=f'{PROG} {verb}')
@@ -108,9 +115,9 @@ def _run_verb(verb: str, args: list[str]) -> Verdict:
         namespace = parser.parse_args(args)
     except _UsageError as exc:
         return Verdict.usage(verb, str(exc))
-    except SystemExit as exc:  # `--help`: argparse printed the help and asked to exit 0
+    except SystemExit as exc:  # only `--help` gets here: argparse printed it and asked to exit
         if exc.code in (0, None):
-            return Verdict.ok(verb)
+            return None
         return Verdict.usage(verb, f'{parser.prog}: bad arguments')
     verdict = module.run(namespace)
     if not isinstance(verdict, Verdict):
@@ -118,7 +125,16 @@ def _run_verb(verb: str, args: list[str]) -> Verdict:
     return verdict
 
 
+def _backslashreplace_output() -> None:
+    """Make stdout and stderr write what they cannot encode as backslash escapes."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, 'reconfigure', None)
+        if reconfigure is not None:
+            reconfigure(errors='backslashreplace')
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _backslashreplace_output()
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         return _finish(Verdict.usage(PROG, f'{PROG}: a verb is required\n{_usage_text()}'))
@@ -126,7 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if first == '--version':
         print(f'{PROG} {__version__}')
         return 0
-    if first in ('-h', '--help'):
+    if first in _HELP_FLAGS:
         print(_usage_text())
         return 0
     # The verdict line is one token per field, so a verb typed with odd characters is reported
@@ -134,8 +150,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     verb = _NOT_TOKEN.sub('?', first) or '?'
     try:
         verdict = _run_verb(first, args[1:])
-    except Exception:
-        # A crash must still end in one verdict line, and must never read as a pass.
+    except (Exception, SystemExit):
+        # A crash must still end in one verdict line, and must never read as a pass. A verb has
+        # no business exiting by itself; KeyboardInterrupt is not caught.
         traceback.print_exc()
         verdict = Verdict.internal_error(verb)
+    if verdict is None:
+        return 0
     return _finish(replace(verdict, verb=verb))

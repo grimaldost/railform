@@ -2,6 +2,7 @@
 
 import argparse
 import importlib.util
+import os
 import re
 import subprocess
 import sys
@@ -120,7 +121,7 @@ class _FakeVerb:
 
 @pytest.fixture
 def fake_verb(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setitem(sys.modules, 'railform.fake_verb', _FakeVerb)  # ty: ignore[invalid-argument-type]
+    monkeypatch.setitem(sys.modules, 'railform.fake_verb', _FakeVerb)
 
 
 def test_a_module_found_by_name_runs_and_the_cli_names_the_verb(
@@ -148,13 +149,33 @@ def test_a_bad_argument_to_a_found_verb_exits_2_usage_with_one_verdict_line(
     assert 'required' in captured.err
 
 
-def test_help_of_a_found_verb_still_ends_with_one_verdict_line(
+@pytest.mark.parametrize(
+    'argv',
+    [['--help'], ['-h'], ['fake-verb', '--help'], ['fake-verb', '-h'], ['frame', '--help']],
+)
+def test_help_prints_no_verdict_line_exits_0_and_leaves_the_ledger_alone(
+    argv: list[str],
+    fake_verb: None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    ledger = tmp_path / 'ledger.txt'
+    monkeypatch.setenv('RAILFORM_LEDGER', str(ledger))
+    if _implemented('frame'):
+        pytest.skip('the frame verb has landed; its own tests cover its help')
+    assert main(argv) == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() != ''
+    assert 'railform-verdict:' not in captured.out
+    assert not ledger.exists()
+
+
+def test_help_of_a_found_verb_shows_the_verbs_own_arguments(
     fake_verb: None, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert main(['fake-verb', '--help']) == 0
-    out = capsys.readouterr().out
-    assert _verdict_lines(out) == ['railform-verdict: fake-verb pass ok']
-    assert out.splitlines()[-1] == 'railform-verdict: fake-verb pass ok'
+    main(['fake-verb', '--help'])
+    assert '--fail' in capsys.readouterr().out
 
 
 class _CrashingVerb:
@@ -181,7 +202,7 @@ class _CrashingParserVerb:
 def test_an_unhandled_exception_is_one_internal_error_verdict_and_exit_2(
     module: type, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setitem(sys.modules, 'railform.crash_verb', module)  # ty: ignore[invalid-argument-type]
+    monkeypatch.setitem(sys.modules, 'railform.crash_verb', module)
     assert main(['crash-verb']) == 2
     captured = capsys.readouterr()
     assert captured.out == 'railform-verdict: crash-verb fail internal-error\n'
@@ -194,8 +215,101 @@ def test_a_crash_is_appended_to_the_ledger_once(
 ) -> None:
     ledger = tmp_path / 'ledger.txt'
     monkeypatch.setenv('RAILFORM_LEDGER', str(ledger))
-    monkeypatch.setitem(sys.modules, 'railform.crash_verb', _CrashingVerb)  # ty: ignore[invalid-argument-type]
+    monkeypatch.setitem(sys.modules, 'railform.crash_verb', _CrashingVerb)
     main(['crash-verb'])
     assert (
         ledger.read_text(encoding='utf-8') == 'railform-verdict: crash-verb fail internal-error\n'
     )
+
+
+def _exits(where: str, how: BaseException) -> type:
+    """A stand-in verb whose import, add_arguments or run raises `how`."""
+
+    class _Verb:
+        @staticmethod
+        def add_arguments(parser: argparse.ArgumentParser) -> None:
+            if where == 'add_arguments':
+                raise how
+
+        @staticmethod
+        def run(args: argparse.Namespace) -> Verdict:
+            if where == 'run':
+                raise how
+            return Verdict.ok('ignored')
+
+    return _Verb
+
+
+@pytest.mark.parametrize('code', [0, 3, None])
+@pytest.mark.parametrize('where', ['add_arguments', 'run'])
+def test_a_system_exit_inside_a_verb_is_an_internal_error(
+    where: str,
+    code: int | None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _exits(where, SystemExit(code))
+    monkeypatch.setitem(sys.modules, 'railform.crash_verb', module)
+    assert main(['crash-verb']) == 2
+    captured = capsys.readouterr()
+    assert captured.out == 'railform-verdict: crash-verb fail internal-error\n'
+    assert 'SystemExit' in captured.err
+
+
+def test_a_system_exit_during_import_is_an_internal_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail_import(name: str) -> object:
+        raise SystemExit(0)
+
+    monkeypatch.setattr(cli.importlib, 'import_module', fail_import)
+    assert main(['frame']) == 2
+    assert capsys.readouterr().out == 'railform-verdict: frame fail internal-error\n'
+
+
+@pytest.mark.parametrize('where', ['add_arguments', 'run'])
+def test_a_keyboard_interrupt_inside_a_verb_propagates(
+    where: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(sys.modules, 'railform.crash_verb', _exits(where, KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        main(['crash-verb'])
+
+
+_ENCODING_SCRIPT = """
+import argparse, sys
+from railform.cli import main
+from railform.verdict import Verdict
+
+
+class Verb:
+    @staticmethod
+    def add_arguments(parser):
+        pass
+
+    @staticmethod
+    def run(args):
+        return Verdict.fail('x', 'some-rule', ('caf\\u00e9 \\u2713 \\u4e2d: broken',))
+
+
+sys.modules['railform.wide_verb'] = Verb
+sys.exit(main(['wide-verb']))
+"""
+
+
+@pytest.mark.parametrize('encoding', ['ascii', 'cp1252'])
+def test_a_finding_outside_the_output_encoding_still_ends_with_the_verdict(
+    encoding: str,
+) -> None:
+    env = {**os.environ, 'PYTHONIOENCODING': f'{encoding}:strict'}
+    done = subprocess.run(
+        [sys.executable, '-c', _ENCODING_SCRIPT],
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+    assert done.returncode == 1
+    lines = done.stdout.decode(encoding).splitlines()
+    assert lines[-1] == 'railform-verdict: wide-verb fail some-rule'
+    assert len(_verdict_lines('\n'.join(lines))) == 1
+    assert '\\u2713 \\u4e2d: broken' in lines[0]

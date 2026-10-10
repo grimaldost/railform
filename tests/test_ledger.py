@@ -15,8 +15,8 @@ def test_the_verdict_line_is_appended_to_the_ledger(
 ) -> None:
     ledger = tmp_path / 'ledger.txt'
     monkeypatch.setenv('RAILFORM_LEDGER', str(ledger))
-    main(['frame'])
-    line = 'railform-verdict: frame fail not-implemented'
+    main(['no-such-verb'])
+    line = 'railform-verdict: no-such-verb fail usage'
     assert capsys.readouterr().out == line + '\n'
     assert ledger.read_bytes() == (line + '\n').encode()
 
@@ -27,11 +27,11 @@ def test_each_run_appends_and_nothing_is_overwritten(
     ledger = tmp_path / 'ledger.txt'
     ledger.write_text('earlier line\n', encoding='utf-8')
     monkeypatch.setenv('RAILFORM_LEDGER', str(ledger))
-    main(['frame'])
+    main(['another-verb'])
     main(['no-such-verb'])
     assert ledger.read_text(encoding='utf-8').splitlines() == [
         'earlier line',
-        'railform-verdict: frame fail not-implemented',
+        'railform-verdict: another-verb fail usage',
         'railform-verdict: no-such-verb fail usage',
     ]
 
@@ -50,7 +50,7 @@ def test_nothing_is_written_when_the_variable_is_unset(
 ) -> None:
     monkeypatch.delenv('RAILFORM_LEDGER', raising=False)
     monkeypatch.chdir(tmp_path)
-    main(['frame'])
+    main(['no-such-verb'])
     assert list(tmp_path.iterdir()) == []
 
 
@@ -65,9 +65,9 @@ def test_an_unwritable_ledger_does_not_change_the_verdict_or_the_exit_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv('RAILFORM_LEDGER', str(tmp_path))  # a directory cannot be opened to append
-    assert main(['frame']) == 2
+    assert main(['no-such-verb']) == 2
     captured = capsys.readouterr()
-    assert captured.out == 'railform-verdict: frame fail not-implemented\n'
+    assert captured.out == 'railform-verdict: no-such-verb fail usage\n'
     assert 'RAILFORM_LEDGER' in captured.err
 
 
