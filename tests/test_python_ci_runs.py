@@ -264,6 +264,72 @@ def test_red_proof_a_failing_test_step_turns_gate_red(
     assert results['gate'] == 'failure', run.text()
 
 
+# --- the model refuses what it does not read ---------------------------------------------------
+
+
+def _model_run(tmp_path: Path, text: str, given: dict[str, str] | None = None) -> WorkflowRun:
+    path = tmp_path / 'workflow.yml'
+    path.write_text(text, encoding='utf-8')
+    runner = Runner(
+        root=tmp_path, scratch=tmp_path, github=github_context('push'), given=given or {}
+    )
+    return runner.run(path)
+
+
+_ON_TWO_SYSTEMS = """\
+on: push
+{defaults}
+jobs:
+  checks:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{{{ matrix.os }}}}
+    steps:
+      - run: echo ran
+"""
+
+
+def test_a_step_with_no_shell_on_a_windows_leg_fails_the_model(tmp_path: Path) -> None:
+    # GitHub runs it in pwsh. The leg not selected and a given result are checked too.
+    bare = _ON_TWO_SYSTEMS.format(defaults='')
+    with pytest.raises(AssertionError, match='runs in pwsh on windows-latest'):
+        _model_run(tmp_path, bare)
+    with pytest.raises(AssertionError, match='runs in pwsh on windows-latest'):
+        _model_run(tmp_path, bare, {'checks': 'success'})
+    declared = _ON_TWO_SYSTEMS.format(defaults='defaults:\n  run:\n    shell: bash')
+    assert _model_run(tmp_path, declared).results() == {'checks': 'success'}
+    # On a Linux runner a step with no shell runs in `bash -e`, without pipefail, as on GitHub.
+    linux = 'on: push\njobs:\n  one:\n    runs-on: ubuntu-latest\n    steps:\n'
+    assert _model_run(tmp_path, linux + '      - run: false | true\n').conclusion == 'success'
+    declared_step = '      - run: false | true\n        shell: bash\n'
+    assert _model_run(tmp_path, linux + declared_step).conclusion == 'failure'
+
+
+@pytest.mark.parametrize(
+    ('where', 'text'),
+    [
+        ('the workflow', 'concurrency: ci\n'),
+        ('job one', '    continue-on-error: true\n'),
+        ('job one defaults.run', '    defaults:\n      run:\n        working-directory: src\n'),
+        ('job one strategy', '    strategy:\n      max-parallel: 1\n'),
+        ('job one step 0', '        continue-on-error: true\n'),
+        ('job one step 0', '        working-directory: src\n'),
+    ],
+)
+def test_a_key_the_model_does_not_read_fails_the_run(tmp_path: Path, where: str, text: str) -> None:
+    job = '    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    permissions: {}\n'
+    step = '    steps:\n      - name: one\n        run: exit 0\n        timeout-minutes: 1\n'
+    parts = {'the workflow': 0, 'job one': 1, 'job one step 0': 2}
+    blocks = ['name: model\non: push\n', 'jobs:\n  one:\n' + job, step]
+    blocks[parts.get(where, 1)] += text
+    # The ignored keys alone pass.
+    plain = ''.join(['name: model\non: push\n', 'jobs:\n  one:\n' + job, step])
+    assert _model_run(tmp_path, plain).conclusion == 'success'
+    with pytest.raises(AssertionError, match=f'{where}.*: the model does not read'):
+        _model_run(tmp_path, ''.join(blocks))
+
+
 def test_the_model_runs_bash_from_git_on_windows() -> None:
     # The WSL launcher in System32 is never the shell these tests run.
     path = bash()

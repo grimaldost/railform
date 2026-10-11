@@ -10,10 +10,18 @@ locally, modelling only what they use:
   its condition says otherwise. Steps likewise, judged on the earlier steps of their job.
 - A job that calls a reusable workflow runs it with its `with:` inputs and takes its conclusion:
   `failure` when a job failed, else `success` (a skipped job fails nothing).
-- `run:` steps run in bash with `-eo pipefail`, as `shell: bash` does (a step that names no
-  shell runs in bash too, a Linux runner's default), in the repository's working tree, with the
-  workflow, job and step `env:` and a fresh `$GITHUB_OUTPUT` per step, whose values become the
-  step's outputs and, through the job's `outputs:`, its job outputs.
+- `run:` steps run in bash, in the repository's working tree, with the workflow, job and step
+  `env:` and a fresh `$GITHUB_OUTPUT` per step, whose values become the step's outputs and,
+  through the job's `outputs:`, its job outputs. A step's shell is resolved as GitHub resolves
+  it, from the step's `shell:`, the job's `defaults.run.shell`, the workflow's, then the leg's
+  runner: a declared `bash` runs with `-eo pipefail`; with none declared, a Linux or macOS
+  runner's default is `bash -e`, and a `windows-*` runner's is pwsh, which the model refuses. It
+  checks every leg of a job that is not skipped, given jobs and legs not selected included, so a
+  workflow whose Windows legs would run pwsh fails here.
+- The model reads only the workflow, job, step and strategy keys listed in `_KEYS`, and ignores
+  only `name`, `permissions` and `timeout-minutes`, which change no result of a run that ends.
+  Any other key (`continue-on-error`, `working-directory`, `concurrency`, a matrix `include`...)
+  fails the run, so a workflow never passes here on a key the model does not read.
 - `${{ }}` expressions: string, number and boolean literals and null; the contexts `github`,
   `inputs`, `needs`, `matrix`, `steps` and `env`; `!`, `==`, `!=`, `&&` and `||` with their
   GitHub values; property access with `.` and the `.*` filter; and the functions `always`,
@@ -21,8 +29,8 @@ locally, modelling only what they use:
 
 Where a local run differs from a real one:
 
-- `uses:` steps run nothing: the checkout is the repository's working tree as it stands, and uv is
-  already on PATH.
+- `uses:` steps run nothing (their `with:` is still evaluated): the checkout is the repository's
+  working tree as it stands, and uv is already on PATH.
 - railform is the code under test. The one install every railform command in the workflow
   starts with (`INSTALL`) runs this interpreter's `python -m railform` instead, and a call to
   `grimaldost/railform/.github/workflows/<file>@<sha>` runs this checkout's `<file>`.
@@ -59,6 +67,78 @@ _REMOTE_WORKFLOW = re.compile(r'grimaldost/railform/(\.github/workflows/[\w.-]+)
 # What would point uv at railform's own environment instead of the repository's.
 _DROPPED_ENV = ('VIRTUAL_ENV', 'UV_PROJECT_ENVIRONMENT', 'UV_FROZEN', 'UV_LOCKED', 'UV_NO_SYNC')
 STEP_TIMEOUT = 900
+# What `shell: bash` runs with, and what a Linux or macOS runner runs a step that names no shell
+# with (GitHub's `bash -e {0}`).
+DECLARED_BASH = ('-eo', 'pipefail')
+DEFAULT_BASH = ('-e',)
+# Ignored: they change no result of a run that ends.
+IGNORED = frozenset({'name', 'permissions', 'timeout-minutes'})
+# Every key the model reads, by where it sits; any other key fails the run.
+_KEYS = {
+    'workflow': frozenset({'on', True, 'env', 'defaults', 'jobs'}) | IGNORED,
+    'job': frozenset(
+        {
+            'needs',
+            'if',
+            'uses',
+            'with',
+            'runs-on',
+            'strategy',
+            'defaults',
+            'env',
+            'outputs',
+            'steps',
+        }
+    )
+    | IGNORED,
+    'step': frozenset({'id', 'if', 'uses', 'with', 'run', 'shell', 'env'}) | IGNORED,
+    'strategy': frozenset({'matrix', 'fail-fast'}),
+    'defaults': frozenset({'run'}),
+    'defaults.run': frozenset({'shell'}),
+}
+
+
+def _check_keys(kind: str, block: dict[Any, Any], where: str) -> None:
+    unknown = set(block) - _KEYS[kind]
+    assert not unknown, f'{where}: the model does not read {sorted(map(str, unknown))}'
+
+
+def _default_shell(block: dict[str, Any], where: str) -> str | None:
+    """The `defaults.run.shell` of a workflow or a job, its keys checked."""
+    defaults = block.get('defaults') or {}
+    _check_keys('defaults', defaults, f'{where} defaults')
+    run = defaults.get('run') or {}
+    _check_keys('defaults.run', run, f'{where} defaults.run')
+    return run.get('shell')
+
+
+def check_workflow(workflow: dict[Any, Any]) -> None:
+    """Fail on any key of the workflow, its jobs, strategies or steps the model does not read."""
+    _check_keys('workflow', workflow, 'the workflow')
+    _default_shell(workflow, 'the workflow')
+    for name, job in workflow['jobs'].items():
+        _check_keys('job', job, f'job {name}')
+        _default_shell(job, f'job {name}')
+        _check_keys('strategy', job.get('strategy') or {}, f'job {name} strategy')
+        for number, step in enumerate(job.get('steps') or []):
+            _check_keys('step', step, f'job {name} step {number}')
+
+
+def step_shell(
+    step: dict[str, Any], job: dict[str, Any], workflow_shell: str | None, runs_on: object
+) -> tuple[str, ...]:
+    """The bash options a `run:` step runs with on the runner `runs_on`, resolved as GitHub
+    resolves its shell; a step that would not run in bash fails."""
+    declared = step.get('shell') or _default_shell(job, 'the job') or workflow_shell
+    labels = [runs_on] if isinstance(runs_on, str) else runs_on
+    assert isinstance(labels, list) and labels, f'runs-on {runs_on!r} is not a runner'
+    label = step.get('name') or step.get('run', '').splitlines()[0]
+    if declared is None:
+        windows = [runner for runner in labels if str(runner).startswith('windows')]
+        assert not windows, f'{label}: no shell declared, so it runs in pwsh on {windows[0]}'
+        return DEFAULT_BASH
+    assert declared == 'bash', f'{label}: the model runs bash steps only, not {declared}'
+    return DECLARED_BASH
 
 
 def bash() -> str | None:
@@ -404,12 +484,13 @@ class Runner:
 
     def run(self, path: Path, inputs: dict[str, Any] | None = None) -> WorkflowRun:
         workflow = load(path)
+        check_workflow(workflow)
         base = {'github': self.github, 'inputs': inputs or {}, 'vars': {}, 'secrets': {}}
         env = {
             key: _text(interpolate(value, base))
             for key, value in (workflow.get('env') or {}).items()
         }
-        shell = ((workflow.get('defaults') or {}).get('run') or {}).get('shell')
+        shell = _default_shell(workflow, 'the workflow')
         jobs: dict[str, JobRun] = {}
         called: dict[str, WorkflowRun] = {}
         pending = list(workflow['jobs'])
@@ -454,6 +535,13 @@ class Runner:
         )
         if not holds(job.get('if'), context, status):
             return JobRun('skipped')
+        all_legs = [] if 'uses' in job else legs(job, context)
+        # Every leg's shells, before a given result or a leg selection could hide one.
+        for leg in all_legs:
+            runs_on = interpolate(job.get('runs-on'), {**context, 'matrix': leg})
+            for step in job['steps']:
+                if 'run' in step:
+                    step_shell(step, job, shell, runs_on)
         if name in self.given:
             return JobRun(self.given[name], log=[f'{name}: given {self.given[name]}'])
         if 'uses' in job:
@@ -462,7 +550,6 @@ class Runner:
             run = self.run(self._workflow(job['uses']), inputs)
             called[name] = run
             return JobRun(run.conclusion)
-        all_legs = legs(job, context)
         chosen = [leg for leg in all_legs if self.select(leg)] if self.select else all_legs[:1]
         assert chosen, f'{name}: no matrix leg selected out of {all_legs}'
         runs = [self._steps(job, {**context, 'matrix': leg}, env, shell) for leg in chosen]
@@ -506,6 +593,9 @@ class Runner:
                 log.append(f'  {label}: skipped')
                 continue
             if 'uses' in step:
+                # Not run, but its inputs are evaluated, so an expression the model cannot read
+                # fails here as it would on GitHub.
+                interpolate(step.get('with') or {}, here)
                 log.append(f'  {label}: not run (a uses: step)')
                 continue
             step_env = {
@@ -515,10 +605,9 @@ class Runner:
                     for key, value in (step.get('env') or {}).items()
                 },
             }
-            # With no shell named, a Linux runner's default is bash.
-            chosen = step.get('shell') or shell or 'bash'
-            assert chosen == 'bash', f'{label}: the model runs bash steps only'
-            code, output, outputs = self._bash(executable, step['run'], step_env)
+            runs_on = interpolate(job.get('runs-on'), context)
+            options = step_shell(step, job, shell, runs_on)
+            code, output, outputs = self._bash(executable, options, step['run'], step_env)
             if step.get('id'):
                 steps[step['id']] = {
                     'outputs': outputs,
@@ -534,7 +623,7 @@ class Runner:
         return JobRun('failure' if failed else 'success', outputs, log)
 
     def _bash(
-        self, executable: str, script: str, step_env: dict[str, str]
+        self, executable: str, options: tuple[str, ...], script: str, step_env: dict[str, str]
     ) -> tuple[int, str, dict[str, str]]:
         number = next(self._count)
         local = shlex.quote(Path(sys.executable).as_posix()) + ' -m railform'
@@ -550,7 +639,7 @@ class Runner:
         env['GITHUB_EVENT_PATH'] = event_file.as_posix()
         env['GITHUB_EVENT_NAME'] = str(self.github.get('event_name', ''))
         done = subprocess.run(
-            [executable, '--noprofile', '--norc', '-eo', 'pipefail', path.as_posix()],
+            [executable, '--noprofile', '--norc', *options, path.as_posix()],
             cwd=self.root,
             env=env,
             stdin=subprocess.DEVNULL,

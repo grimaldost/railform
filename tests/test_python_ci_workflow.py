@@ -12,7 +12,9 @@ no YAML parser; railform has PyYAML, so the jobs are read as data and the pins a
   commit passed through `env:` and checked to be 40-hex before anything is installed;
 - the `commit-lane` step that runs `branch-name` declares `shell: bash`, takes `HEAD_REF` from
   `github.head_ref` in its `env:`, puts `github.head_ref` in no `run:` text, and sits under the
-  job's pull-request condition.
+  job's pull-request condition;
+- every step runs in bash on every system: the workflow's `defaults` declare it, since a step
+  that names no shell runs in pwsh on a `windows-latest` leg.
 
 Runs of the workflow through a fixture caller are in `tests/test_python_ci_runs.py`.
 """
@@ -31,13 +33,17 @@ import yaml
 from railform import frame
 from railform.cli import VERBS
 from workflow_model import (
+    DECLARED_BASH,
     INSTALL,
     WORKFLOWS,
     Status,
     bash,
     github_context,
     holds,
+    interpolate,
+    legs,
     load,
+    step_shell,
     triggers,
 )
 
@@ -260,6 +266,34 @@ def test_the_checks_job_runs_the_frame_pipeline_on_the_frame_matrix(
     assert runs[0] == f'{INSTALL} private-refs'
     assert len(runs) == 2
     assert _step(job, 'PIPELINE')['env'] == {'PIPELINE': '${{ needs.frame.outputs.pipeline }}'}
+
+
+def test_every_step_runs_in_bash_on_every_system(workflow: dict[Any, Any]) -> None:
+    # The frame's commands are bash. A step that names no shell runs in pwsh on a windows-latest
+    # leg, so the workflow declares bash for every step, and no job or step names another shell.
+    assert workflow['defaults'] == {'run': {'shell': 'bash'}}
+    for name, job in workflow['jobs'].items():
+        assert 'defaults' not in job, name
+        for step in job['steps']:
+            assert step.get('shell', 'bash') == 'bash', (name, step)
+
+
+@pytest.mark.parametrize('project_type', ['python-package', 'python-scripts'])
+def test_the_model_runs_every_step_in_bash_on_every_leg_of_the_preset_matrix(
+    workflow: dict[Any, Any], project_type: str
+) -> None:
+    # The model resolves each step's shell from its leg as GitHub does, and refuses pwsh.
+    outputs = dict(frame.github_outputs(frame.effective_frame({'project': {'type': project_type}})))
+    context = {'needs': {'frame': {'outputs': outputs}}}
+    job = _job(workflow, 'checks')
+    all_legs = legs(job, context)
+    assert {leg['os'] for leg in all_legs} == {'ubuntu-latest', 'windows-latest'}
+    shell = workflow['defaults']['run']['shell']
+    for leg in all_legs:
+        runs_on = interpolate(job['runs-on'], {**context, 'matrix': leg})
+        for step in job['steps']:
+            if 'run' in step:
+                assert step_shell(step, job, shell, runs_on) == DECLARED_BASH, (leg, step)
 
 
 def _pipeline_step(workflow: dict[Any, Any], pipeline: str) -> subprocess.CompletedProcess[str]:
