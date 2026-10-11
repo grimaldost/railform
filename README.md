@@ -193,12 +193,14 @@ merge base to HEAD. In CI the `changelog` job runs it on pull requests as
   clean merge, such as the merge commit CI checks out for a pull request, is charged nothing; a
   hand resolution of a watched path needs a record or the trailer on the merge. A merge of
   unrelated histories, and an octopus merge, are charged their combined diff.
-- **Release headings** (`release-heading`). When a record file gains a `## [X.Y.Z]` heading, the
-  version must already read `X.Y.Z` at HEAD and must have been lower at the merge base. The
+- **Release headings** (`release-heading`). The first heading `## [X.Y.Z]` that a record file's
+  diff adds, among those whose version no heading the diff removes carries, is the cut: a new
+  date on a released heading, a trailing space on it or a CRLF conversion of the file is no cut.
+  The version must already read `X.Y.Z` at HEAD and must have been lower at the merge base. The
   version is read from the first `version.sites` row that is not `authored` on the record's
-  release line (the `release.tag_prefix` row with the longest prefix of the record file). A side
-  with no readable three-part version, such as `0.1.0.dev0`, is not compared; a line with no such
-  site skips the rule and says so.
+  release line (the `release.tag_prefix` row with the longest prefix of the record file), in
+  ASCII digits. A side with no readable three-part version, such as `0.1.0.dev0`, is not
+  compared; a line with no such site skips the rule and says so.
 - **Contract surfaces** (`consumer-affecting`). When the range changes a path of
   `changelog.contract_surfaces` and no record's added lines say `(consumer-affecting)`, the rule
   fires once per surface. By default (`changelog.consumer_affecting = "advisory"`) a firing is a
@@ -206,9 +208,16 @@ merge base to HEAD. In CI the `changelog` job runs it on pull requests as
   `"error"`, declared with an `exceptions` row, makes it fail.
 
 When several rules fail, the verdict names the first in the order above and every finding is
-printed. `changelog.enabled = false` (with its `exceptions` row) passes at once. An empty
-`changelog.records`, a trailer template without exactly one `<reason>`, two rows with the same
-prefix, a range not of the form `BASE...HEAD` and a revision git cannot resolve exit 2.
+printed. When no tracked path at HEAD other than the record files falls under any
+`changelog.records` row (a flat-layout package on the `python-package` preset's `src/`, for
+example), the gate prints `::warning::changelog.records: watches no tracked path` and keeps its
+verdict. `changelog.enabled = false` (with its `exceptions` row) passes at once.
+
+These exit 2: an empty `changelog.records`, a records row with no file, two `changelog.records`
+or `release.tag_prefix` rows with the same prefix, a trailer template without exactly one
+`<reason>`, a `version.sites` pattern with no group, a range not of the form `BASE...HEAD`, a
+revision git cannot resolve, a range with no merge base, and a git older than 2.38 when a merge
+must be charged.
 
 ## The session-paths check
 
