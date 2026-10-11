@@ -343,9 +343,11 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
   `.github/workflows/railform-tag-watch.yml`, the caller of the reusable tag watch (see the
   release check below). Adopt writes the caller when it is absent, whatever `release.enabled`
   says; when it exists, adopt moves only its two pin sites, the `uses:` commit and the
-  `railform-sha` input, and leaves the rest as it is. `--check` renders the template at the
-  file's own `uses:` commit and compares the whole file: a missing file or any other difference
-  is `drift`, a pin site that differs from the others `pin-mismatch`. A workflow of the
+  `railform-sha` input (the input only when the file calls the pinned workflow), and leaves the
+  rest as it is, line endings included. `--check` renders the template at the file's own `uses:`
+  commit and compares the whole file: a missing file or any other difference is `drift`, which
+  deleting the file and running `railform adopt` clears; a pin site that differs from the others
+  is `pin-mismatch`. A workflow of the
   repository's own, such as a `tag-watch.yml` it already had, is never touched.
 - `railform.toml`, on the first run only, with the project type and `python.versions`. A `src/`
   layout is `python-package`, another `pyproject.toml` is `python-scripts`, and no
@@ -554,20 +556,31 @@ keep.
 - **The release pull request** of a tag of version V on a line named N (the last segment of the
   row's `prefix`, none for the root row) is a merged pull request whose head branch starts with
   `release/`, or whose title is a `release` subject (`release: …`, `release(scope): …`), and that
-  carries V and, on a named line, N as whole tokens: `release/0.2.0`, `release/keel-0.2.0` and
-  `release(humblepowers): 0.19.0` identify; `docs/after-0.2.0` and `release/0.2.01` do not.
+  carries N as a whole token on a named line and V as its first version: the first `X.Y.Z` of the
+  head branch (or of the title), with no pre-release or build suffix after it.
+  `release/0.2.0`, `release/keel-0.2.0` and `release(humblepowers): 0.19.0` identify;
+  `docs/after-0.2.0`, `release/0.2.01`, `release/1.0.0-rc1` and `release: 1.1.0 (from 1.0.0)` do
+  not identify the versions they mention later or with a suffix.
 - **The rules,** each finding beginning `<tag>: `, the verdict naming the first in this order:
   - `lightweight-tag`: the tag is not annotated; lay release tags with
     `git tag -a vX.Y.Z <release merge commit> -m "..."`;
   - `no-release-pr`: no merged pull request is the tag's release pull request;
   - `tag-placement`: the tag's commit is not the merge commit of its release pull request. A tag
-    on that merge commit passes, also when the commit is the default branch's tip;
+    on that merge commit passes, also when the commit is the default branch's tip. A tag that
+    resolves to no commit, or a pull request with no merge commit, never passes;
   - `release-commit`: a `release:` commit the tag's merge commit brings in (a squash commit
     titled `release: …` included, a merge commit never) changes a path outside the release
     metadata, which is `release.metadata_paths` (globs over the whole path, `*` within a segment,
     `**` across segments) plus every `changelog.records` file and every `version.sites` path.
 - `release.enabled = false` (with an `exceptions` row) turns the check off: it passes at once.
   With no tag to judge it passes without reading any pull request.
+- **Limits.**
+  - When two merged pull requests identify the same version, a tag on either merge commit passes.
+  - A release merged by rebase has no merge commit of its own: the tag sits on the last rebased
+    commit, and only that commit is judged by the release-commit rule.
+  - A repository's floor must sit past its last release whose pull request does not identify
+    (one released from a branch not under `release/` with a title that is not a `release`
+    subject); every judged tag needs an identifying pull request.
 
 The pull requests come from the GitHub REST API: `$GITHUB_REPOSITORY` (`owner/name`),
 `$GITHUB_API_URL` (default `https://api.github.com`), and `$GITHUB_TOKEN` when set, which is
@@ -578,8 +591,9 @@ JSON array of entries in the API's shape (`number`, `title`, `head.ref`, `merged
 
 **The tag watch.** The reusable `.github/workflows/tag-watch.yml` runs `release-check` from the
 commit its required input `railform-sha` names, with a read-only token (`contents: read`,
-`pull-requests: read`). It checks out the whole history, which brings the tags, and on a tag push
-the default branch rather than the pushed tag. Its caller is the
+`pull-requests: read`), which the client never sends to another host on a redirect. It checks
+out the whole history, which brings the tags, and on a push or a dispatch from a tag the default
+branch rather than the tag. Its caller is the
 `.github/workflows/railform-tag-watch.yml` that `railform adopt` writes, the same file for every
 repository: it runs on every tag push, every day at 07:23 UTC and on demand
 (`workflow_dispatch`), which also clears an alarm once the tag is fixed. railform's own caller
