@@ -1,3 +1,6 @@
+# railform's own CI calls its reusable workflow by local path (`ci.self_hosted` in railform.toml),
+# so every change runs through the workflow it ships, at the commit under test. The railform and
+# gate jobs are written by `railform adopt`.
 name: ci
 on:
   push:
@@ -7,50 +10,21 @@ on:
 permissions:
   contents: read
 jobs:
-  checks:
-    if: github.event.action != 'edited'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python: ["3.11", "3.14"]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - run: uv lock --check
-      - run: uv sync --frozen --python ${{ matrix.python }}
-      - run: uv run --frozen railform private-refs
-      - run: uv run --frozen ruff format --check .
-      - run: uv run --frozen ruff check .
-      - run: uv run --frozen ty check src
-      - run: uv run --frozen python -m pytest -q
-
-  audit:
-    if: github.event.action != 'edited'
+  # >>> railform: owned by `railform adopt`; `railform adopt --check` fails on any edit
+  railform:
+    uses: ./.github/workflows/python-ci.yml
+    permissions:
+      contents: read
+    with:
+      railform-sha: ${{ github.event.pull_request.head.sha || github.sha }}
+  gate:
+    if: always()
+    needs: [railform]
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - env:
-          GH_TOKEN: ${{ github.token }}
-        run: uvx zizmor==1.30.0 --min-severity high .github/workflows
-
-  commit-lane:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - env:
-          BASE_REF: ${{ github.base_ref }}
-        run: uv run --frozen railform commit-range "origin/${BASE_REF}...HEAD"
+      - name: Fail when a needed job failed or was cancelled
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         shell: bash
-      - run: uv run --frozen railform pr-text
+        run: exit 1
+  # <<< railform

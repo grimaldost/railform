@@ -1,0 +1,16 @@
+# This repository's frame for railform: `railform frame` prints the effective frame and
+# `railform frame --check` judges this file.
+
+[project]
+type = "python-package"
+
+[python]
+versions = ["3.11", "3.14"]
+
+[ci]
+self_hosted = true
+
+[[exceptions]]
+key = "ci.self_hosted"
+value = true
+reason = "railform calls its own reusable workflow by local path"
