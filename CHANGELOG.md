@@ -22,7 +22,6 @@ All notable changes to this project are recorded here, in the
   hook adopt writes runs at a declared stage; every `uv run` railform ships is frozen; the model
   evaluates a `uses:` step's `with:`; armed fixture clones accept a commit message quoting a
   conflict marker and a `git commit --fixup`, and commit through an interpreter-launch wrapper.
-
 - Repository and package skeleton: `pyproject.toml` (built with `uv_build`, Python 3.11 or
   newer, PyYAML as the only runtime dependency), the committed `uv.lock`, and the `railform`
   package with its console script and `python -m railform`.
@@ -212,7 +211,9 @@ All notable changes to this project are recorded here, in the
   (default first, each element once) instead of replacing it: a repository lists only what it
   adds, never drops a default element, and its list no longer goes stale when a pin adds one.
   They never depart, so an `exceptions` row for them matches nothing, and a `railform.toml` that
-  leaves out a default glob no longer narrows the D1 guard.
+  leaves out a default glob no longer narrows the D1 guard. An existing `exceptions` row for
+  either list now fails `railform frame --check` with `bad-exception`; delete the row, and the
+  default element it dropped is back in the list.
 - `railform adopt` writes `stages: [pre-commit]` on every hook of the hygiene entry, so
   `check-merge-conflict --assume-in-merge` no longer judges the commit message and the hygiene
   set no longer runs again at `pre-push`; `adopt --check` holds the stages.
@@ -221,7 +222,8 @@ All notable changes to this project are recorded here, in the
   console-script shim, which an application-control policy may refuse.
 - `railform commit-msg` accepts an autosquash subject (`fixup! `, `squash! ` or `amend! ` before
   a valid subject), so `git commit --fixup` works locally; `commit-range` still refuses it.
-- The default `commit.attribution_patterns` stamp arm names GPT and Anthropic as well as Claude.
+- The default `commit.attribution_patterns` stamp arm names GPT and Anthropic as well as Claude,
+  anywhere later on the line (`Generated with the help of Claude`).
 - `private-refs` reads a user segment made only of full stops and ellipsis characters
   (`/home/.../`, `C:\Users\…\`) as a placeholder.
 - Every job of the reusable workflow has a time limit, and only `checks` keeps setup-uv's cache.
@@ -273,6 +275,9 @@ All notable changes to this project are recorded here, in the
   before, it staged a second entry no Windows checkout can hold.
 - A `core.hooksPath` that git expands (`~`, `%(prefix)`) is outside the repository: adopt no
   longer writes stubs under a literal `~` directory.
+- A `hooks.dir` that starts with `~` or `%(` is a configuration error (exit 2), as a forbidden
+  character is; before, `railform arm` could leave a clone that `hooks-check --armed` reports as
+  armed while git runs hooks from the expanded path.
 - A `hooks.dir` or `core.hooksPath` holding a character Windows forbids in a name (`<>:"|?*`) is
   judged in every segment, before any write; before, a `:` past the first segment made the stub
   write fail on Windows after the other writes.
