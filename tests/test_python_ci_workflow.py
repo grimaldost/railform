@@ -53,6 +53,8 @@ if TYPE_CHECKING:
 
 WORKFLOW = WORKFLOWS / 'python-ci.yml'
 JOBS = ('frame', 'checks', 'commit-lane', 'changelog', 'hooks', 'audit')
+# The mapping of the resolution date into a `uvx` step (tests/test_resolution_date.py).
+DATE = '${{ env.RAILFORM_EXCLUDE_NEWER }}'
 PR_CONDITION = "github.event_name == 'pull_request'"
 _USES = re.compile(r'^\s*(?:-\s+)?uses:\s*(\S+)', re.MULTILINE)
 _SHA = re.compile(r'[0-9a-f]{40}')
@@ -189,7 +191,9 @@ def test_the_jobs_that_read_history_check_out_all_of_it(
 
 
 def test_every_railform_command_is_installed_from_the_input(workflow: dict[Any, Any]) -> None:
-    assert workflow['env'] == {'RAILFORM_SHA': '${{ inputs.railform-sha }}'}
+    # The resolution date is the other workflow-level constant (tests/test_resolution_date.py).
+    assert set(workflow['env']) == {'RAILFORM_SHA', 'RAILFORM_EXCLUDE_NEWER'}
+    assert workflow['env']['RAILFORM_SHA'] == '${{ inputs.railform-sha }}'
     commands = 0
     for run in _all_runs(workflow):
         for verb in VERBS:
@@ -292,7 +296,8 @@ def test_the_checks_job_runs_the_frame_pipeline_on_the_frame_matrix(
     assert runs[0] == f'{INSTALL} private-refs'
     assert runs[1] == f'{INSTALL} version-sites'
     # The step has no condition of its own, so it runs on every leg, on pull requests and pushes.
-    assert set(_step(job, f'{INSTALL} version-sites')) == {'name', 'run'}
+    assert set(_step(job, f'{INSTALL} version-sites')) == {'name', 'env', 'run'}
+    assert _step(job, f'{INSTALL} version-sites')['env'] == {'UV_EXCLUDE_NEWER': DATE}
     assert len(runs) == 3
     assert _step(job, 'PIPELINE')['env'] == {'PIPELINE': '${{ needs.frame.outputs.pipeline }}'}
 
@@ -404,7 +409,10 @@ def test_the_commit_lane_checks_the_range_the_text_and_the_branch(
         f'{INSTALL} pr-text',
         f'{INSTALL} branch-name -- "$HEAD_REF"',
     ]
-    assert _step(job, 'commit-range')['env'] == {'BASE_REF': '${{ github.base_ref }}'}
+    assert _step(job, 'commit-range')['env'] == {
+        'BASE_REF': '${{ github.base_ref }}',
+        'UV_EXCLUDE_NEWER': DATE,
+    }
 
 
 def test_red_proof_the_branch_name_step_takes_the_head_branch_through_the_environment(
@@ -415,7 +423,7 @@ def test_red_proof_the_branch_name_step_takes_the_head_branch_through_the_enviro
     job = _job(workflow, 'commit-lane')
     step = _step(job, 'branch-name')
     assert step['shell'] == 'bash'
-    assert step['env'] == {'HEAD_REF': '${{ github.head_ref }}'}
+    assert step['env'] == {'HEAD_REF': '${{ github.head_ref }}', 'UV_EXCLUDE_NEWER': DATE}
     assert step['run'] == f'{INSTALL} branch-name -- "$HEAD_REF"'
     assert 'if' not in step  # it runs under the job's condition, nothing narrower
     assert job['if'] == PR_CONDITION
@@ -438,7 +446,7 @@ def test_the_changelog_job_runs_the_gate_on_pull_requests_only(workflow: dict[An
     assert _runs(job) == [f'{INSTALL} changelog-gate "origin/${{BASE_REF}}...HEAD"']
     step = _step(job, 'changelog-gate')
     assert step['name'] == 'railform changelog-gate'
-    assert step['env'] == {'BASE_REF': '${{ github.base_ref }}'}
+    assert step['env'] == {'BASE_REF': '${{ github.base_ref }}', 'UV_EXCLUDE_NEWER': DATE}
     assert 'if' not in step  # it runs under the job's condition, nothing narrower
 
 
@@ -484,6 +492,7 @@ def test_red_proof_the_hooks_job_runs_pre_commit_on_the_frames_newest_python(
     assert step['env'] == {
         'BASE_REF': '${{ github.base_ref }}',
         'HOOKS_PYTHON': '${{ needs.frame.outputs.hooks_python }}',
+        'UV_EXCLUDE_NEWER': DATE,
     }
     assert _job(workflow, 'frame')['outputs']['hooks_python'] == (
         '${{ steps.frame.outputs.hooks_python }}'

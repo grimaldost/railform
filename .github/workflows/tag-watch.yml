@@ -18,6 +18,10 @@ permissions:
   pull-requests: read
 env:
   RAILFORM_SHA: ${{ inputs.railform-sha }}
+  # The date the `uvx` step resolves its dependencies as of (uv's `UV_EXCLUDE_NEWER`, mapped into
+  # that step). Each railform release moves it to its own day, in a commit of the release pull
+  # request that is not the `release:` commit. `python-ci.yml` holds the same value.
+  RAILFORM_EXCLUDE_NEWER: '2026-10-11T00:00:00Z'
 defaults:
   run:
     shell: bash
@@ -47,4 +51,5 @@ jobs:
       - name: railform release-check
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform release-check

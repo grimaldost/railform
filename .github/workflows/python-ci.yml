@@ -20,6 +20,11 @@ permissions:
   contents: read
 env:
   RAILFORM_SHA: ${{ inputs.railform-sha }}
+  # The date every `uvx` step resolves its dependencies as of (uv's `UV_EXCLUDE_NEWER`, mapped
+  # into each step that needs it; the `checks` job's pipeline step never sees it). Each railform
+  # release moves it to its own day, in a commit of the release pull request that is not the
+  # `release:` commit. `tag-watch.yml` holds the same value.
+  RAILFORM_EXCLUDE_NEWER: '2026-10-11T00:00:00Z'
 defaults:
   run:
     shell: bash
@@ -48,9 +53,13 @@ jobs:
           version: '0.12.19'
           enable-cache: false
       - name: railform frame --check
+        env:
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform frame --check
       - name: railform frame --github-output
         id: frame
+        env:
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform frame --github-output
 
   checks:
@@ -73,8 +82,12 @@ jobs:
         with:
           version: '0.12.19'
       - name: railform private-refs
+        env:
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform private-refs
       - name: railform version-sites
+        env:
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform version-sites
       - name: The type's pipeline, from the frame
         env:
@@ -106,8 +119,11 @@ jobs:
       - name: railform commit-range
         env:
           BASE_REF: ${{ github.base_ref }}
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform commit-range "origin/${BASE_REF}...HEAD"
       - name: railform pr-text
+        env:
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform pr-text
       # The head branch's name is chosen by whoever pushed it: it reaches the command through
       # the environment, never through the script text.
@@ -115,6 +131,7 @@ jobs:
         shell: bash
         env:
           HEAD_REF: ${{ github.head_ref }}
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform branch-name -- "$HEAD_REF"
 
   # The changelog gate (the development-rails spec, §14) judges every commit the pull request
@@ -137,6 +154,7 @@ jobs:
       - name: railform changelog-gate
         env:
           BASE_REF: ${{ github.base_ref }}
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform changelog-gate "origin/${BASE_REF}...HEAD"
 
   hooks:
@@ -153,8 +171,12 @@ jobs:
           version: '0.12.19'
           enable-cache: false
       - name: railform hooks-check
+        env:
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform hooks-check
       - name: railform adopt --check
+        env:
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform adopt --check
       # The hygiene entry `railform adopt` writes, run over the files the pull request changes,
       # never over every file. Every hook runs, so one run reports every hook that fails.
@@ -165,6 +187,7 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
           HOOKS_PYTHON: ${{ needs.frame.outputs.hooks_python }}
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: |
           set -eo pipefail
           status=0
@@ -189,4 +212,5 @@ jobs:
       - name: zizmor
         env:
           GH_TOKEN: ${{ github.token }}
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx zizmor==1.30.0 --min-severity high .github/workflows

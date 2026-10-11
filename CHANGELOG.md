@@ -247,6 +247,15 @@ All notable changes to this project are recorded here, in the
 
 ### Changed
 
+- Every `uvx` step of `python-ci.yml` and `tag-watch.yml` (the railform verbs, zizmor and the
+  pre-commit replay) resolves its dependencies as of one date: the workflow-level
+  `RAILFORM_EXCLUDE_NEWER`, first value `2026-10-11T00:00:00Z`, is mapped into each of those steps
+  as uv's `UV_EXCLUDE_NEWER`, so a dependency published later cannot reach a run of a given
+  railform commit. The environments pre-commit builds for the hygiene hooks are installed by pip,
+  which does not read the date, so they stay pinned only by the hook repository's frozen rev. The
+  `checks` job's pipeline step never sees the date, and no `run:` text changes. Each release moves
+  the date in a commit of its pull request that is not the `release:` commit, and a change between
+  releases that pins a tool or raises a dependency floor to a newer release moves it too.
 - The `changelog` job of the reusable workflow runs `railform changelog-gate` on pull requests
   instead of being skipped on every event.
 - The `python-package` preset's `changelog.records` watches `src/` only, so a change that moves
