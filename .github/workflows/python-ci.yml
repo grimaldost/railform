@@ -1,0 +1,165 @@
+# The reusable CI workflow of railform (the development-rails spec, §9).
+#
+# A repository calls it from its ci.yml through the `railform` job that `railform adopt` writes,
+# at a pinned commit of railform, and passes the same commit as the required input
+# `railform-sha`. Every railform command here runs from that commit, installed with
+# `uvx --from git+https://github.com/grimaldost/railform@<40-hex sha>`.
+#
+# The type's pipeline is not written here: `frame` reads it from the caller's effective frame
+# (`railform frame --github-output`), and `checks` runs it, one command per line, in that order.
+# The caller's `gate` job, written by `railform adopt`, is the one required status.
+name: python-ci
+on:
+  workflow_call:
+    inputs:
+      railform-sha:
+        description: The railform commit, 40 hexadecimal characters, whose commands the jobs run.
+        required: true
+        type: string
+permissions:
+  contents: read
+env:
+  RAILFORM_SHA: ${{ inputs.railform-sha }}
+defaults:
+  run:
+    shell: bash
+jobs:
+  frame:
+    runs-on: ubuntu-latest
+    outputs:
+      ci_os: ${{ steps.frame.outputs.ci_os }}
+      ci_setup: ${{ steps.frame.outputs.ci_setup }}
+      python_versions: ${{ steps.frame.outputs.python_versions }}
+      pipeline: ${{ steps.frame.outputs.pipeline }}
+    steps:
+      - name: Check that railform-sha is a full commit
+        run: |
+          if [[ ! "$RAILFORM_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::railform-sha must be a railform commit of 40 hexadecimal characters"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.19'
+      - name: railform frame --check
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform frame --check
+      - name: railform frame --github-output
+        id: frame
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform frame --github-output
+
+  checks:
+    needs: frame
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.frame.outputs.ci_os) }}
+        python: ${{ fromJSON(needs.frame.outputs.python_versions) }}
+    runs-on: ${{ matrix.os }}
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: ${{ fromJSON(needs.frame.outputs.ci_setup).fetch_depth }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.19'
+      - name: railform private-refs
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform private-refs
+      - name: The type's pipeline, from the frame
+        env:
+          PIPELINE: ${{ needs.frame.outputs.pipeline }}
+        run: |
+          set -eo pipefail
+          # One command per line, in the frame's order; the first that fails stops the job.
+          while IFS= read -r -u 3 step; do
+            if [ -z "$step" ]; then continue; fi
+            echo "::group::$step"
+            eval "$step" < /dev/null
+            echo "::endgroup::"
+          done 3<<< "$PIPELINE"
+
+  commit-lane:
+    needs: frame
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.19'
+      - name: railform commit-range
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform commit-range "origin/${BASE_REF}...HEAD"
+      - name: railform pr-text
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform pr-text
+      # The head branch's name is chosen by whoever pushed it: it reaches the command through
+      # the environment, never through the script text.
+      - name: railform branch-name
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform branch-name -- "$HEAD_REF"
+
+  # A placeholder until the changelog gate exists (the development-rails spec, §14): skipped on
+  # every event. §14 drops `false &&` and gives it its steps.
+  changelog:
+    needs: frame
+    if: false && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: The changelog gate is not written yet
+        run: exit 0
+
+  hooks:
+    needs: frame
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.19'
+      - name: railform hooks-check
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform hooks-check
+      - name: railform adopt --check
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform adopt --check
+      # The hygiene entry `railform adopt` writes, run over the files the pull request changes,
+      # never over every file. Every hook runs, so one run reports every hook that fails.
+      - name: Replay the hygiene hooks over the changed files
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -eo pipefail
+          status=0
+          for hook in trailing-whitespace end-of-file-fixer check-merge-conflict \
+              check-added-large-files check-yaml check-toml check-json; do
+            uvx pre-commit==4.6.2 run "$hook" --show-diff-on-failure \
+              --from-ref "origin/${BASE_REF}" --to-ref HEAD || status=1
+          done
+          exit "$status"
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.19'
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uvx zizmor==1.30.0 --min-severity high .github/workflows
