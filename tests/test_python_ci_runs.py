@@ -15,6 +15,8 @@ The red proofs of §9 that run here, each named in its test:
   green run of the test above);
 - a fixture caller that sets `python.test_command` to `true` with no exceptions row turns `gate`
   red (`test_red_proof_a_test_command_of_true_without_an_exceptions_row_turns_gate_red`);
+- §7's acceptance: a failing extra job of the caller turns `gate` red
+  (`test_red_proof_a_failing_extra_job_turns_gate_red`);
 - the round-6 amendment's pull request from a branch named `foo` turns `gate` red
   (`test_red_proof_a_pull_request_from_foo_turns_gate_red`).
 
@@ -131,6 +133,31 @@ def test_red_proof_a_test_command_of_true_without_an_exceptions_row_turns_gate_r
     run = _run(root, tmp_path, 'push', {**AUDIT, 'checks': 'success'})
     assert run.results()['railform/frame'] == 'success', run.text()
     assert run.results()['gate'] == 'success', run.text()
+
+
+def test_red_proof_a_failing_extra_job_turns_gate_red(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # §7: `railform adopt` makes `gate` need every job of the caller, the fixture's own `docs`
+    # job too. The reusable workflow is not what this test is about, so `railform` is given.
+    root = _adopted(scratch_repo, 'python-package', capsys)
+    ci = root / CI
+    good = 'run: echo "the documentation builds"'
+    text = ci.read_text(encoding='utf-8')
+    assert text.count(good) == 1, text
+    assert 'docs' in load(ci)['jobs']['gate']['needs']
+    given = {'railform': 'success'}
+    ci.write_text(text.replace(good, 'run: exit 1'), encoding='utf-8')
+    run = _run(root, tmp_path, 'push', given)
+    assert run.results() == {'railform': 'success', 'docs': 'failure', 'gate': 'failure'}, (
+        run.text()
+    )
+    # With the job restored, gate is green.
+    ci.write_text(text, encoding='utf-8')
+    run = _run(root, tmp_path, 'push', given)
+    assert run.results() == {'railform': 'success', 'docs': 'success', 'gate': 'success'}, (
+        run.text()
+    )
 
 
 def test_a_pin_that_is_not_a_full_commit_stops_the_run_before_any_install(
