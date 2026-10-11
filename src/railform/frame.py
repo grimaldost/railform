@@ -23,6 +23,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import tomllib
 import uuid
@@ -622,11 +623,68 @@ def dumps_toml(table: dict[str, Any]) -> str:
     return '\n'.join(lines) + '\n'
 
 
+def pipeline(frame: dict[str, Any]) -> list[str]:
+    """The type's pipeline: the commands the `checks` job of the reusable workflow runs, in the
+    type's fixed order, built from the frame's typed parameters (spec §9 and design decision 3).
+
+    Each element is one bash command line. The Python version is not in them: the workflow sets
+    `UV_PYTHON` for each matrix leg, and uv reads it. A `python.test_command` of several lines
+    gives one command per non-blank line.
+
+    - `python-package` and `python-scripts`: the lock check, the sync (with `python.sync_args`),
+      `uv pip install` of `ci.setup.extra_installs` when there are any, the ruff format check
+      and lint over `python.lint_paths`, `ty` over `python.type_check` when it is set, then the
+      test command.
+    - `plugin-marketplace` (no uv project): ruff from uvx at `ci.ruff_version`, format check and
+      lint, then the test command.
+
+    Raises FrameError when a step cannot be written: ruff at no version, or extra installs for a
+    type that has no environment to install them into.
+    """
+    python = frame['python']
+    lint = shlex.join(python['lint_paths'])
+    installs = frame['ci']['setup']['extra_installs']
+    steps: list[str] = []
+    if frame['project']['type'] == 'plugin-marketplace':
+        version = frame['ci']['ruff_version']
+        if not version:
+            raise FrameError(
+                'ci.ruff_version is empty: the plugin-marketplace pipeline runs ruff from uvx '
+                'at a pinned version'
+            )
+        if installs:
+            raise FrameError(
+                'ci.setup.extra_installs is set, but a plugin-marketplace repository has no uv '
+                'project to install into; add `--with` to python.test_command instead'
+            )
+        ruff = shlex.join(['uvx', f'ruff=={version}'])
+        steps += [f'{ruff} format --check {lint}', f'{ruff} check {lint}']
+    else:
+        steps += ['uv lock --check', shlex.join(['uv', 'sync', '--frozen', *python['sync_args']])]
+        if installs:
+            steps.append(shlex.join(['uv', 'pip', 'install', *installs]))
+        steps += [
+            f'uv run --frozen ruff format --check {lint}',
+            f'uv run --frozen ruff check {lint}',
+        ]
+        if python['type_check']:
+            steps.append(shlex.join(['uv', 'run', '--frozen', 'ty', 'check', python['type_check']]))
+    steps += [line for line in python['test_command'].splitlines() if line.strip()]
+    return [step.rstrip() for step in steps]
+
+
+# The output that carries the pipeline, one command per line.
+PIPELINE_OUTPUT = 'pipeline'
+
+
 def github_outputs(frame: dict[str, Any]) -> list[tuple[str, str]]:
-    """One output per key of spec §2: `<table>_<key>`, or the key alone at the top level.
+    """One output per key of spec §2: `<table>_<key>`, or the key alone at the top level; then
+    `pipeline`, the type's pipeline from `pipeline(frame)`, one command per line.
 
     A string is written as it is; every other value (a list, a table, a boolean, a number) as
     compact JSON, which a workflow reads with `fromJSON`.
+
+    Raises FrameError when the pipeline cannot be written.
     """
     outputs: list[tuple[str, str]] = []
 
@@ -640,6 +698,7 @@ def github_outputs(frame: dict[str, Any]) -> list[tuple[str, str]]:
             outputs += [(f'{key}_{sub}', text(inner)) for sub, inner in value.items()]
         else:
             outputs.append((key, text(value)))
+    outputs.append((PIPELINE_OUTPUT, '\n'.join(pipeline(frame))))
     return outputs
 
 
@@ -700,7 +759,11 @@ def run(args: argparse.Namespace) -> Verdict:
         code, findings = check(config)
         return Verdict.fail(VERB, code, tuple(findings))
     if args.github_output:
-        lines = ''.join(_output_lines(name, value) for name, value in github_outputs(frame))
+        try:
+            outputs = github_outputs(frame)
+        except FrameError as exc:
+            return Verdict.usage(VERB, f'{VERB}: {exc}')
+        lines = ''.join(_output_lines(name, value) for name, value in outputs)
         try:
             with open(target, 'a', encoding='utf-8', newline='\n') as output:
                 output.write(lines)
