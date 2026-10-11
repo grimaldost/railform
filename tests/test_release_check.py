@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import urllib.request
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -334,6 +335,25 @@ def test_red_proof_the_tag_watch_caller_fails_the_run_after_a_tag_moves(
     assert 'railform-verdict: release-check fail tag-placement' in text
 
 
+def test_a_tag_on_no_commit_never_matches_a_release_with_no_merge_commit(
+    scratch_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Contract (Wave C) 11.5: an annotated tag on a tree resolves to no commit, and a merged
+    # release pull request without a merge commit names none; the two never match.
+    repo = base(scratch_repo)
+    entry = pull(1, 'release: 0.2.0', 'release/0.2.0', None)
+    entry['merged_at'] = '2026-10-11T12:00:00Z'
+    pulls_file(tmp_path, monkeypatch, [entry])
+    tree = git(scratch_repo, 'rev-parse', f'{repo.merge}^{{tree}}')
+    tag(scratch_repo, 'v0.2.0', tree)
+    code, verdict, findings = check(capsys)
+    assert (code, verdict) == (1, 'fail tag-placement')
+    assert any(line.startswith('v0.2.0: ') for line in findings), findings
+
+
 # --- which tags are judged ---------------------------------------------------------------------
 
 
@@ -584,6 +604,14 @@ def test_a_squash_release_commit_is_judged_and_a_merge_commit_is_not(
         ('0.19.0', 'humblepowers', 'release/0.19.0', 'release: 0.19.0', False),
         ('0.2.0', 'a', 'release/a-0.2.0', 'chore: x', True),
         ('0.2.0', 'a', 'release/b-0.2.0', 'release(b): 0.2.0', False),
+        ('1.0.0', '', 'release/1.0.0-rc1', 'chore: x', False),
+        ('1.0.0', '', 'release/1.0.0+build.5', 'chore: x', False),
+        ('1.0.0', '', 'feat/x', 'release: 1.1.0 (from 1.0.0)', False),
+        ('1.0.0', '', 'feat/x', 'release: 1.0.0-rc1', False),
+        ('1.0.0', '', 'release/1.1.0-after-1.0.0', 'chore: x', False),
+        ('1.0.0', '', 'release/1.0.0', 'chore: x', True),
+        ('1.0.0', '', 'feat/x', 'release: 1.0.0 (from 0.9.0)', True),
+        ('1.0.0', '', 'release/1.0.0-', 'chore: x', True),
     ],
 )
 def test_a_release_pull_request_carries_the_version_and_the_name_as_tokens(
@@ -666,6 +694,11 @@ def test_the_api_needs_a_repository_named_owner_slash_name(
     assert check(capsys)[:2] == (2, 'fail usage')
 
 
+class _Opener:
+    def __init__(self, open_: Any) -> None:
+        self.open = open_
+
+
 class _Response:
     def __init__(self, body: object, status: int = 200) -> None:
         self.status = status
@@ -694,7 +727,7 @@ def test_the_client_reads_every_page_with_the_api_headers(
         seen.append((request.full_url, dict(request.header_items()), timeout))
         return _Response(pages[int(request.full_url.rsplit('=', 1)[1])])
 
-    monkeypatch.setattr(release_check.urllib.request, 'urlopen', urlopen)
+    monkeypatch.setattr(release_check, '_opener', lambda: _Opener(urlopen))
     monkeypatch.setenv('GITHUB_REPOSITORY', 'o/r')
     monkeypatch.setenv('GITHUB_API_URL', 'https://api.example.test/')
     monkeypatch.setenv('GITHUB_TOKEN', 'abc')
@@ -721,13 +754,36 @@ def test_a_body_that_is_not_an_array_or_a_bad_status_is_an_api_error(
     body: object, status: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        release_check.urllib.request,
-        'urlopen',
-        lambda request, timeout: _Response(body, status),
+        release_check,
+        '_opener',
+        lambda: _Opener(lambda request, timeout: _Response(body, status)),
     )
     monkeypatch.setenv('GITHUB_REPOSITORY', 'o/r')
     with pytest.raises(release_check.ApiError):
         release_check.fetch_pulls()
+
+
+@pytest.mark.parametrize(
+    ('target', 'keeps'),
+    [
+        ('https://api.github.com/repositories/1/pulls?page=2', True),
+        ('https://elsewhere.example/pulls', False),
+        ('http://api.github.com/repos/o/r/pulls', False),
+    ],
+)
+def test_the_token_stays_on_its_host_across_a_redirect(target: str, keeps: bool) -> None:
+    # Contract (Wave C) 11.7: a redirect to another host never carries the token.
+    request = urllib.request.Request(
+        'https://api.github.com/repos/o/r/pulls', headers={'Authorization': 'Bearer abc'}
+    )
+    handler = release_check.SameHostRedirects()
+    followed = handler.redirect_request(request, None, 302, 'Found', {}, target)
+    assert followed is not None
+    assert followed.full_url == target
+    assert followed.has_header('Authorization') is keeps
+    # The real client uses the handler.
+    opener = release_check._opener()
+    assert any(isinstance(h, release_check.SameHostRedirects) for h in opener.handlers)
 
 
 # --- release metadata --------------------------------------------------------------------------

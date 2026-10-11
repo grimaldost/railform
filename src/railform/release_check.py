@@ -18,7 +18,7 @@ Per judged tag of version V on a release line named N (the last segment of the r
 - `lightweight-tag`: `git cat-file -t` does not say `tag`;
 - `no-release-pr`: no merged pull request is a release pull request of the tag, that is, one
   whose head branch starts with `release/` or whose title is a `release` subject, and which
-  carries V as a version token and, on a named line, N as a name token;
+  names V as its first version and, on a named line, N as a name token;
 - `tag-placement`: the tag's commit is not the merge commit of any of its release pull requests;
 - `release-commit`: a commit the tag's commit brings in (`git rev-list <tag>^1..<tag>`) with at
   most one parent, whose subject is a `release` subject, changes a path outside the release
@@ -197,10 +197,21 @@ def pulls_from(data: object) -> list[Pull]:
     return pulls
 
 
+# A version-shaped token: X.Y.Z not preceded by a digit or `.`, and not followed by a digit or by
+# `.` and a digit, so `release/0.2.01` holds 0.2.01, never 0.2.0.
+_VERSION_TOKEN = re.compile(r'(?<![0-9.])([0-9]+\.[0-9]+\.[0-9]+)(?![0-9]|\.[0-9])')
+# A pre-release or build suffix: the token it follows is not a release version.
+_SUFFIX = re.compile(r'[-+][A-Za-z0-9]')
+
+
 def _has_version(text: str, version: str) -> bool:
-    """V occurs not preceded by a digit or `.`, and not followed by a digit or by `.` and a
-    digit: `release/0.2.0` carries 0.2.0, `release/0.2.01` does not."""
-    return re.search(rf'(?<![0-9.]){re.escape(version)}(?![0-9]|\.[0-9])', text) is not None
+    """V is the first version-shaped token of `text`, with no pre-release or build suffix:
+    `release/0.2.0` names 0.2.0; `release/1.0.0-rc1` and `release: 1.1.0 (from 1.0.0)` do not
+    name 1.0.0 (interface contract, Wave C, section 11.4)."""
+    first = _VERSION_TOKEN.search(text)
+    if first is None or first.group(1) != version:
+        return False
+    return _SUFFIX.match(text, first.end()) is None
 
 
 def _has_name(text: str, name: str) -> bool:
@@ -263,10 +274,38 @@ def fetch_pulls() -> list[Pull]:
         raise ApiError(f'the pull requests the API returned are not in its shape: {exc}') from exc
 
 
+class SameHostRedirects(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect as urllib does, but drops the token when it leads to another host or
+    scheme, so the token never leaves the API's host."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and _origin(newurl) != _origin(req.full_url):
+            new.remove_header('Authorization')
+        return new
+
+
+def _origin(url: str) -> tuple[str, str]:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme.lower(), parts.netloc.lower()
+
+
+def _opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(SameHostRedirects())
+
+
 def _get_page(url: str, headers: dict[str, str]) -> list[object]:
     request = urllib.request.Request(url, headers=headers)  # noqa: S310 (the scheme is checked)
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:  # noqa: S310
+        with _opener().open(request, timeout=TIMEOUT_SECONDS) as response:
             status = response.status
             body = response.read()
     except urllib.error.HTTPError as exc:
@@ -425,7 +464,11 @@ def _judge(
                 + ')',
             )
         )
-    elif commit not in {pull.merge_commit for pull in candidates}:
+    # A real merge commit only: an unresolved tag or a candidate with no merge commit never
+    # satisfies the rule (interface contract, Wave C, section 11.5).
+    elif not commit or commit not in {
+        pull.merge_commit for pull in candidates if pull.merge_commit
+    }:
         merges = ', '.join(
             f'#{pull.number} merged as {pull.merge_commit or "no merge commit"}'
             for pull in candidates
