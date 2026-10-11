@@ -161,7 +161,8 @@ All notable changes to this project are recorded here, in the
   branch pass and say so.
 - Tests that run the manifest's hooks through real `git commit` and `git push` in armed clones
   of the three migration fixtures, with the hooks installed by pre-commit from the code under
-  test. They need the network and take about four minutes.
+  test. They need the network in every session and take about five and a half minutes on
+  Windows; offline, run `pytest -m "not slow"`.
 
 ### Changed
 
