@@ -309,7 +309,7 @@ checks that the input is 40 hexadecimal characters before anything is installed.
 | `checks` | `railform private-refs`, then the type's pipeline, on every leg of `ci.os` by `python.versions` | every run |
 | `commit-lane` | `railform commit-range`, `railform pr-text`, and `railform branch-name` on the head branch | pull requests |
 | `changelog` | nothing yet: a placeholder, skipped until the changelog gate exists | none |
-| `hooks` | `railform hooks-check`, `railform adopt --check`, and the hygiene hooks over the changed files | every run; the hygiene hooks on pull requests |
+| `hooks` | `railform hooks-check`, `railform adopt --check`, and the hygiene hooks over the changed files, with pre-commit on the newest of `python.versions` (the `hooks_python` output of `frame --github-output`), so a `default_language_version` naming that Python resolves | every run; the hygiene hooks on pull requests |
 | `audit` | zizmor 1.30.0 at high severity over the caller's workflows | every run |
 
 - **The pipeline comes from the frame.** The workflow names no step of the type's pipeline.

@@ -209,7 +209,7 @@ def test_the_frame_job_checks_the_pin_then_the_frame_then_exports_it(
     assert '$RAILFORM_SHA' in runs[0] and '[0-9a-f]{40}' in runs[0]
     assert runs[1:] == [f'{INSTALL} frame --check', f'{INSTALL} frame --github-output']
     assert _step(job, 'frame --github-output')['id'] == 'frame'
-    names = ('ci_os', 'ci_setup', 'python_versions', 'pipeline')
+    names = ('ci_os', 'ci_setup', 'python_versions', 'pipeline', 'hooks_python')
     assert job['outputs'] == {name: f'${{{{ steps.frame.outputs.{name} }}}}' for name in names}
     # Each output the job passes on is one `frame --github-output` writes.
     written = {name for name, _ in frame.github_outputs(frame.effective_frame(None))}
@@ -445,7 +445,62 @@ def test_the_hooks_job_replays_the_hygiene_hooks_over_the_changed_files_only(
     assert listed[1].replace('\\', ' ').split() == _hygiene_ids()
     # One pre-commit version for the replay and for the wrapper that runs it through uvx.
     pinned = frame.preset_frame('plugin-marketplace')['hooks']['pre_commit_version']
-    assert f'uvx pre-commit=={pinned} run "$hook"' in script
+    assert f'uvx --python "$HOOKS_PYTHON" pre-commit=={pinned} run "$hook"' in script
+
+
+def test_red_proof_the_hooks_job_runs_pre_commit_on_the_frames_newest_python(
+    workflow: dict[Any, Any],
+) -> None:
+    # The development-rails spec, §13 (the craft-collection pilot): pre-commit ran on the
+    # runner's own Python, so a `default_language_version` naming the repository's Python had no
+    # interpreter. The replay now runs pre-commit on the newest of `python.versions`.
+    step = _step(_job(workflow, 'hooks'), 'pre-commit')
+    assert step['env'] == {
+        'BASE_REF': '${{ github.base_ref }}',
+        'HOOKS_PYTHON': '${{ needs.frame.outputs.hooks_python }}',
+    }
+    assert _job(workflow, 'frame')['outputs']['hooks_python'] == (
+        '${{ steps.frame.outputs.hooks_python }}'
+    )
+
+
+@pytest.mark.parametrize(
+    ('versions', 'expected'),
+    [
+        (['3.13'], '3.13'),
+        (['3.9', '3.10'], '3.10'),
+        (['3.11', '3.14', '3.12'], '3.14'),
+        ([], '3.14'),
+    ],
+)
+def test_hooks_python_is_the_newest_listed_version(versions: list[str], expected: str) -> None:
+    effective = frame.effective_frame({'python': {'versions': versions}})
+    assert frame.hooks_python(effective) == expected
+    assert ('hooks_python', expected) in frame.github_outputs(effective)
+
+
+@pytest.mark.skipif(bash() is None, reason='no bash on this machine')
+def test_the_replay_passes_the_frames_python_to_uvx(
+    workflow: dict[Any, Any], tmp_path: Path
+) -> None:
+    # A stand-in `uvx`, a shell function, records its arguments, so the replay's real script
+    # runs offline.
+    script = _step(_job(workflow, 'hooks'), 'pre-commit')['run']
+    record = tmp_path / 'calls.txt'
+    executable = bash()
+    assert executable is not None
+    prefix = 'uvx() { echo "$*" >> "$RECORD"; }\n'
+    done = subprocess.run(
+        [executable, '--noprofile', '--norc', '-eo', 'pipefail', '-c', prefix + script],
+        env={**os.environ, 'BASE_REF': 'main', 'HOOKS_PYTHON': '3.13', 'RECORD': str(record)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    calls = record.read_text(encoding='utf-8').splitlines()
+    assert len(calls) == len(_hygiene_ids())
+    assert all(call.startswith('--python 3.13 pre-commit==') for call in calls), calls
 
 
 _IDENT = ('-c', 'user.name=someone', '-c', 'user.email=someone@example.com')

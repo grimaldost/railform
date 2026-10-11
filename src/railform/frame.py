@@ -695,11 +695,31 @@ def pipeline(frame: dict[str, Any]) -> list[str]:
 
 # The output that carries the pipeline, one command per line.
 PIPELINE_OUTPUT = 'pipeline'
+# The output that names the Python the `hooks` job runs pre-commit on.
+HOOKS_PYTHON_OUTPUT = 'hooks_python'
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    """A version such as `3.13` as numbers, so `3.10` sorts after `3.9`; a part that is not a
+    number sorts first."""
+    return tuple(int(part) if part.isdigit() else -1 for part in version.split('.'))
+
+
+def hooks_python(frame: dict[str, Any]) -> str:
+    """The Python the `hooks` job runs pre-commit on: the newest of `python.versions`, or
+    `python.newest` when the list is empty (development-rails spec, §13, the craft-collection
+    pilot). A `default_language_version` that names the repository's newest Python then resolves
+    to the interpreter pre-commit runs on."""
+    versions = frame['python']['versions']
+    if not versions:
+        return frame['python']['newest']
+    return max(versions, key=_version_key)
 
 
 def github_outputs(frame: dict[str, Any]) -> list[tuple[str, str]]:
     """One output per key of spec §2: `<table>_<key>`, or the key alone at the top level; then
-    `pipeline`, the type's pipeline from `pipeline(frame)`, one command per line.
+    `pipeline`, the type's pipeline from `pipeline(frame)`, one command per line; then
+    `hooks_python`, the Python the `hooks` job runs pre-commit on (`hooks_python(frame)`).
 
     A string is written as it is; every other value (a list, a table, a boolean, a number) as
     compact JSON, which a workflow reads with `fromJSON`.
@@ -719,6 +739,7 @@ def github_outputs(frame: dict[str, Any]) -> list[tuple[str, str]]:
         else:
             outputs.append((key, text(value)))
     outputs.append((PIPELINE_OUTPUT, '\n'.join(pipeline(frame))))
+    outputs.append((HOOKS_PYTHON_OUTPUT, hooks_python(frame)))
     return outputs
 
 
