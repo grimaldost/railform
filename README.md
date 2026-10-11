@@ -58,7 +58,7 @@ The frame is the configuration every check reads, as data. The effective frame o
 is built in three layers: the default frame shipped in the package
 (`src/railform/default_frame.toml`), then the preset of the repository's project type
 (`python-package`, `python-scripts` or `plugin-marketplace`), then the repository's own
-`railform.toml`. Arrays replace; tables merge key by key. Without a `railform.toml`, the frame is
+`railform.toml`. Arrays replace (except the two guard lists below); tables merge key by key. Without a `railform.toml`, the frame is
 the default with the `python-package` preset.
 
 A value that differs from the preset is a departure, and a departure is legal only when an
@@ -76,8 +76,15 @@ reason = "the suite runs in a separate workflow during the migration"
 
 The keys in `meta.parameter_keys` (the project type and layout, the Python versions and package,
 the version sites, the changelog records and contract surfaces, and the release start and tag
-prefixes) are per repository and never depart. `session_loaded` and `private_refs.placeholders`
-may grow without an exception; dropping a default element is a departure.
+prefixes) are per repository and never depart.
+
+The two guard lists, `session_loaded` and `private_refs.placeholders`, are joined to the default
+instead of replacing it: the effective list is the default's elements, then the repository's own
+that the default lacks, each once. A repository lists only what it adds, its list never goes
+stale when a later pin adds a default element, and it cannot drop a default element. These lists
+never depart, so an `exceptions` row for them matches nothing. `railform frame` and
+`railform frame --json` print the joined list. For example, `session_loaded = ["docs/prompts/**"]`
+keeps every default glob and adds one.
 
 Some keys hold rows rather than plain values:
 
@@ -155,7 +162,7 @@ pattern exit 2.
 
 `railform session-paths --diff BASE...HEAD --frame-from REF [--glob PATTERN ...]` is the guard an
 adoption series runs so that no change touches a file a Claude Code session loads (skills,
-agents, commands, a plugin's hooks, plugin manifests, `.claude/`, `CLAUDE.md`, `AGENTS.md`,
+agents, commands, output styles, a plugin's hooks, plugin manifests, `.claude/`, `CLAUDE.md`, `AGENTS.md`,
 `.mcp.json`). It lists the changed paths with `git diff --no-renames --name-only`, so a file
 moved out of a loaded path still counts, and fails with `session-loaded` when one matches a glob
 of `session_loaded` in the frame at `REF`. Pass the base as `REF`: the globs are then never the
@@ -167,7 +174,8 @@ compare case-insensitively. So `**/hooks/**` matches `plugins/x/hooks/hooks.json
 `.githooks/pre-commit`. A malformed glob (an empty segment, a `.` or `..` segment, a leading or
 trailing `/`, or a backslash), from the frame or from `--glob`, is a configuration error (exit
 2), because it would match nothing. The check also fails with `guard-narrowed` when the
-`railform.toml` at HEAD removes or excepts a glob the frame at `REF` had.
+`railform.toml` at HEAD removes or excepts a glob the frame at `REF` had. Since the list is joined
+to the default, only a glob the repository added itself can be removed.
 
 The check is blind to the inside of a submodule: git lists a submodule as its own path, so a
 change to files in its contents is not seen unless the submodule path itself is changed.

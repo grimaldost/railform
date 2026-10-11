@@ -2,13 +2,15 @@
 #
 # The effective frame of a repository is this file's base tables, then the table under
 # `presets.<project.type>`, then the repository's `railform.toml`. Arrays replace; tables merge
-# key by key. `presets` itself never reaches the effective frame.
+# key by key. The two guard lists, `session_loaded` and `private_refs.placeholders`, are the
+# exception: a repository's list is joined to this one (these first, each element once).
+# `presets` itself never reaches the effective frame.
 #
 # A key whose value has no meaning for a project type is present with the empty value of its
 # type ("", [] or {}); the presets fill in the keys that differ by type.
 
 # Globs of the paths a Claude Code session loads (the D1 guard of `railform session-paths`).
-# A repository may add globs; dropping one of these is a departure.
+# A repository lists only the globs it adds; these stay whatever its list says.
 session_loaded = [
     "**/skills/**",
     "**/agents/**",

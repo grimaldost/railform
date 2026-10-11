@@ -174,24 +174,38 @@ def test_red_proof_dropping_the_skills_glob_together_with_a_skills_edit_fails(
     _write(repo, 'railform.toml', _toml_without(SKILLS_GLOB))
     _write(repo, 'skills/review/SKILL.md', 'two\n')
     head = _commit(repo)
-    # Judged by the head's own frame this change would pass; the base's frame catches it.
+    # The guard comes from the base, and the head's list cannot drop a default glob either: the
+    # repository's list is joined to the default (development-rails spec, §13).
     code, verdict, findings = _judge(capsys, base, head)
     assert code == 1
     assert verdict == 'session-loaded'
     assert any(f.startswith('skills/review/SKILL.md:') for f in findings)
-    assert any(SKILLS_GLOB in f and f.startswith('railform.toml:') for f in findings)
+    config = frame.parse_config(_toml_without(SKILLS_GLOB))
+    assert SKILLS_GLOB in frame.effective_frame(config)['session_loaded']
 
 
-def test_red_proof_dropping_the_skills_glob_alone_fails_guard_narrowed(
+def test_red_proof_dropping_a_repository_glob_alone_fails_guard_narrowed(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    base = _base(repo)
+    _write(repo, 'railform.toml', 'session_loaded = ["docs/prompts/**"]\n')
+    base = _commit(repo)
+    # A list without the repository's own glob narrows the guard; one without a default glob
+    # cannot, since the default is joined back in.
     _write(repo, 'railform.toml', _toml_without(SKILLS_GLOB))
     head = _commit(repo)
     code, verdict, findings = _judge(capsys, base, head)
     assert (code, verdict) == (1, 'guard-narrowed')
     assert len(findings) == 1
-    assert SKILLS_GLOB in findings[0]
+    assert 'docs/prompts/**' in findings[0]
+
+
+def test_a_list_without_a_default_glob_narrows_nothing(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = _base(repo)
+    _write(repo, 'railform.toml', _toml_without(SKILLS_GLOB))
+    head = _commit(repo)
+    assert _judge(capsys, base, head) == (0, 'ok', [])
 
 
 def test_red_proof_an_exceptions_row_for_the_guard_fails_guard_narrowed(
@@ -403,11 +417,13 @@ def test_extra_globs_add_and_never_remove(repo: Path, capsys: pytest.CaptureFixt
 def test_extra_globs_are_not_part_of_the_narrowing_check(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    base = _base(repo)
-    _write(repo, 'railform.toml', 'session_loaded = ["**/skills/**"]\n')
+    _write(repo, 'railform.toml', 'session_loaded = ["docs/prompts/**"]\n')
+    base = _commit(repo)
+    (repo / 'railform.toml').unlink()
     head = _commit(repo)
-    # Dropping defaults narrows the guard; an extra glob on the command line does not hide it.
-    code, verdict, _ = _judge(capsys, base, head, '--glob', '**/agents/**')
+    # Dropping the repository's glob narrows the guard; the same glob on the command line does
+    # not hide it.
+    code, verdict, _ = _judge(capsys, base, head, '--glob', 'docs/prompts/**')
     assert (code, verdict) == (1, 'guard-narrowed')
 
 

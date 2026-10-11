@@ -20,6 +20,8 @@ configuration error (exit 2), from the frame or from `--glob`.
 
 The check also fails (`guard-narrowed`) when `railform.toml` at HEAD removes a glob that the
 frame at `--frame-from` had, or adds an `exceptions` row for `session_loaded` that leaves one out.
+Since the repository's list is joined to the default, only a glob the repository added itself
+can be removed; a list that leaves out a default glob keeps it.
 """
 
 from __future__ import annotations

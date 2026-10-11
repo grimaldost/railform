@@ -2,11 +2,12 @@
 
 Development-rails spec, §2, invented here. The default frame (`default_frame.toml`, shipped in
 this package) is applied first, then the preset of `project.type`, then the repository's
-`railform.toml`; arrays replace and tables merge key by key. A value that departs from the
-preset is legal only when an `exceptions` row names its key and its value with a reason, and
-`railform frame --check` fails an unlisted departure. The keys in `meta.parameter_keys` are
-per repository and never depart; `session_loaded` and `private_refs.placeholders` may grow
-without an exception, never shrink.
+`railform.toml`; arrays replace and tables merge key by key, except the two guard lists,
+`session_loaded` and `private_refs.placeholders`, where the repository's list is joined to the
+default (default first, each element once), so they grow and never shrink. A value that departs
+from the preset is legal only when an `exceptions` row names its key and its value with a
+reason, and `railform frame --check` fails an unlisted departure. The keys in
+`meta.parameter_keys` are per repository and never depart, nor do the two guard lists.
 
 `commit.attribution_patterns` in the default frame is keel's set
 (https://github.com/grimaldost/keel, `.pre-commit-config.yaml` at c3313fd), and its test cases
@@ -42,9 +43,10 @@ CONFIG_NAME = 'railform.toml'
 PROJECT_TYPES = ('python-package', 'python-scripts', 'plugin-marketplace')
 GITHUB_OUTPUT_ENV = 'GITHUB_OUTPUT'
 
-# The guard lists: a repository may add to them without an exception, and dropping a default
-# element is a departure (interface contract, section 3). A safety rule, not a preference, so
-# it is not frame data a repository could relax.
+# The guard lists: the repository's list is joined to the default (default first, each element
+# once), so a repository names only what it adds and can never drop a default element (the
+# development-rails spec, §13, from the craft-collection pilot). A safety rule, not a
+# preference, so it is not frame data a repository could relax.
 EXTENDABLE_KEYS = ('session_loaded', 'private_refs.placeholders')
 
 # Replaced in `hooks.wrapper` by the value of `hooks.pre_commit_version`.
@@ -355,11 +357,29 @@ def preset_frame(project_type: str) -> dict[str, Any]:
     return frame
 
 
+def _union(default: list[Any], own: list[Any]) -> list[Any]:
+    """The default's elements, then the repository's own that the default lacks, each once."""
+    joined: list[Any] = []
+    for item in [*default, *own]:
+        if not any(_same(item, seen) for seen in joined):
+            joined.append(item)
+    return joined
+
+
 def _unrendered(config: dict[str, Any]) -> dict[str, Any]:
     problems = validate(config)
     if problems:
         raise FrameSchemaError(problems)
-    return _merge(preset_frame(_project_type(config)), config)
+    preset = preset_frame(_project_type(config))
+    frame = _merge(preset, config)
+    for key in EXTENDABLE_KEYS:
+        *tables, leaf = key.split('.')
+        target, default = frame, preset
+        for table in tables:
+            target[table] = dict(target[table])
+            target, default = target[table], default[table]
+        target[leaf] = _union(default[leaf], target[leaf])
+    return frame
 
 
 def _render(frame: dict[str, Any]) -> dict[str, Any]:
@@ -472,14 +492,11 @@ def departures(config: dict[str, Any]) -> list[Departure]:
     parameter_keys = preset['meta']['parameter_keys']
     found: list[Departure] = []
     for key in leaf_keys():
-        if _is_parameter(key, parameter_keys):
+        # A guard list is the default joined with the repository's own, so it never departs.
+        if _is_parameter(key, parameter_keys) or key in EXTENDABLE_KEYS:
             continue
         expected, value = _get(preset, key), _get(frame, key)
-        if key in EXTENDABLE_KEYS:
-            departs = any(not any(_same(e, v) for v in value) for e in expected)
-        else:
-            departs = not _same(expected, value)
-        if departs:
+        if not _same(expected, value):
             found.append(Departure(key, expected, value))
     return found
 
