@@ -928,6 +928,21 @@ def test_attribution_trailers_and_stamps_are_rejected(line: str) -> None:
 @pytest.mark.parametrize(
     'line',
     [
+        'Generated with GPT-5',
+        'Generated with [GPT](https://example.com)',
+        'Generated with Anthropic tools',
+        'generated with anthropic',
+    ],
+)
+def test_red_proof_a_stamp_that_names_gpt_or_anthropic_is_rejected(line: str) -> None:
+    # The development-rails spec, §13 (the craft-collection pilot): the "generated with" stamp
+    # arm names GPT and Anthropic as well as Claude, as craft-collection's own check did.
+    assert _attributed(line), f'the frame patterns miss: {line!r}'
+
+
+@pytest.mark.parametrize(
+    'line',
+    [
         'fix(release): hold the tag to its section',
         'The fold follows ADR-0018; co-authored the spec with the operator.',
         'Generated fixtures with the staging script.',

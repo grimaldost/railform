@@ -62,10 +62,11 @@ types = [
 ]
 # Python `re` patterns, matched case-insensitively against each line of a message.
 # keel's no-ai-attribution set at c3313fd (https://github.com/grimaldost/keel,
-# .pre-commit-config.yaml), its one grep alternation split into its two branches.
+# .pre-commit-config.yaml), its one grep alternation split into its two branches; the stamp
+# branch also names GPT and Anthropic (development-rails spec, §13, the craft-collection pilot).
 attribution_patterns = [
     '^(Co-Authored-By|Signed-off-by|Assisted-by|Generated-by):.*(Claude|GPT|Anthropic|Copilot)',
-    'Generated with \[?Claude',
+    'Generated with \[?(Claude|GPT|Anthropic)',
 ]
 
 [changelog]

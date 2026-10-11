@@ -149,9 +149,9 @@ subject rule; write the revert as `revert: ...`.
 The attribution rule applies to every message, merges and the pull request's title and body
 included: no line may match a pattern of `commit.attribution_patterns` (Python regular
 expressions, matched case-insensitively per line). The default set is keel's. It rejects a trailer
-that names Claude, GPT, Anthropic or Copilot as author, co-author, signer or assistant, but its
-"generated with" stamp pattern names Claude only, so another tool's stamp passes. The second arm of
-the mantis-research script (a stamp that names GPT or Anthropic) was not added. Dependabot bodies
+that names Claude, GPT, Anthropic or Copilot as author, co-author, signer or assistant, and a
+"generated with" stamp that names Claude, GPT or Anthropic (keel's stamp arm named Claude only;
+the other two come from the mantis-research script and craft-collection's check). Dependabot bodies
 quote upstream release notes, which could, rarely, trip the stamp pattern.
 
 When both rules fail, the verdict code is `subject`; a failure of the attribution rule alone is
