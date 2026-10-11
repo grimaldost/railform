@@ -23,7 +23,7 @@ repos:
         files: '^\.githooks/'
         pass_filenames: false
       - id: railform-private-refs
-        name: railform private-refs
+        name: railform private refs
         entry: uv run --frozen railform private-refs
         language: system
         stages: [pre-commit]
