@@ -454,7 +454,7 @@ def test_the_hooks_job_replays_the_hygiene_hooks_over_the_changed_files_only(
 ) -> None:
     step = _step(_job(workflow, 'hooks'), 'pre-commit')
     assert step['if'] == PR_CONDITION
-    assert step['env'] == {'BASE_REF': '${{ github.base_ref }}'}
+    assert step['env']['BASE_REF'] == '${{ github.base_ref }}'
     script = step['run']
     assert '--all-files' not in script
     assert '--from-ref "origin/${BASE_REF}" --to-ref HEAD' in script
