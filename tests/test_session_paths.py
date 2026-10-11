@@ -111,6 +111,21 @@ def test_red_proof_a_nested_plugin_hook_fails(
     assert [f.split(':')[0] for f in findings] == ['plugins/x/hooks/hooks.json']
 
 
+def test_red_proof_a_plugin_output_style_fails_with_the_default_frame(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The development-rails spec, §13 (the craft-collection pilot): a plugin's output styles are
+    # loaded by a session, and the default globs carry them, so no repository has to add them.
+    base = _base(repo)
+    _write(repo, 'plugins/x/output-styles/terse.md', 'one\n')
+    head = _commit(repo)
+    code, verdict, findings = _judge(capsys, base, head)
+    assert (code, verdict) == (1, 'session-loaded')
+    assert findings == [
+        'plugins/x/output-styles/terse.md: matches the session_loaded glob **/output-styles/**'
+    ]
+
+
 def test_red_proof_a_rename_out_of_skills_fails(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -13,6 +13,7 @@ session_loaded = [
     "**/skills/**",
     "**/agents/**",
     "**/commands/**",
+    "**/output-styles/**",
     "**/hooks/**",
     "**/.claude-plugin/**",
     ".claude/**",
