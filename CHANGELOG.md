@@ -163,8 +163,44 @@ All notable changes to this project are recorded here, in the
   of the three migration fixtures, with the hooks installed by pre-commit from the code under
   test. They need the network in every session and take about five and a half minutes on
   Windows; offline, run `pytest -m "not slow"`.
+- The reusable CI workflow, `.github/workflows/python-ci.yml` (development-rails spec, §9): it
+  runs on `workflow_call` with the required input `railform-sha`, installs every railform
+  command from that commit with `uvx --from git+https://github.com/grimaldost/railform@<sha>`
+  (the commit passed through `env:` and checked to be 40-hex first), and runs the jobs `frame`
+  (`frame --check`, then `frame --github-output`), `checks` (`private-refs`, then the type's
+  pipeline on every leg of `ci.os` by `python.versions`), `commit-lane` (`commit-range`,
+  `pr-text` and `branch-name` on the head branch, through `HEAD_REF` in `env:`, on pull requests
+  only), `changelog` (a placeholder, skipped until the changelog gate), `hooks`
+  (`hooks-check`, `adopt --check`, and the hygiene hooks over a pull request's changed files)
+  and `audit` (zizmor 1.30.0). Every action is pinned by SHA, every setup-uv step pins uv
+  0.12.19, the token is read-only, and the jobs that read history check out all of it.
+- `railform frame --github-output` also writes `pipeline`: the type's pipeline, one bash command
+  per line, built from the frame's typed parameters (`railform.frame.pipeline`), which the
+  `checks` job runs in order. A step that cannot be written (ruff at no version, or extra
+  installs in a `plugin-marketplace` repository) exits 2.
+- railform adopts itself: `railform.toml` (`python-package`, with `ci.self_hosted = true` and
+  its exceptions row), a `.pre-commit-config.yaml` whose railform entry is `repo: local`, the
+  hook wrappers in `.githooks/`, and the Dependabot ignore entry, all written by
+  `railform adopt`.
+- Tests: the stack-radar engine's workflow test, ported to `python-ci.yml` (SHA pins, one uv
+  pin, no write permission) with the frame-driven pipeline, the required input and the
+  `branch-name` step added; a local model of a GitHub Actions run (`tests/workflow_model.py`)
+  that runs the caller and the reusable workflow through their own text with railform as the
+  code under test; and the red proofs through a fixture caller: a failing test step, a
+  `python.test_command` of `true` with no exceptions row and a pull request from `foo` each turn
+  `gate` red, and a push run with `commit-lane` and `changelog` skipped turns it green.
 
 ### Changed
+
+- railform's own `ci.yml` is a caller of the reusable workflow by local path: the `railform` and
+  `gate` jobs that `railform adopt` writes, with the commit under test as `railform-sha`. Its
+  former `checks`, `audit` and `commit-lane` jobs are the reusable workflow's.
+- An `edited` pull request event runs every job again, not only the commit lane: a run that
+  skipped the checks would post a green `gate` over a red one on the same commit.
+- The scan for installs by name accepts `@$RAILFORM_SHA` in the reusable workflow (and in the
+  test model that stands in for its install line), and nowhere else.
+- The pipeline tests of the migration fixtures run `railform.frame.pipeline` in bash, the steps
+  the workflow runs, instead of their own copy of the steps.
 
 - The default `branch.pattern` is measured: `^[a-z][a-z0-9-]*/[a-z0-9][a-z0-9._/-]*$` (a
   lowercase category, a slash and a lowercase slug) accepted all 454 head branches counted, where
