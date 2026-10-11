@@ -278,6 +278,11 @@ nothing.
   `pull_request_target`, or cannot be parsed. A job's `needs:` cannot reach another workflow
   file, so move such a job into `ci.yml` (the next adopt adds it to `gate`), or list the file in
   `ci.extra_workflows`, by name or by path, with an `exceptions` row.
+
+  A `paths`, `paths-ignore`, `branches` or `branches-ignore` filter on the `pull_request` trigger
+  is the repository's, but adopt and `--check` name it in a finding line: a pull request the
+  filter leaves out runs no `ci.yml` and reports no `gate`, so a ruleset that requires `gate`
+  waits on it.
 - Where the hooks lived before, adopt leaves a stub for each hook. That is the local
   `core.hooksPath` when it is not the same directory as `hooks.dir` (a subdirectory of it
   counts), or else the tracked directory, outside `hooks.dir` and outside every `session_loaded`

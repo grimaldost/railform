@@ -440,6 +440,25 @@ def _trigger_edits(ci: _Ci) -> list[_Edit]:
     return [_Edit(start.line, start.line + 1, (merged,))]
 
 
+PR_FILTERS = ('paths', 'paths-ignore', 'branches', 'branches-ignore')
+
+
+def _pull_request_filters(ci: _Ci) -> list[str]:
+    """A finding line for each filter of the `pull_request` trigger. A filter is the
+    repository's, outside what adopt owns, but a pull request it filters out runs no ci.yml and
+    reports no gate, which a ruleset that requires gate then waits on."""
+    found = _entry(ci.root, 'on')
+    trigger = _entry(found[1], 'pull_request') if found is not None else None
+    if trigger is None or not isinstance(trigger[1], yaml.MappingNode):
+        return []
+    return [
+        f'{CI_PATH}: on.pull_request has {key}:, so a pull request it filters out runs no ci.yml '
+        'and reports no gate; a ruleset that requires gate then waits on it'
+        for key in PR_FILTERS
+        if _entry(trigger[1], key) is not None
+    ]
+
+
 def _plan_ci(ci: _Ci, uses: str, railform_sha: str) -> str:
     """The text of ci.yml as adopt writes it, with `uses` and `railform_sha` at the pin sites."""
     doc, region = ci.doc, ci.region
@@ -1103,7 +1122,7 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
     dependabot_text = _read(root, DEPENDABOT_PATH)
     tag_watch_text = _read(root, TAG_WATCH_PATH)
     planned: list[tuple[str, str | None, str | None]] = []
-    notes: list[str] = []
+    notes: list[str] = _pull_request_filters(ci)
     if frame['ci']['self_hosted']:
         if pin is not None:
             notes.append(
@@ -1223,6 +1242,7 @@ def _check(root: Path) -> Verdict:
     else:
         try:
             ci = _read_ci(ci_text)
+            notes += _pull_request_filters(ci)
             if ci.region is None:
                 drift(_NO_REGION.format(path=CI_PATH))
             elif self_hosted:

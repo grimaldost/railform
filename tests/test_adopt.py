@@ -20,6 +20,7 @@ the condition is evaluated over every result. Git is isolated for every test by
 from __future__ import annotations
 
 import itertools
+import json
 import os
 import re
 import shutil
@@ -1597,3 +1598,28 @@ def test_the_stub_prints_the_arm_command_and_fails(
     assert done.returncode == 1
     assert 'railform arm' in done.stderr
     assert 'git config core.hooksPath .githooks' in done.stderr
+
+
+# --- the folds of Wave A's reviews (development-rails spec, §13) ------------------------------
+
+
+@pytest.mark.parametrize('key', ['paths', 'paths-ignore', 'branches', 'branches-ignore'])
+def test_red_proof_a_filter_on_the_pull_request_trigger_is_reported(
+    key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A filter can keep ci.yml from running on a pull request, and then no gate is reported; a
+    # ruleset that requires gate waits on it. `--check` names the filter in a finding line.
+    build(scratch_repo, 'python-package')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (0, f'{VERDICT} pass ok')
+    assert 'on.pull_request' not in out
+    text = read(scratch_repo, CI)
+    anchor = f'    {PR_TYPES_LINE}\n'
+    assert text.count(anchor) == 1
+    write(scratch_repo, CI, text.replace(anchor, anchor + f'    {key}: ["docs/**"]\n'))
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (0, f'{VERDICT} pass ok'), out
+    assert f'{CI}: on.pull_request has {key}:' in out
+    assert 'reports no gate' in out
+    assert f'{CI}: on.pull_request has {key}:' in run_adopt(capsys)[2]
