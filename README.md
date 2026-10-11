@@ -314,8 +314,9 @@ checks that the input is 40 hexadecimal characters before anything is installed.
 - **What the workflow allows.** Every action is pinned by a 40-hex commit, every setup-uv step
   pins the same uv version, and the token is read-only (`contents: read`). It runs from the
   caller's `pull_request` and `push` events, never `pull_request_target`. The jobs that read
-  history (`commit-lane`, `hooks`) check out all of it. No `run:` text holds an expression:
-  values such as the head branch's name reach the scripts through `env:`.
+  history (`commit-lane`, `hooks`, and `changelog` once it runs) check out all of it. No `run:`
+  text holds an expression: values such as the head branch's name reach the scripts through
+  `env:`.
 - **What passes.** A job counts as passing when it succeeded or was skipped by its own condition
   (`commit-lane` and `changelog` on a push). The caller's `gate` job is the one required status.
   Every job runs on every pull request event, `edited` included: a run that skipped the checks
