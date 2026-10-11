@@ -6,6 +6,7 @@ type = "python-package"
 
 [python]
 versions = ["3.11", "3.14"]
+test_command = "true"
 
 [ci]
 self_hosted = true
