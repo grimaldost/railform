@@ -465,6 +465,20 @@ checks that the input is 40 hexadecimal characters before anything is installed.
   `cd` and shell variables. The Python
   version reaches uv through `UV_PYTHON`, set per matrix leg, and the checkout depth of `checks`
   is `ci.setup.fetch_depth`.
+- **The resolution date.** Every step that runs `uvx` for railform or for a pinned tool (the
+  railform verbs, zizmor, and the pre-commit replay of `hooks`) resolves the packages it installs
+  as of one date, through uv's `UV_EXCLUDE_NEWER` in that step's `env:`. The date is written
+  once per workflow file, as the workflow-level `RAILFORM_EXCLUDE_NEWER` (an RFC 3339 timestamp;
+  uv does not read that name), and `python-ci.yml` and `tag-watch.yml` hold the same value, now
+  `2026-10-11T00:00:00Z`. A dependency published after the date, a new `pyyaml` say, cannot reach
+  a run of a given railform commit. It pins the packages the steps install from an index. It does
+  not pin the commit (the `railform-sha` input does that), the uv version (setup-uv's `version`
+  does), or the actions (their SHAs do). It never reaches the type's pipeline in `checks`, which
+  runs the adopter's own commands (`uv lock --check`, `uv sync --frozen`, the test command, and a
+  `uvx` call in a `plugin-marketplace` pipeline), because a lock resolved under another date would
+  read as out of date there. Each railform release moves the date to its own day, in a commit of
+  the release pull request that is not the `release:` commit, since a workflow file is not release
+  metadata.
 - **What the workflow allows.** Every action is pinned by a 40-hex commit, every setup-uv step
   pins the same uv version, and the token is read-only (`contents: read`). Every job has a time
   limit (`timeout-minutes`, 45 for `checks` and 10 to 20 for the others), and only `checks`, which
