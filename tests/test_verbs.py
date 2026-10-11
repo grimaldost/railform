@@ -26,6 +26,9 @@ CONTRACT_VERBS = (
     'session-paths',
     'adopt',
     'branch-name',
+    'changelog-gate',
+    'version-sites',
+    'release-check',
 )
 VERDICT = re.compile(r'railform-verdict: (?P<verb>\S+) (?P<status>pass|fail) (?P<code>[a-z0-9-]+)')
 

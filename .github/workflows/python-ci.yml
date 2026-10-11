@@ -74,6 +74,8 @@ jobs:
           version: '0.12.19'
       - name: railform private-refs
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform private-refs
+      - name: railform version-sites
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform version-sites
       - name: The type's pipeline, from the frame
         env:
           PIPELINE: ${{ needs.frame.outputs.pipeline }}

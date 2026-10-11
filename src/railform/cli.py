@@ -36,6 +36,9 @@ VERBS = (
     'session-paths',
     'adopt',
     'branch-name',
+    'changelog-gate',
+    'version-sites',
+    'release-check',
 )
 
 LEDGER_ENV = 'RAILFORM_LEDGER'
