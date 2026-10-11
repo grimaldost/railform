@@ -117,7 +117,8 @@ extra_installs = []
 versions = []
 newest = "3.14"
 package = ""
-# Arguments added to the pipeline's `uv sync --frozen --python <version>`.
+# Arguments added after the pipeline's `uv sync --frozen`; the Python version comes from
+# `UV_PYTHON`, which the workflow sets for each matrix leg.
 sync_args = []
 test_command = ""
 lint_paths = ["."]
