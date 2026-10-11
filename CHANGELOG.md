@@ -252,8 +252,9 @@ All notable changes to this project are recorded here, in the
 - The `python-package` preset's `changelog.records` watches `src/` only, so a change that moves
   only the lock or a workflow, such as a Dependabot pull request, is not charged.
 - `railform adopt` writes the tag-watch caller from its template, also in a self-hosted
-  repository, and moves both of its pin sites (the `uses:` commit and the `railform-sha` input)
-  when it exists. `railform adopt --check` compares the whole file with the template rendered at
+  repository. When it exists, adopt writes both of its pin sites (the whole `uses:` value and the
+  `railform-sha` value) with the current mode's values and keeps the rest, so a switch between
+  pinned and self-hosted needs only another adopt. `railform adopt --check` compares the whole file with the template rendered at
   its own `uses:` commit: any other difference is `drift`, a pin site that differs
   `pin-mismatch`.
 - The guard lists `session_loaded` and `private_refs.placeholders` are joined to the default

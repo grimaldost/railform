@@ -342,10 +342,12 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
   `100755` (so `core.autocrlf` and `core.safecrlf` never touch them), and
   `.github/workflows/railform-tag-watch.yml`, the caller of the reusable tag watch (see the
   release check below). Adopt writes the caller when it is absent, whatever `release.enabled`
-  says; when it exists, adopt moves only its two pin sites, the `uses:` commit and the
-  `railform-sha` input (the input only when the file calls the pinned workflow), and leaves the
-  rest as it is, line endings included. `--check` renders the template at the file's own `uses:`
-  commit and compares the whole file: a missing file or any other difference is `drift`, which
+  says; when it exists, adopt writes only its two pin sites, the whole `uses:` value and the
+  `railform-sha` value, with the current mode's values (the pinned call and the pin, or the call
+  by local path and `${{ github.sha }}` when self-hosted), and leaves the rest as it is, line
+  endings included. A switch between pinned and self-hosted in either direction therefore needs
+  only another `railform adopt`. `--check` renders the template at the file's own `uses:` commit
+  (or by local path, when self-hosted) and compares the whole file: a missing file or any other difference is `drift`, which
   deleting the file and running `railform adopt` clears; a pin site that differs from the others
   is `pin-mismatch`. A workflow of the
   repository's own, such as a `tag-watch.yml` it already had, is never touched.
