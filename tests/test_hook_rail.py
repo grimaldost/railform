@@ -54,11 +54,8 @@ IDENTITY = {
     'user.email': 'fixture@example.com',
     'commit.gpgsign': 'false',
 }
-DEPENDABOT_BRANCHES = (
-    'dependabot/github_actions/actions/checkout-4.2.2',
-    # An uppercase dependency name, which branch.pattern refuses: only branch.allow passes it.
-    'dependabot/pip/Django-4.2',
-)
+DEPENDABOT_PATTERN_ACCEPTS = 'dependabot/github_actions/actions/checkout-4.2.2'
+DEPENDABOT_PATTERN_REFUSES = 'dependabot/pip/Django-4.2'
 NOTE = 'notes.md'
 HOOKS = ('pre-commit', 'commit-msg', 'pre-push')
 # Variables that would point uv at railform's own environment, or make pre-commit skip hooks.
@@ -436,15 +433,26 @@ def test_the_limit_a_push_of_foo_with_no_new_commit_is_accepted(
     assert _remote_has(clone, 'foo')
 
 
-@pytest.mark.parametrize('branch', DEPENDABOT_BRANCHES)
-def test_red_proof_a_dependabot_branch_with_a_new_commit_is_accepted(
-    clone: Path, env: dict[str, str], branch: str
-) -> None:
+def _push_accepted(clone: Path, env: dict[str, str], branch: str) -> None:
     _git(clone, 'switch', '-q', '-c', branch)
     _committed(clone, env, 'ci: bump a dependency')
     accepted = _push(clone, env, branch)
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
     assert _remote_has(clone, branch)
+
+
+def test_red_proof_a_dependabot_branch_the_pattern_refuses_is_accepted_by_branch_allow(
+    clone: Path, env: dict[str, str]
+) -> None:
+    # The uppercase dependency name fails branch.pattern: only `dependabot/**` passes it.
+    _push_accepted(clone, env, DEPENDABOT_PATTERN_REFUSES)
+
+
+def test_a_dependabot_branch_the_pattern_accepts_is_accepted(
+    clone: Path, env: dict[str, str]
+) -> None:
+    # Not a red proof of branch.allow: the pattern accepts this name too.
+    _push_accepted(clone, env, DEPENDABOT_PATTERN_ACCEPTS)
 
 
 def test_red_proof_an_empty_commit_on_foo_is_refused_on_push(
