@@ -92,7 +92,8 @@ Some keys hold rows rather than plain values:
 - `changelog.records` is an array of `{ prefix, file }` rows and `release.tag_prefix` an array of
   `{ prefix, tag }` rows. A changed path or a tag belongs to the row with the longest matching
   `prefix` (`""` matches everything). A repository's own array replaces the default whole, so a
-  repository whose only changelogs are per plugin lists those rows and has no root row.
+  repository whose only changelogs are per plugin lists those rows and has no root row. The
+  `python-package` preset's records row watches `src/` only; the other types watch every path.
 - `version.sites` is an array of `{ path, pattern, authored }` rows: the pattern's first group is
   the version, and `authored` (default `false`) marks a site that is checked and never rewritten.
 - `release.metadata_paths` holds globs of the release metadata (the manifests). The release check
@@ -168,6 +169,45 @@ pattern.
 When both rules fail, the verdict code is `subject`; a failure of the attribution rule alone is
 `attribution`. An unreadable message file, a bad range, a missing event payload and an invalid
 pattern exit 2.
+
+## The changelog gate
+
+`railform changelog-gate BASE...HEAD` fails a change that the changelog does not record. It
+judges every commit HEAD adds to BASE, merges included, and reads the record diff from their
+merge base to HEAD. Its CI job lands separately.
+
+- **Record or declare** (`unrecorded`). Each path a commit changes is charged to the
+  `changelog.records` row with the longest matching prefix, and so to that row's file; a path no
+  row matches is not watched, and a record file is never charged to itself. The `python-package`
+  preset watches `src/` (`CHANGELOG.md`), the other types every path, and a repository with
+  per-plugin changelogs lists one row per plugin. For each commit and each record file it is
+  charged to, the range must add a line to that file, or the commit must carry the trailer
+  `changelog.trailer` spells, by default `Changelog: none (<reason>)` with a reason that is not
+  blank (`changelog: None (a rename)` counts; `Changelog: none ()` does not). A trailer declares
+  its own commit only. A line counts as added when it is not blank once its whitespace is
+  collapsed and the same diff does not also remove it, so trailing spaces, re-indenting,
+  reordering and a CRLF conversion record nothing.
+- **Merges.** A merge is charged only with its resolution: the paths where its tree differs from
+  the automatic merge of its parents, from `git merge-tree --write-tree` (git 2.38 or newer). A
+  clean merge, such as the merge commit CI checks out for a pull request, is charged nothing; a
+  hand resolution of a watched path needs a record or the trailer on the merge. A merge of
+  unrelated histories, and an octopus merge, are charged their combined diff.
+- **Release headings** (`release-heading`). When a record file gains a `## [X.Y.Z]` heading, the
+  version must already read `X.Y.Z` at HEAD and must have been lower at the merge base. The
+  version is read from the first `version.sites` row that is not `authored` on the record's
+  release line (the `release.tag_prefix` row with the longest prefix of the record file). A side
+  with no readable three-part version, such as `0.1.0.dev0`, is not compared; a line with no such
+  site skips the rule and says so.
+- **Contract surfaces** (`consumer-affecting`). When the range changes a path of
+  `changelog.contract_surfaces` and no record's added lines say `(consumer-affecting)`, the rule
+  fires once per surface. By default (`changelog.consumer_affecting = "advisory"`) a firing is a
+  `::warning::<path>: consumer-affecting (advisory): ...` line and the verdict stays a pass;
+  `"error"`, declared with an `exceptions` row, makes it fail.
+
+When several rules fail, the verdict names the first in the order above and every finding is
+printed. `changelog.enabled = false` (with its `exceptions` row) passes at once. An empty
+`changelog.records`, a trailer template without exactly one `<reason>`, two rows with the same
+prefix, a range not of the form `BASE...HEAD` and a revision git cannot resolve exit 2.
 
 ## The session-paths check
 
