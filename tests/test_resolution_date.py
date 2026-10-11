@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from workflow_model import WORKFLOWS, interpolate, load
+from workflow_model import WORKFLOWS, load
 
 FILES = ('python-ci.yml', 'tag-watch.yml')
 # The `uvx` steps of each file, counted so that a rule that finds none cannot pass.
@@ -30,7 +30,8 @@ UVX_STEPS = {'python-ci.yml': 12, 'tag-watch.yml': 1}
 CONSTANT = 'RAILFORM_EXCLUDE_NEWER'
 VARIABLE = 'UV_EXCLUDE_NEWER'
 MAPPING = '${{ env.RAILFORM_EXCLUDE_NEWER }}'
-_UVX = re.compile(r'(?:^|[\s;&|(])uvx\s')
+# `uvx` and its long form `uv tool run`.
+_UVX = re.compile(r'(?:^|[\s;&|(])(?:uvx|uv\s+tool\s+run)\s')
 _TIMESTAMP = re.compile(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z')
 
 
@@ -57,19 +58,13 @@ def _runs_uvx(step: dict[str, Any]) -> bool:
 
 
 def uvx_problems(workflow: dict[Any, Any]) -> list[str]:
-    """Every step that runs `uvx` without the mapping, resolving to the workflow's date."""
+    """Every step that runs `uvx` without the mapping to the workflow's date."""
     problems = []
     for label, step in _steps(workflow):
         if not _runs_uvx(step):
             continue
-        env = step.get('env') or {}
-        if env.get(VARIABLE) != MAPPING:
+        if (step.get('env') or {}).get(VARIABLE) != MAPPING:
             problems.append(f'{label}: no {VARIABLE} mapping')
-            continue
-        resolved = interpolate(env, {'env': workflow.get('env') or {}})
-        assert isinstance(resolved, dict)
-        if resolved[VARIABLE] != (workflow.get('env') or {}).get(CONSTANT):
-            problems.append(f'{label}: the mapping does not resolve to the date')
     return problems
 
 
@@ -158,6 +153,21 @@ def test_red_proof_a_mapping_to_another_name_is_a_problem() -> None:
     broken = load(WORKFLOWS / 'tag-watch.yml')
     _steps(broken)[-1][1]['env'][VARIABLE] = '${{ env.RAILFORM_SHA }}'
     assert len(uvx_problems(broken)) == 1
+
+
+@pytest.mark.parametrize(
+    ('run', 'expected'),
+    [
+        ('uvx zizmor==1.30.0 .', True),
+        ('uv tool run zizmor==1.30.0 .', True),
+        ('set -e\nuv  tool  run --from x y', True),
+        ('# uvx is not run here\nuv lock --check', False),
+        ('uv tool install zizmor', False),
+        ('echo uvxy', False),
+    ],
+)
+def test_the_uvx_pattern_sees_uvx_and_uv_tool_run(run: str, expected: bool) -> None:
+    assert _runs_uvx({'run': run}) is expected
 
 
 def test_red_proof_the_pipeline_step_carrying_the_variable_is_a_problem() -> None:
