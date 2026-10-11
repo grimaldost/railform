@@ -291,6 +291,8 @@ def test_the_checks_job_runs_the_frame_pipeline_on_the_frame_matrix(
     runs = _runs(job)
     assert runs[0] == f'{INSTALL} private-refs'
     assert runs[1] == f'{INSTALL} version-sites'
+    # The step has no condition of its own, so it runs on every leg, on pull requests and pushes.
+    assert set(_step(job, f'{INSTALL} version-sites')) == {'name', 'run'}
     assert len(runs) == 3
     assert _step(job, 'PIPELINE')['env'] == {'PIPELINE': '${{ needs.frame.outputs.pipeline }}'}
 

@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from migration_fixtures import CI, PIN, build
-from railform import version_sites
+from railform import frame, version_sites
 from railform.cli import main
 from workflow_model import Runner, bash, github_context
 
@@ -240,8 +240,6 @@ def test_each_patterned_site_reads_the_field_its_parser_would(scratch_repo: Path
 
 
 def _sites(root: Path) -> list[version_sites.Site]:
-    from railform import frame
-
     loaded = frame.load(root)
     return version_sites.version_sites(loaded, version_sites.release_lines(loaded))
 
@@ -384,7 +382,7 @@ def test_an_unreadable_site_says_why(
     assert findings == [
         'binary.txt: no version (the file is not UTF-8)',
         'nothing.txt: no version (the file is missing)',
-        'empty.txt: no version (the pattern matches nothing)',
+        "empty.txt: no version (the pattern's first group matched no text)",
         'folder.txt: no version (the file is missing)',
     ]
 
@@ -419,6 +417,84 @@ def test_no_sites_passes_and_says_so(
     assert 'no version sites' in findings[0]
     # With nothing to write, a bump is the check.
     assert _run(capsys, '--bump', '1.0.0')[:2] == (0, 'pass ok')
+
+
+def test_a_group_that_reaches_the_line_end_captures_a_carriage_return(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # No newline translation, and the pattern is the repository's (the README says so): on a CRLF
+    # checkout a group such as `(.*)$` reads the line's `\r`, so the site fails there and a bump
+    # replaces the whole span, `\r` included. A group that stops at the version is not affected.
+    _write(scratch_repo, 'a.txt', b'VERSION=1.0.0\r\nOTHER=1\r\n')
+    _write(scratch_repo, 'b.txt', b'VERSION=1.0.0\r\n')
+    wide = (r'(?m)^VERSION=(.*)$', False)
+    narrow = (r'(?m)^VERSION=([0-9.]+)', False)
+    _configure(scratch_repo, (('a.txt', *wide), ('b.txt', *narrow)))
+    code, verdict, _, _ = _run(capsys)
+    assert (code, verdict) == (1, 'fail mismatch')
+    assert version_sites.site_value(re.compile(wide[0]), 'VERSION=1.0.0\r\n') == '1.0.0\r'
+    _configure(scratch_repo, (('a.txt', *narrow), ('b.txt', *narrow)))
+    assert _run(capsys)[:2] == (0, 'pass ok')
+    assert _run(capsys, '--bump', '1.1.0')[:2] == (0, 'pass ok')
+    assert (scratch_repo / 'a.txt').read_bytes() == b'VERSION=1.1.0\r\nOTHER=1\r\n'
+    _configure(scratch_repo, (('a.txt', *wide),))
+    assert _run(capsys, '--bump', '1.2.0')[:2] == (0, 'pass ok')
+    assert (scratch_repo / 'a.txt').read_bytes() == b'VERSION=1.2.0\nOTHER=1\r\n'
+
+
+def test_reading_bytes_gives_a_value_or_the_reason_it_has_none() -> None:
+    line = version_sites.Line('', 'v')
+
+    def site(pattern: str) -> version_sites.Site:
+        return version_sites.Site('a.txt', re.compile(pattern), False, line)
+
+    assert version_sites.reading_of(b'v 1.0.0\n', site(r'v (\S+)')).value == '1.0.0'
+    missing = version_sites.reading_of(None, site(r'v (\S+)'))
+    assert (missing.value, missing.why) == (None, 'the file is missing')
+    binary = version_sites.reading_of(b'v 1.0.0 \xff', site(r'v (\S+)'))
+    assert (binary.value, binary.why) == (None, 'the file is not UTF-8')
+    nothing = version_sites.reading_of(b'x\n', site(r'v (\S+)'))
+    assert (nothing.value, nothing.why) == (None, 'the pattern matches nothing')
+    assert nothing.text == 'x\n'
+    # The pattern matches, but its group holds no text: the reason says so.
+    for group in (r'v (\S*)', r'v(?: (\S+))?'):
+        empty = version_sites.reading_of(b'v \n', site(group))
+        assert empty.value is None, group
+        assert 'matched no text' in empty.why, group
+
+
+def test_a_site_whose_group_matches_no_text_says_so(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, 'a.txt', 'v \n')
+    _configure(scratch_repo, (('a.txt', r'v (\S*)', False),))
+    code, verdict, findings, _ = _run(capsys)
+    assert (code, verdict) == (1, 'fail unreadable')
+    assert findings == ["a.txt: no version (the pattern's first group matched no text)"]
+
+
+def test_a_write_failure_names_the_site_and_the_sites_already_written(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in 'abc':
+        _write(scratch_repo, f'{name}.txt', 'v 1.0.0\n')
+    pattern = r'v (\S+)'
+    _configure(scratch_repo, tuple((f'{n}.txt', pattern, False) for n in 'abc'))
+    real = type(scratch_repo).write_bytes
+
+    def refuse(path: Path, data: bytes) -> int:
+        if path.name == 'b.txt':
+            raise PermissionError(13, 'Permission denied')
+        return real(path, data)
+
+    monkeypatch.setattr(type(scratch_repo), 'write_bytes', refuse)
+    code, verdict, findings, err = _run(capsys, '--bump', '2.0.0')
+    assert (code, verdict, findings) == (2, 'fail usage', [])
+    assert 'b.txt' in err
+    assert 'Permission denied' in err
+    assert 'written before it: a.txt' in err
+    assert (scratch_repo / 'a.txt').read_bytes() == b'v 2.0.0\n'
+    assert (scratch_repo / 'c.txt').read_bytes() == b'v 1.0.0\n'
 
 
 # --- release lines (contract section 2) ----------------------------------------------------------
@@ -694,8 +770,6 @@ def test_full_width_digits_are_not_a_version() -> None:
 
 
 def test_site_value_is_group_one_of_the_first_match() -> None:
-    import re
-
     pattern = re.compile(r'v(\d+)(?:-(x))?')
     assert version_sites.site_value(pattern, 'a v12-x v3') == '12'
     assert version_sites.site_value(pattern, 'nothing') is None
@@ -717,8 +791,11 @@ def _adopt(root: Path, project_type: str, capsys: pytest.CaptureFixture[str]) ->
 def test_red_proof_a_site_behind_turns_gate_red_through_the_caller(
     scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # The python-package fixture: the `checks` job stops at the version-sites step on every leg,
-    # before its pipeline, so no network is needed. The audit job needs one, so it is given.
+    # The python-package fixture: the `checks` job stops at the version-sites step, before its
+    # pipeline, so no network is needed. The audit job needs one, so it is given. The model runs
+    # the first leg of the matrix only: that the step has no condition, so that it runs on every
+    # leg and on pull requests as well as pushes, is held by
+    # `test_the_checks_job_runs_the_frame_pipeline_on_the_frame_matrix`.
     _adopt(scratch_repo, 'python-package', capsys)
     _write(scratch_repo, 'src/demo/__version__.txt', 'version 0.0.9\n')
     _write(

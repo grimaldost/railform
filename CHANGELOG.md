@@ -12,8 +12,8 @@ All notable changes to this project are recorded here, in the
   sites are `version.sites` rows of `{ path, pattern, authored }`, grouped into release lines by
   `release.tag_prefix`; within a line the sites must agree on the version most of them read, and
   every disagreeing or unreadable site is named in one run (`mismatch`, `unreadable`). `--bump`
-  writes the version to the non-authored sites of one line, byte for byte except the version, and
-  then runs the check; an authored site (the newest changelog heading) is checked and never
+  writes the version to the non-authored sites of one line, byte for byte except the span of the
+  pattern's first group, and then runs the check; an authored site (the newest changelog heading) is checked and never
   rewritten. The reusable workflow runs it in the `checks` job on every leg. The module also holds
   the reading of release lines and version sites that the changelog gate and the release check
   share.

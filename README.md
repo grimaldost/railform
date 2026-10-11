@@ -231,7 +231,10 @@ no flags implied; write `(?m)` where the pattern needs it) whose first group is 
 `authored` marks a site whose value is written with its own content: the newest changelog
 heading arrives with a section under it, so a writer that rewrote the number would rename the
 previous release. An authored site is checked and never rewritten. The command reads the working
-tree only, and a shallow checkout is enough.
+tree only, and a shallow checkout is enough. The file is read with no newline translation and the
+pattern is the repository's, so a group must not capture line-end characters: use `([0-9.]+)` or
+`([^"\s]+)`, not `(.*)$`, which on a CRLF checkout (a Windows leg's) captures the `\r`, fails
+there only, and has a bump drop that line's `\r`.
 
 - **Release lines.** Sites are grouped by the `release.tag_prefix` row their path falls under (the
   longest matching `prefix`), so two plugins at different versions both pass. Within a line the
@@ -249,10 +252,13 @@ tree only, and a shallow checkout is enough.
   non-authored site, `--prefix` is required and must be a `release.tag_prefix` row's `prefix`
   exactly (`--prefix plugins/humblepowers/`, or `--prefix ""` for the root row). Regenerate a
   lockfile that records the version (`uv lock`) by hand after a bump.
-- **Configuration errors** (exit 2): a path that is absolute, holds `..` or a backslash, a pattern
-  that does not compile or has no group, a site that no `release.tag_prefix` row covers, two rows
-  with one prefix in `release.tag_prefix` or `changelog.records`, a `--bump` value that is not
-  three integers, and `--prefix` without `--bump`.
+- **Configuration errors** (exit 2): a path that is empty, absolute, drive-qualified, or that holds
+  `..` or a backslash, a pattern that does not compile or has no group, a site that no
+  `release.tag_prefix` row covers, two rows with one prefix in `release.tag_prefix` or
+  `changelog.records`, a `--bump` value that is not three integers, `--prefix` without `--bump`,
+  a `--prefix` that is no row's prefix, a missing `--prefix` when more than one line has a writable
+  site, and a site file that cannot be written (the message names it and the sites already
+  written).
 
 The reusable workflow runs it in the `checks` job on every leg, right after `private-refs`.
 

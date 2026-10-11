@@ -18,7 +18,12 @@ and then runs the same check, so a bump that leaves an authored heading behind s
 
 This module also owns the reading of release lines and version sites that the changelog gate and
 the release check share (`release_lines`, `line_of`, `line_name`, `version_sites`, `site_value`,
-`read_site`, `triple`), so the repository keeps one reading of them.
+`read_site`, `reading_of`, `triple`), so the repository keeps one reading of them. `reading_of`
+is the reading over bytes, for a verb that reads a site at a git revision.
+
+A site's pattern is the repository's, and the file is read with no newline translation: a group
+that can reach the end of a line (`(.*)$`) captures a `\\r` in a CRLF file, so the site reads
+another value there. Write the group so that it stops before the line end (`([0-9.]+)`).
 """
 
 from __future__ import annotations
@@ -210,15 +215,28 @@ def read_site(root: Path, site: Site) -> Reading:
         data = file.read_bytes() if file.is_file() else None
     except OSError:
         data = None
+    return reading_of(data, site)
+
+
+def reading_of(data: bytes | None, site: Site) -> Reading:
+    """What `data`, the bytes of the site's file, reads; `None` stands for a missing file.
+
+    The reading for a verb that gets the bytes some other way, such as `git show <rev>:<path>`.
+    The text is decoded as UTF-8 with no newline translation, and the pattern is the
+    repository's: a group that reaches the end of a line captures any `\\r` there.
+    """
     if data is None:
         return Reading(None, 'the file is missing')
     try:
         text = data.decode('utf-8')
     except UnicodeDecodeError:
         return Reading(None, 'the file is not UTF-8')
-    value = site_value(site.pattern, text)
-    if value is None:
+    match = site.pattern.search(text)
+    if match is None:
         return Reading(None, 'the pattern matches nothing', text)
+    value = match.group(1)
+    if not value:
+        return Reading(None, "the pattern's first group matched no text", text)
     return Reading(value, text=text)
 
 
@@ -315,7 +333,13 @@ def bump(root: Path, sites: list[Site], prefix: str | None, version: str) -> lis
             continue
         start, end = match.span(1)
         text = reading.text[:start] + version + reading.text[end:]
-        (root / site.path).write_bytes(text.encode('utf-8'))
+        try:
+            (root / site.path).write_bytes(text.encode('utf-8'))
+        except OSError as exc:
+            written = ', '.join(entry.split(': ', 1)[0] for entry in moved) or 'none'
+            raise SitesError(
+                f'cannot write {site.path}: {exc.strerror}; sites written before it: {written}'
+            ) from exc
         moved.append(f'{site.path}: {reading.value} -> {version}')
     return moved
 
@@ -380,8 +404,8 @@ def run(args: argparse.Namespace) -> Verdict:
     if version is not None:
         try:
             findings += bump(root, sites, prefix, version)
-        except OSError as exc:
-            return Verdict.usage(VERB, f'{VERB}: cannot write a version site: {exc.strerror}')
+        except SitesError as exc:
+            return Verdict.usage(VERB, f'{VERB}: {exc}')
     failures = check(root, lines, sites)
     if not sites:
         findings.append('no version sites are declared in version.sites; nothing to check')
