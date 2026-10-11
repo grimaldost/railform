@@ -38,7 +38,9 @@ All notable changes to this project are recorded here, in the
   title carrying the version and the line's name (`no-release-pr`, `tag-placement`), and its
   `release:` commits change only release metadata (`release-commit`). The pull requests come from
   the GitHub API, or from the file `$RAILFORM_PULLS_FILE` names, with no network. An API that
-  cannot be read exits 2 with the new code `api-error`.
+  cannot be read exits 2 with the new code `api-error`. It reads release lines and version sites
+  through `version-sites`' reading, so it exits 2 with `usage` on the same site configuration
+  errors, and on a floor that is not a tag of its row.
 - The reusable `.github/workflows/tag-watch.yml`, which runs `release-check` from the commit its
   required input `railform-sha` names, and its caller `railform-tag-watch.yml`, which
   `railform adopt` writes in every adopter: on every tag push, daily and on demand. railform

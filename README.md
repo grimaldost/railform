@@ -553,6 +553,10 @@ keep.
   not exist. Only tags at or above their row's floor are judged, so the tags from before
   adoption never fail. A floor that is not a tag of its row is a configuration error (exit 2),
   so a repository with one row per plugin sets `since` per row.
+- **Configuration errors** (exit 2, `usage`): a floor as above, and the errors of the release
+  lines and version sites it reads with the version-site check: two `release.tag_prefix` or two
+  `changelog.records` rows with one prefix, and a `version.sites` path that is empty, absolute,
+  holds `..` or a backslash, a pattern with no group, or a site no tag row covers.
 - **The release pull request** of a tag of version V on a line named N (the last segment of the
   row's `prefix`, none for the root row) is a merged pull request whose head branch starts with
   `release/`, or whose title is a `release` subject (`release: …`, `release(scope): …`), and that
