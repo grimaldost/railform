@@ -425,14 +425,16 @@ def test_a_tag_maps_to_the_row_with_the_longest_tag() -> None:
         },
         'changelog': {'records': []},
     }
-    lines = release_check.release_lines(frame)
+    lines = release_check.floored_lines(frame)
     # `v10.2.0` fits both rows: `v` with 10.2.0 and `v1` with 0.2.0; the longer tag wins.
     mapped = release_check.map_tag(lines, 'v10.2.0')
     assert mapped is not None
-    assert (mapped[0].prefix, mapped[0].name, mapped[1]) == ('plugins/one/', 'one', (0, 2, 0))
+    line = mapped[0].line
+    assert (line.prefix, line.name, mapped[1]) == ('plugins/one/', 'one', (0, 2, 0))
     mapped = release_check.map_tag(lines, 'v2.0.0')
     assert mapped is not None
-    assert (mapped[0].prefix, mapped[0].name, mapped[1]) == ('', '', (2, 0, 0))
+    line = mapped[0].line
+    assert (line.prefix, line.name, mapped[1]) == ('', '', (2, 0, 0))
     assert release_check.map_tag(lines, 'v2.0.0-rc1') is None
 
 
@@ -491,6 +493,11 @@ def test_a_rows_own_since_is_its_floor(
         'tag = "w"\n',
         '[[changelog.records]]\nprefix = ""\nfile = "A.md"\n[[changelog.records]]\nprefix = ""\n'
         'file = "B.md"\n',
+        # The site configuration errors of the shared reading (contract 11.3).
+        '[[version.sites]]\npath = "../pyproject.toml"\npattern = "(.+)"\n',
+        '[[version.sites]]\npath = "pyproject.toml"\npattern = "version"\n',
+        '[[release.tag_prefix]]\nprefix = "plugins/a/"\ntag = "a--v"\n'
+        '[[version.sites]]\npath = "pyproject.toml"\npattern = "(.+)"\n',
     ],
 )
 def test_a_floor_that_does_not_map_or_a_repeated_prefix_exits_2(

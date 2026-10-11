@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any
 from railform import frame as frame_module
 from railform.hooks_check import GitError, git
 from railform.verdict import API_ERROR_CODE, Verdict
+from railform.version_sites import Line, Site, SitesError, release_lines, triple, version_sites
 
 if TYPE_CHECKING:
     import argparse
@@ -62,8 +63,6 @@ DEFAULT_API = 'https://api.github.com'
 PAGE_SIZE = 100
 TIMEOUT_SECONDS = 30
 
-# keel's TAG_SHAPE with its `v` taken from the row: three runs of ASCII digits.
-_VERSION = re.compile(r'([0-9]+)\.([0-9]+)\.([0-9]+)')
 # The `release` type of the commit lane, any scope, with or without `!`.
 RELEASE_SUBJECT = re.compile(r'^release(\([^)]*\))?!?: ')
 RELEASE_BRANCH = 'release/'
@@ -80,80 +79,55 @@ class ApiError(Exception):
     """The GitHub API could not be read: exit 2 with `api-error`."""
 
 
-# --- release lines -----------------------------------------------------------------------------
+# --- release lines and floors ----------------------------------------------------------------
 #
-# A private copy of the reading of release lines (interface contract, Wave C, section 2), which
-# `version_sites.py` owns; it is replaced by an import from there once both have merged.
+# The reading of release lines is `version_sites.py`'s (interface contract, Wave C, sections 1.1,
+# 2 and 11.3); this module adds each line's floor and maps tags to lines.
 
 
 @dataclass(frozen=True)
-class Line:
-    """One `release.tag_prefix` row: its path prefix, tag prefix, floor and name."""
+class Floored:
+    """A release line and its floor: the row's own `since`, else `release.since` ("" for none)."""
 
-    prefix: str
-    tag: str
+    line: Line
     floor: str
-    name: str
 
 
-def line_name(prefix: str) -> str:
-    """The last non-empty `/`-separated segment of `prefix`; "" for the root row."""
-    segments = [segment for segment in prefix.split('/') if segment]
-    return segments[-1] if segments else ''
-
-
-def _repeated(rows: list[dict[str, Any]], key: str) -> str | None:
-    seen: set[str] = set()
-    for row in rows:
-        if row['prefix'] in seen:
-            return f'two {key} rows have the prefix {json.dumps(row["prefix"])}'
-        seen.add(row['prefix'])
-    return None
-
-
-def release_lines(frame: dict[str, Any]) -> list[Line]:
-    """The release lines of the frame, each with its floor; ConfigError on two rows with one
-    prefix, or a floor that does not map through its own row."""
-    rows = frame['release']['tag_prefix']
-    for key, table in (
-        ('release.tag_prefix', rows),
-        ('changelog.records', frame['changelog']['records']),
-    ):
-        problem = _repeated(table, key)
-        if problem:
-            raise ConfigError(problem)
-    lines: list[Line] = []
-    for row in rows:
-        floor = row.get('since') or frame['release']['since']
-        line = Line(row['prefix'], row['tag'], floor, line_name(row['prefix']))
-        if floor and _version_through(line, floor) is None:
-            where = 'its since' if row.get('since') else 'release.since'
-            prefix, tag = json.dumps(row['prefix']), json.dumps(row['tag'])
-            raise ConfigError(
-                f'release.tag_prefix row {prefix} (tag {tag}): {where} {json.dumps(floor)} is '
-                f'not a tag of this row ({row["tag"]}X.Y.Z)'
-            )
-        lines.append(line)
-    return lines
-
-
-def _version_through(line: Line, tag: str) -> Version | None:
+def version_of(line: Line, tag: str) -> Version | None:
+    """The version a tag names through `line`: the line's tag, then exactly `X.Y.Z`."""
     if not tag.startswith(line.tag):
         return None
-    match = _VERSION.fullmatch(tag[len(line.tag) :])
-    if match is None:
-        return None
-    major, minor, patch = (int(part) for part in match.groups())
-    return major, minor, patch
+    return triple(tag[len(line.tag) :])
 
 
-def map_tag(lines: list[Line], tag: str) -> tuple[Line, Version] | None:
+def floored_lines(frame: dict[str, Any]) -> list[Floored]:
+    """The release lines of the frame with their floors.
+
+    Raises SitesError on two rows with one prefix (the shared reading), and ConfigError on a
+    floor that is not a tag of its own row.
+    """
+    lines = release_lines(frame)
+    floored: list[Floored] = []
+    for line, row in zip(lines, frame['release']['tag_prefix'], strict=True):
+        floor = row.get('since') or frame['release']['since']
+        if floor and version_of(line, floor) is None:
+            where = 'its since' if row.get('since') else 'release.since'
+            prefix, tag = json.dumps(line.prefix), json.dumps(line.tag)
+            raise ConfigError(
+                f'release.tag_prefix row {prefix} (tag {tag}): {where} {json.dumps(floor)} is '
+                f'not a tag of this row ({line.tag}X.Y.Z)'
+            )
+        floored.append(Floored(line, floor))
+    return floored
+
+
+def map_tag(lines: list[Floored], tag: str) -> tuple[Floored, Version] | None:
     """The line a tag belongs to and its version: the row with the longest fitting `tag`."""
-    best: tuple[Line, Version] | None = None
-    for line in lines:
-        version = _version_through(line, tag)
-        if version is not None and (best is None or len(line.tag) > len(best[0].tag)):
-            best = (line, version)
+    best: tuple[Floored, Version] | None = None
+    for item in lines:
+        version = version_of(item.line, tag)
+        if version is not None and (best is None or len(item.line.tag) > len(best[0].line.tag)):
+            best = (item, version)
     return best
 
 
@@ -391,10 +365,12 @@ def glob_pattern(glob: str) -> re.Pattern[str]:
     return re.compile(pattern, re.DOTALL)
 
 
-def metadata_rule(frame: dict[str, Any]) -> tuple[list[re.Pattern[str]], set[str]]:
+def metadata_rule(
+    frame: dict[str, Any], sites: list[Site]
+) -> tuple[list[re.Pattern[str]], set[str]]:
     globs = [glob_pattern(glob) for glob in frame['release']['metadata_paths']]
     exact = {row['file'] for row in frame['changelog']['records']}
-    exact |= {site['path'] for site in frame['version']['sites']}
+    exact |= {site.path for site in sites}
     return globs, exact
 
 
@@ -418,17 +394,17 @@ class Judged:
         return self.tag[len(self.line.tag) :]
 
 
-def judged_tags(root: Path, lines: list[Line]) -> list[Judged]:
+def judged_tags(root: Path, lines: list[Floored]) -> list[Judged]:
     found: list[Judged] = []
     for tag in tag_names(root):
         mapped = map_tag(lines, tag)
         if mapped is None:
             continue
-        line, version = mapped
-        floor = _version_through(line, line.floor) if line.floor else None
+        item, version = mapped
+        floor = version_of(item.line, item.floor) if item.floor else None
         if floor is not None and version < floor:
             continue
-        found.append(Judged(tag, line, version))
+        found.append(Judged(tag, item.line, version))
     return found
 
 
@@ -515,13 +491,15 @@ def check(root: Path) -> Verdict:
     frame = frame_module.load(root)
     if not frame['release']['enabled']:
         return Verdict.ok(VERB, ('release.enabled is false: the frame turns the check off',))
-    lines = release_lines(frame)
+    lines = floored_lines(frame)
+    # The site configuration errors of the shared reading are this verb's too (contract 11.3).
+    sites = version_sites(frame, [item.line for item in lines])
     judged = judged_tags(root, lines)
     if not judged:
         return Verdict.ok(VERB, ('no release tag to judge',))
     pulls_file = os.environ.get(PULLS_FILE_ENV, '')
     pulls = read_pulls_file(pulls_file) if pulls_file else fetch_pulls()
-    rule = metadata_rule(frame)
+    rule = metadata_rule(frame, sites)
     failures: list[tuple[str, str]] = []
     for item in judged:
         failures += _judge(root, item, pulls, rule)
@@ -550,6 +528,7 @@ def run(args: argparse.Namespace) -> Verdict:
         return Verdict(VERB, 'fail', API_ERROR_CODE, diagnostic=f'{VERB}: {exc}')
     except (
         ConfigError,
+        SitesError,
         GitError,
         frame_module.FrameError,
         frame_module.FrameSchemaError,
