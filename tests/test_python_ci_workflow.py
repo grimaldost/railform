@@ -104,12 +104,18 @@ def test_railform_sha_is_a_required_string_input(workflow: dict[Any, Any]) -> No
 
 
 def test_every_action_is_pinned_to_a_commit() -> None:
-    refs = _USES.findall(WORKFLOW.read_text(encoding='utf-8'))
+    text = WORKFLOW.read_text(encoding='utf-8')
+    refs = _USES.findall(text)
     assert refs, 'no `uses:` line found'
     for uses in refs:
         name, _, ref = uses.partition('@')
         assert _SHA.fullmatch(ref), uses
         assert re.fullmatch(r'[\w.-]+/[\w./-]+', name), uses
+    # Each pin names its release in a `# vX.Y.Z` comment, which Dependabot updates with it.
+    lines = [line for line in text.splitlines() if _USES.match(line)]
+    assert len(lines) == len(refs)
+    for line in lines:
+        assert re.search(r'# v\d+(\.\d+)*\s*$', line), line
 
 
 def test_every_setup_uv_step_pins_one_uv_version(workflow: dict[Any, Any]) -> None:
