@@ -276,11 +276,15 @@ def test_the_plugin_marketplace_wrapper_reads_the_pinned_pre_commit_version() ->
     effective = frame.effective_frame({'project': {'type': 'plugin-marketplace'}})
     version = effective['hooks']['pre_commit_version']
     assert re.fullmatch(r'\d+\.\d+\.\d+', version)
-    assert effective['hooks']['wrapper'] == f'uvx pre-commit=={version} hook-impl'
+    assert effective['hooks']['wrapper'] == (
+        f'uvx --from pre-commit=={version} python -m pre_commit hook-impl'
+    )
     moved = frame.effective_frame(
         {'project': {'type': 'plugin-marketplace'}, 'hooks': {'pre_commit_version': '9.9.9'}}
     )
-    assert moved['hooks']['wrapper'] == 'uvx pre-commit==9.9.9 hook-impl'
+    assert (
+        moved['hooks']['wrapper'] == 'uvx --from pre-commit==9.9.9 python -m pre_commit hook-impl'
+    )
 
 
 def test_the_type_of_each_preset_shapes_its_pipeline() -> None:
@@ -897,7 +901,10 @@ def test_the_wrapper_version_is_read_from_the_frame(monkeypatch: pytest.MonkeyPa
         monkeypatch, f'pre_commit_version = "{version}"', 'pre_commit_version = "1.2.3"'
     )
     effective = frame.effective_frame({'project': {'type': 'plugin-marketplace'}})
-    assert effective['hooks']['wrapper'] == 'uvx pre-commit==1.2.3 hook-impl'
+    assert (
+        effective['hooks']['wrapper']
+        == 'uvx --from pre-commit==1.2.3 python -m pre_commit hook-impl'
+    )
 
 
 # --- commit.attribution_patterns: keel's set and keel's test cases ------------------------------

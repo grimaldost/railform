@@ -114,7 +114,11 @@ Some keys hold rows rather than plain values:
 
 A repository tracks one small shell script per git hook in `hooks.dir` (`.githooks` by default),
 each of which runs that stage of `.pre-commit-config.yaml` through the frame's `hooks.wrapper`
-command. The text is fixed by a template, so a wrapper is correct or it is not.
+command. The text is fixed by a template, so a wrapper is correct or it is not. The command is
+`uv run --frozen python -m pre_commit hook-impl` for the two uv types and
+`uvx --from pre-commit==<hooks.pre_commit_version> python -m pre_commit hook-impl` for
+`plugin-marketplace`. Both launch an interpreter, never pre-commit's console-script shim, which an
+application-control policy may refuse to launch.
 
 - `railform hooks-check` checks every hook in `hooks.names`: the file exists (`missing`), the git
   index tracks it as `100755` (`mode`; git skips a hook that is not executable on Linux and

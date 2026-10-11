@@ -184,7 +184,9 @@ metadata_paths = ["pyproject.toml", "uv.lock"]
 layout = "plugins"
 
 [presets.plugin-marketplace.hooks]
-wrapper = "uvx pre-commit=={hooks.pre_commit_version} hook-impl"
+# An interpreter launch, as the uv types' wrapper is, never pre-commit's console-script shim:
+# an application-control policy may refuse to launch a shim (development-rails spec, §13).
+wrapper = "uvx --from pre-commit=={hooks.pre_commit_version} python -m pre_commit hook-impl"
 pre_commit_version = "4.6.2"
 
 [presets.plugin-marketplace.ci]
