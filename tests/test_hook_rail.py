@@ -23,8 +23,9 @@ with `HOME`, `USERPROFILE` and `XDG_CONFIG_HOME` pointing at a temporary directo
 empty `.gitconfig`; the network probe runs in that same environment.
 
 What still reaches the tests:
-- every inherited environment variable but `DROPPED` (`PIP_INDEX_URL`, `UV_INDEX_URL`, a proxy),
-  passed on to git, pip and uv;
+- every inherited environment variable the tests do not drop or set (`DROPPED`,
+  `PRE_COMMIT_REMOTE_BRANCH`, git's locating variables), for example `PIP_INDEX_URL`,
+  `UV_INDEX_URL` or a proxy, passed on to git, pip and uv;
 - the system git configuration, in pre-commit's clones and the network probe;
 - on Windows (checked), uv's user configuration `%APPDATA%\\uv\\uv.toml`, as `APPDATA` is not
   redirected, and pip's site-wide `%PROGRAMDATA%\\pip\\pip.ini`; pip's user configuration and
