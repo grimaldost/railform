@@ -7,8 +7,8 @@ checks. A repository that adopts railform pins one commit of this repository and
 CI pipeline, hook wrappers and commit checks as every other adopter at that commit.
 
 The verbs, the hook manifest and the reusable CI workflow exist, and railform's own CI runs
-through that workflow. The first release is 0.1.0; an adopter pins the commit that release was
-cut at.
+through that workflow. The first release is 0.1.0; an adopter pins the commit the tag
+`v0.1.0` points at, the release pull request's merge commit.
 
 ## What it is
 

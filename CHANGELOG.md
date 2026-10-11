@@ -12,8 +12,8 @@ of the development-rails spec, referenced at a pinned commit. It has thirteen ve
 `private-refs`, `commit-msg`, `commit-range`, `pr-text`, `hooks-check`, `arm`, `session-paths`,
 `adopt`, `branch-name`, `changelog-gate`, `version-sites` and `release-check`.
 
-Four public repositories move to this pin with `railform adopt --pin <release SHA>`: keel,
-craft-collection, convoy and mantis-research.
+keel and craft-collection move to this pin with `railform adopt --pin <release SHA>`; convoy and
+mantis-research adopt railform for the first time at it.
 
 ### Added
 
@@ -29,7 +29,7 @@ craft-collection, convoy and mantis-research.
   share.
 - railform declares its own `version.sites` in `railform.toml`: the version in `pyproject.toml`
   and the newest `## [X.Y.Z]` heading of this changelog (authored), so `railform version-sites`
-  judges its releases. The check reads the heading only once the first release cuts one.
+  judges its releases.
 - The verb table of the command names `changelog-gate`, `version-sites` and `release-check`; a
   name without a module exits 2 with `not-implemented`.
 - The `changelog-gate` verb (development-rails spec, §14), ported from the stack-radar engine's
