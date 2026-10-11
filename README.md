@@ -221,6 +221,10 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
   `grimaldost/railform/.github/workflows/python-ci.yml` at the pin and passes the same pin as the
   input `railform-sha`. `gate` needs every other job in the file, runs with `if: always()`, and
   fails when a needed job failed or was cancelled; it is the one status a branch ruleset requires.
+  `gate` protects nothing on its own: only a ruleset (or branch protection) that names `gate` as a
+  required status stops a red pull request from merging. A repository without one, such as a
+  private repository on a plan that offers no rulesets, still runs every check, but a red `gate`
+  is advice there, not a block.
   The `pull_request` trigger also gains `types: [opened, synchronize, reopened, edited]`.
 - In `.pre-commit-config.yaml`, the railform entry at the pin and the hygiene entry
   (`pre-commit/pre-commit-hooks` v5.0.0, pinned by its commit). Each hygiene hook carries
@@ -340,7 +344,9 @@ checks that the input is 40 hexadecimal characters before anything is installed.
 - **What passes.** A job counts as passing when it succeeded or was skipped by its own condition
   (`commit-lane` and `changelog` on a push). The caller's `gate` job is the one required status.
   Every job runs on every pull request event, `edited` included: a run that skipped the checks
-  on an edit of the title would post a green `gate` over a red one on the same commit.
+  on an edit of the title would post a green `gate` over a red one on the same commit. The cost:
+  each edit of a pull request's title or body runs the whole workflow again, the full `checks`
+  matrix included, though only `commit-lane` reads the text that changed.
 - **The jobs after `frame`.** `checks`, `commit-lane`, `changelog` and `hooks` need `frame`, so a
   pin that is not a full commit, or a `railform.toml` that `frame --check` fails, stops them
   before they install anything. `audit` installs no railform and runs on its own.
