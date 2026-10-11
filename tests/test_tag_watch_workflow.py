@@ -110,10 +110,17 @@ def test_the_checkout_takes_the_whole_history_and_the_default_branch_on_a_tag_pu
     checkout = _uses(workflow, 'actions/checkout@')['with']
     assert checkout['fetch-depth'] == 0
     assert checkout['persist-credentials'] is False
-    push = {'event_name': 'push', 'event': {'repository': {'default_branch': 'main'}}}
-    assert interpolate(checkout['ref'], {'github': push}) == 'main'
-    for event in ('schedule', 'workflow_dispatch'):
-        assert interpolate(checkout['ref'], {'github': {'event_name': event}}) == ''
+    repository = {'repository': {'default_branch': 'main'}}
+
+    def ref(event: str, github_ref: str) -> object:
+        github = {'event_name': event, 'ref': github_ref, 'event': repository}
+        return interpolate(checkout['ref'], {'github': github})
+
+    assert ref('push', 'refs/tags/v0.2.0') == 'main'
+    # Contract (Wave C) 11.6: a dispatch from a tag checks out the default branch too.
+    assert ref('workflow_dispatch', 'refs/tags/v0.2.0') == 'main'
+    assert ref('workflow_dispatch', 'refs/heads/main') == ''
+    assert ref('schedule', 'refs/heads/main') == ''
 
 
 def test_release_check_runs_from_the_input_with_the_token_in_its_environment(
