@@ -12,8 +12,11 @@ frame:
 - `content`: its text, with CRLF read as LF, is not the rendered wrapper;
 - `not-armed` (`--armed` only): `git config core.hooksPath` is not `hooks.dir`.
 
-The source's other rules (each hook's configuration declares its stage, pre-commit is in the dev
-group, every `uv run` is frozen) are not ported here.
+The source's other rules are not rules of this verb (development-rails spec, §13). Each hook
+declaring its stage and every `uv run` being frozen are held over what railform ships and adopt
+writes, by railform's own tests: an adopter's own hooks lie outside what adopt owns. pre-commit
+in the dev group is not checked: a uv wrapper without it fails at the first commit with
+pre-commit's own error, and judging it would mean re-reading uv's group resolution.
 """
 
 from __future__ import annotations

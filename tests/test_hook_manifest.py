@@ -126,3 +126,26 @@ def test_pre_commit_is_in_the_dev_group() -> None:
     pyproject = tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))
     dev = [item for item in pyproject['dependency-groups']['dev'] if isinstance(item, str)]
     assert any(item.split('>')[0].split('=')[0].strip() == 'pre-commit' for item in dev)
+
+
+# The frozen rule of the source `railform hooks-check` was ported from (the stack-radar engine,
+# tests/test_commit_lane.py), held over every command railform ships (development-rails spec,
+# §13): a `uv run` that may re-lock would let a hook or a CI step change `uv.lock` or install
+# what the lock does not name. `--no-project` runs outside any project and has no lock to keep.
+_UNFROZEN = re.compile(r'\buv run\b(?! --frozen\b)(?! --no-project\b)')
+SHIPPED = (
+    ROOT / 'src' / 'railform' / 'default_frame.toml',
+    *sorted(TEMPLATES.iterdir()),
+    *sorted((ROOT / '.github' / 'workflows').glob('*.yml')),
+    MANIFEST,
+    ROOT / '.pre-commit-config.yaml',
+)
+
+
+def test_red_proof_every_uv_run_railform_ships_is_frozen() -> None:
+    assert _UNFROZEN.search('entry: uv run railform commit-msg')
+    assert not _UNFROZEN.search('uv run --frozen python -m pytest -q')
+    for path in SHIPPED:
+        text = path.read_text(encoding='utf-8')
+        for number, line in enumerate(text.splitlines(), start=1):
+            assert not _UNFROZEN.search(line), f'{path.name}:{number}: {line.strip()}'
