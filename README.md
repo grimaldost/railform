@@ -6,8 +6,8 @@ command-line tool that runs the checks, and a default configuration (the "frame"
 checks. A repository that adopts railform pins one commit of this repository and gets the same
 CI pipeline, hook wrappers and commit checks as every other adopter at that commit.
 
-Nothing in railform is usable yet. The verbs and the hook manifest exist; the reusable CI
-workflow does not. Nothing is usable before 0.1.0.
+Nothing in railform is usable yet. The verbs, the hook manifest and the reusable CI workflow
+exist, and railform's own CI runs through that workflow; nothing is usable before 0.1.0.
 
 ## What it is
 
@@ -98,7 +98,10 @@ Some keys hold rows rather than plain values:
   that order.
 - `railform frame --github-output` appends one `name=value` line per key to the file
   `$GITHUB_OUTPUT` names, as `<table>_<key>`; lists, tables, booleans and numbers are written as
-  compact JSON.
+  compact JSON. It also writes `pipeline`, the type's pipeline (see the reusable CI workflow
+  below), one command per line, and exits 2 when a step cannot be written: ruff at no
+  `ci.ruff_version`, or `ci.setup.extra_installs` in a `plugin-marketplace` repository, which has
+  no uv project to install into.
 
 ## Hook wrappers
 
@@ -271,6 +274,61 @@ nothing.
   becomes `repo: local` running `uv run --frozen railform <verb>`, `--pin` rewrites nothing, and
   `--check` skips the pin comparisons and says so. Without the key, a local-path call is `drift`.
 
+## The reusable CI workflow
+
+`.github/workflows/python-ci.yml` runs only when another workflow calls it (`workflow_call`). A
+repository calls it from the `railform` job that `railform adopt` writes in its `ci.yml`, at a
+pinned commit, and passes the same commit as the required input `railform-sha`:
+
+```yaml
+railform:
+  uses: grimaldost/railform/.github/workflows/python-ci.yml@<40-hex sha>
+  with:
+    railform-sha: <the same 40-hex sha>
+```
+
+Every railform command in the workflow is installed from that commit
+(`uvx --from git+https://github.com/grimaldost/railform@<40-hex sha>`), and the `frame` job
+checks that the input is 40 hexadecimal characters before anything is installed. The jobs:
+
+| Job | Runs | On |
+|---|---|---|
+| `frame` | `railform frame --check`, then `railform frame --github-output` | every run |
+| `checks` | `railform private-refs`, then the type's pipeline, on every leg of `ci.os` by `python.versions` | every run |
+| `commit-lane` | `railform commit-range`, `railform pr-text`, and `railform branch-name` on the head branch | pull requests |
+| `changelog` | nothing yet: a placeholder, skipped until the changelog gate exists | none |
+| `hooks` | `railform hooks-check`, `railform adopt --check`, and the hygiene hooks over the changed files | every run; the hygiene hooks on pull requests |
+| `audit` | zizmor 1.30.0 at high severity over the caller's workflows | every run |
+
+- **The pipeline comes from the frame.** The workflow names no step of the type's pipeline.
+  `frame --github-output` writes it as the output `pipeline`, built from the frame's typed
+  parameters, and `checks` runs each line in bash, in order, stopping at the first that fails.
+  For `python-package` it is `uv lock --check`, `uv sync --frozen` (plus `python.sync_args`),
+  `uv pip install` of `ci.setup.extra_installs` when there are any, `ruff format --check` and
+  `ruff check` over `python.lint_paths`, `ty check` over `python.type_check`, and
+  `python.test_command`; `python-scripts` is the same without `ty` (its `python.type_check` is
+  empty); `plugin-marketplace` runs ruff from `uvx` at `ci.ruff_version`, then
+  `python.test_command`. A test command of several lines is one command per line. The Python
+  version reaches uv through `UV_PYTHON`, set per matrix leg, and the checkout depth of `checks`
+  is `ci.setup.fetch_depth`.
+- **What the workflow allows.** Every action is pinned by a 40-hex commit, every setup-uv step
+  pins the same uv version, and the token is read-only (`contents: read`). It runs from the
+  caller's `pull_request` and `push` events, never `pull_request_target`. The jobs that read
+  history (`commit-lane`, `hooks`) check out all of it. No `run:` text holds an expression:
+  values such as the head branch's name reach the scripts through `env:`.
+- **What passes.** A job counts as passing when it succeeded or was skipped by its own condition
+  (`commit-lane` and `changelog` on a push). The caller's `gate` job is the one required status.
+  Every job runs on every pull request event, `edited` included: a run that skipped the checks
+  on an edit of the title would post a green `gate` over a red one on the same commit.
+- **The jobs after `frame`.** `checks`, `commit-lane`, `changelog` and `hooks` need `frame`, so a
+  pin that is not a full commit, or a `railform.toml` that `frame --check` fails, stops them
+  before they install anything. `audit` installs no railform and runs on its own.
+
+railform itself calls the workflow by local path, `./.github/workflows/python-ci.yml`, with
+`ci.self_hosted = true` in its `railform.toml`, and passes the commit under test
+(`github.event.pull_request.head.sha || github.sha`) as `railform-sha`; its pre-commit entry is
+`repo: local`, running `uv run --frozen railform <verb>`.
+
 ## The hook manifest
 
 `.pre-commit-hooks.yaml` declares four hooks, each with `language: python` and
@@ -318,11 +376,10 @@ only the first ref with new commits. So the rail is blind to:
   on `main` and `git push origin foo`;
 - every ref after the first in a push of several refs.
 
-The `commit-lane` job of the reusable CI workflow will close both gaps on the server, once that
-workflow exists (§9 of the development-rails spec, not yet built): it will run
-`railform branch-name` on the head branch of every pull request, so a misnamed branch will be
-refused once it opens a pull request, however it was pushed. A fork's pull request from its
-`main` will be refused there too.
+The `commit-lane` job of the reusable CI workflow closes both gaps on the server: it runs
+`railform branch-name` on the head branch of every pull request, so a misnamed branch is refused
+once it opens a pull request, however it was pushed. A fork's pull request from its `main` is
+refused there too.
 
 ## Development
 
@@ -332,3 +389,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the gate commands and the commit rule
 The tests marked `slow` need the network; the hook-rail tests, which run real `git commit` and
 `git push` through pre-commit, need it in every session. Offline, run
 `uv run --frozen python -m pytest -q -m "not slow"`.
+
+The workflow tests run the workflows' own scripts in bash, through a local model of a GitHub
+Actions run (`tests/workflow_model.py`) in which railform is the code under test. On Windows
+they use the bash that ships with Git, never the WSL launcher.
