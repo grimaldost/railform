@@ -70,10 +70,13 @@ def hooks_dir(frame: dict[str, Any]) -> str:
 
     Separators become `/` and `.` segments and doubled or trailing slashes go, so `./.githooks`
     and `.githooks/` name `.githooks`. Raises WrapperError when the path is empty, is the
-    repository itself, is absolute, leaves the repository, or holds in any segment a character
-    Windows forbids in a file name (`<>:"|?*` and control characters; so a drive letter too).
+    repository itself, is absolute, leaves the repository, starts with a `~` or `%(` that git
+    expands, or holds in any segment a character Windows forbids in a file name (`<>:"|?*` and
+    control characters; so a drive letter too).
     """
     directory = frame['hooks']['dir']
+    if directory.startswith(('~', '%(')):
+        raise WrapperError(f'hooks.dir {directory!r} starts with a path that git expands')
     slashed = directory.replace('\\', '/')
     path = posixpath.normpath(slashed) if slashed.strip() else '.'
     if path == '.' or path.startswith('/') or path == '..' or path.startswith('../'):

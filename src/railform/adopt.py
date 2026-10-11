@@ -884,8 +884,6 @@ def _relative_dir(value: str) -> str | None:
     """A configured hooks directory as a repository-relative path, or None when it is not a
     directory of the repository adopt can write: outside the clone, inside `.git`, a path git
     expands (`~`, `%(prefix)`), or a name with a character Windows forbids."""
-    if value.startswith(('~', '%(prefix)')):
-        return None
     try:
         directory = hooks_dir({'hooks': {'dir': value}})
     except WrapperError:

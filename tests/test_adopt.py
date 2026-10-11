@@ -1688,6 +1688,21 @@ def test_a_hooks_dir_with_a_character_windows_forbids_is_a_configuration_error(
     assert snapshot(scratch_repo) == before
 
 
+@pytest.mark.parametrize('directory', ['~/hooks', '~', '%(prefix)/hooks'])
+def test_a_hooks_dir_that_git_expands_is_a_configuration_error(
+    directory: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # git runs hooks from the expanded path, so a clone armed on the literal one is not armed.
+    build(scratch_repo, 'python-package')
+    write(scratch_repo, 'railform.toml', f'[hooks]\ndir = {json.dumps(directory)}\n')
+    before = snapshot(scratch_repo)
+    code = main(['adopt', '--pin', PIN])
+    captured = capsys.readouterr()
+    assert (code, captured.out.splitlines()[-1]) == (2, f'{VERDICT} fail usage')
+    assert 'git expands' in captured.err
+    assert snapshot(scratch_repo) == before
+
+
 @pytest.mark.parametrize('key', ['paths', 'paths-ignore', 'branches', 'branches-ignore'])
 def test_red_proof_a_filter_on_the_pull_request_trigger_is_reported(
     key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
