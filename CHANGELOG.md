@@ -17,6 +17,9 @@ All notable changes to this project are recorded here, in the
   rewritten. The reusable workflow runs it in the `checks` job on every leg. The module also holds
   the reading of release lines and version sites that the changelog gate and the release check
   share.
+- railform declares its own `version.sites` in `railform.toml`: the version in `pyproject.toml`
+  and the newest `## [X.Y.Z]` heading of this changelog (authored), so `railform version-sites`
+  judges its releases. The check reads the heading only once the first release cuts one.
 - The verb table of the command names `changelog-gate`, `version-sites` and `release-check`; a
   name without a module exits 2 with `not-implemented`.
 - The `changelog-gate` verb (development-rails spec, §14), ported from the stack-radar engine's
