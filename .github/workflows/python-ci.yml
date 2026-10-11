@@ -26,6 +26,7 @@ defaults:
 jobs:
   frame:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       ci_os: ${{ steps.frame.outputs.ci_os }}
       ci_setup: ${{ steps.frame.outputs.ci_setup }}
@@ -45,6 +46,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.12.19'
+          enable-cache: false
       - name: railform frame --check
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform frame --check
       - name: railform frame --github-output
@@ -59,6 +61,7 @@ jobs:
         os: ${{ fromJSON(needs.frame.outputs.ci_os) }}
         python: ${{ fromJSON(needs.frame.outputs.python_versions) }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     env:
       UV_PYTHON: ${{ matrix.python }}
     steps:
@@ -88,6 +91,7 @@ jobs:
     needs: frame
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -96,6 +100,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.12.19'
+          enable-cache: false
       - name: railform commit-range
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -117,6 +122,7 @@ jobs:
     needs: frame
     if: false && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -125,12 +131,14 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.12.19'
+          enable-cache: false
       - name: The changelog gate is not written yet
         run: exit 0
 
   hooks:
     needs: frame
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -139,6 +147,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.12.19'
+          enable-cache: false
       - name: railform hooks-check
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform hooks-check
       - name: railform adopt --check
@@ -164,6 +173,7 @@ jobs:
 
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -171,6 +181,7 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: '0.12.19'
+          enable-cache: false
       - name: zizmor
         env:
           GH_TOKEN: ${{ github.token }}

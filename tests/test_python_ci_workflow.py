@@ -133,6 +133,25 @@ def test_every_setup_uv_step_pins_one_uv_version(workflow: dict[Any, Any]) -> No
     assert re.fullmatch(r'\d+\.\d+\.\d+', versions.pop())
 
 
+def test_red_proof_every_job_has_a_time_limit(workflow: dict[Any, Any]) -> None:
+    # Wave A's review (folded at §13): a hung step would otherwise hold a runner for GitHub's
+    # six-hour default before `gate` could report.
+    for name, job in workflow['jobs'].items():
+        limit = job.get('timeout-minutes')
+        assert isinstance(limit, int) and 0 < limit <= 60, (name, limit)
+
+
+def test_red_proof_only_the_checks_job_caches_uv(workflow: dict[Any, Any]) -> None:
+    # Wave A's review (folded at §13): only `checks` syncs the caller's lock; the other jobs
+    # install railform or a pinned tool, and a cache saved from them buys nothing.
+    for name, job in workflow['jobs'].items():
+        for step in job['steps']:
+            if not step.get('uses', '').startswith('astral-sh/setup-uv@'):
+                continue
+            enabled = (step.get('with') or {}).get('enable-cache', 'auto')
+            assert enabled == ('auto' if name == 'checks' else False), (name, enabled)
+
+
 def test_no_permission_writes(workflow: dict[Any, Any]) -> None:
     assert workflow['permissions'] == {'contents': 'read'}
     for name, job in workflow['jobs'].items():
