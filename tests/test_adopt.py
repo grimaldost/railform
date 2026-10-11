@@ -573,6 +573,7 @@ def test_red_proof_an_edited_tag_watch_caller_is_drift_and_adopt_moves_only_its_
     code, line, out = run_adopt(capsys, '--check')
     assert (code, line) == (1, f'{VERDICT} fail drift')
     assert f'{TAG_WATCH}:' in out
+    assert 'delete the file and run railform adopt' in out
     # An existing caller is never written over: only its two pin sites move.
     assert run_adopt(capsys)[0] == 0
     assert read(adopted.root, TAG_WATCH) == edited
@@ -593,6 +594,32 @@ def test_red_proof_a_tag_watch_pin_that_differs_is_pin_mismatch(
     # adopt realigns it with the workflow pin.
     assert run_adopt(capsys)[0] == 0
     assert read(adopted.root, TAG_WATCH) == tag_watch_caller(PIN)
+
+
+def test_re_pinning_a_crlf_tag_watch_caller_changes_only_its_two_shas(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    crlf = read(adopted.root, TAG_WATCH).replace('\n', '\r\n').encode('utf-8')
+    (adopted.root / TAG_WATCH).write_bytes(crlf)
+    assert run_adopt(capsys, '--pin', OTHER_PIN)[0] == 0
+    moved = (adopted.root / TAG_WATCH).read_bytes()
+    assert moved == crlf.replace(PIN.encode(), OTHER_PIN.encode())
+    assert moved.count(OTHER_PIN.encode()) == 2
+
+
+def test_a_local_path_caller_in_a_pinned_repository_is_left_whole(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Only a pinned call moves, and its input with it: a local-path caller keeps its input.
+    local = TAG_WATCH_TEMPLATE.replace('__USES__', './.github/workflows/tag-watch.yml').replace(
+        '__RAILFORM_SHA__', '${{ github.sha }}'
+    )
+    write(adopted.root, TAG_WATCH, local)
+    assert run_adopt(capsys, '--pin', OTHER_PIN)[0] == 0
+    assert read(adopted.root, TAG_WATCH) == local
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{TAG_WATCH}: calls no railform workflow at a pin' in out
 
 
 def test_a_missing_tag_watch_caller_is_drift_until_adopt_writes_it(

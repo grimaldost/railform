@@ -104,8 +104,11 @@ _REV_LINE = re.compile(r'^\s*rev:\s*(\S+)')
 _TAG_WATCH_USES = re.compile(
     r'(uses:\s*' + re.escape(REPOSITORY) + r'/\.github/workflows/[\w.-]+@)(\S+)'
 )
-# The `railform-sha` input of the tag-watch caller: the value is the rest of the line.
-_TAG_WATCH_INPUT = re.compile(r'^([ \t]*railform-sha:[ \t]*)(.*?)([ \t]*)$', re.MULTILINE)
+# The `railform-sha` input of the tag-watch caller: the value is the rest of the line, its
+# trailing blanks and a CR left out, so a CRLF file keeps its line endings.
+_TAG_WATCH_INPUT = re.compile(r'^([ \t]*railform-sha:[ \t]*)([^\r\n]*?)([ \t]*\r?)$', re.MULTILINE)
+# How an edited caller is cleared: adopt never writes over it.
+_TAG_WATCH_RESTORE = '; to restore it, delete the file and run railform adopt'
 _TOKEN = re.compile(r'__([A-Z][A-Z_]*)__')
 _OTHER_BREAKS = re.compile('\r(?!\n)|[\x85\u2028\u2029]')
 _PLAIN_JOB_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_-]*')
@@ -778,7 +781,10 @@ def _plan_tag_watch(text: str | None, pin: str | None) -> str:
         return _render_tag_watch(pin)
     if pin is None:
         return text
-    moved = _TAG_WATCH_USES.sub(lambda match: match.group(1) + pin, text)
+    moved, count = _TAG_WATCH_USES.subn(lambda match: match.group(1) + pin, text)
+    if not count:
+        # No pinned call to move (a local-path call, for one): the input stays with it.
+        return text
     return _TAG_WATCH_INPUT.sub(lambda match: match.group(1) + pin + match.group(3), moved)
 
 
@@ -1355,7 +1361,7 @@ def _check(root: Path) -> Verdict:
         actual = tag_watch_text.replace('\r\n', '\n').split('\n')
         expected_lines = _render_tag_watch(None).split('\n')
         for message in _first_difference(TAG_WATCH_PATH, actual, expected_lines):
-            drift(message)
+            drift(message + _TAG_WATCH_RESTORE)
     else:
         shas = [m.group(2) for m in _TAG_WATCH_USES.finditer(tag_watch_text)]
         if not shas:
@@ -1367,7 +1373,7 @@ def _check(root: Path) -> Verdict:
             aligned = _TAG_WATCH_INPUT.sub(lambda m: m.group(1) + shas[0] + m.group(3), text)
             expected_lines = _render_tag_watch(shas[0]).split('\n')
             for message in _first_difference(TAG_WATCH_PATH, aligned.split('\n'), expected_lines):
-                drift(message)
+                drift(message + _TAG_WATCH_RESTORE)
             pins += [(f'{TAG_WATCH_PATH}: the uses: SHA', sha) for sha in shas]
             pins += [(f'{TAG_WATCH_PATH}: the railform-sha input', value) for value in inputs]
 
