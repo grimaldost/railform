@@ -138,9 +138,13 @@ sites = []
 # Globs of the release metadata. The release check adds every changelog.records file and every
 # version.sites path to them by itself.
 metadata_paths = []
+# The first release tag the release check judges (a tag name, compared by its version), so the
+# tags from before adoption never fail it; "" judges every tag.
 since = ""
 # Rows of a path prefix (as in changelog.records) and the tag prefix of that record's releases;
-# the longest matching prefix wins, and a repository's own list replaces this one whole.
+# the longest matching prefix wins, and a repository's own list replaces this one whole. A row's
+# optional `since` (default "") is its own floor, a tag name of that row, in place of
+# release.since: per-plugin changelogs start tagging at their own versions.
 tag_prefix = [{ prefix = "", tag = "v" }]
 enabled = true
 
