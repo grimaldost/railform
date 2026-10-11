@@ -644,9 +644,12 @@ def pipeline(frame: dict[str, Any]) -> list[str]:
     """The type's pipeline: the commands the `checks` job of the reusable workflow runs, in the
     type's fixed order, built from the frame's typed parameters (spec §9 and design decision 3).
 
-    Each element is one bash command line. The Python version is not in them: the workflow sets
-    `UV_PYTHON` for each matrix leg, and uv reads it. A `python.test_command` of several lines
-    gives one command per non-blank line.
+    Each element is one bash command line. The workflow runs the lines in order in one bash
+    shell, so what a line exports, the directory it enters and the variables it sets hold for
+    every line after it (development-rails spec, §13): a test command may install a tool and
+    `export PATH=...` on one line and use the tool on the next. The Python version is not in
+    them: the workflow sets `UV_PYTHON` for each matrix leg, and uv reads it. A
+    `python.test_command` of several lines gives one command per non-blank line.
 
     - `python-package` and `python-scripts`: the lock check, the sync (with `python.sync_args`),
       `uv pip install` of `ci.setup.extra_installs` when there are any, the ruff format check

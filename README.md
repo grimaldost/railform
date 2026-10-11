@@ -320,7 +320,10 @@ checks that the input is 40 hexadecimal characters before anything is installed.
   `ruff check` over `python.lint_paths`, `ty check` over `python.type_check`, and
   `python.test_command`; `python-scripts` is the same without `ty` (its `python.type_check` is
   empty); `plugin-marketplace` runs ruff from `uvx` at `ci.ruff_version`, then
-  `python.test_command`. A test command of several lines is one command per line. The Python
+  `python.test_command`. A test command of several lines is one command per line. The lines run
+  in order in one bash shell, so a line can prepare the next: an
+  `export PATH="$HOME/.local/bin:$PATH"` on one line holds for every line after it, and so do
+  `cd` and shell variables. The Python
   version reaches uv through `UV_PYTHON`, set per matrix leg, and the checkout depth of `checks`
   is `ci.setup.fetch_depth`.
 - **What the workflow allows.** Every action is pinned by a 40-hex commit, every setup-uv step

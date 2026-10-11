@@ -339,6 +339,22 @@ def test_the_pipeline_step_runs_each_line_in_order_and_stops_at_the_first_failur
 
 
 @pytest.mark.skipif(bash() is None, reason='no bash on this machine')
+def test_the_pipeline_lines_share_one_shell(workflow: dict[Any, Any]) -> None:
+    # The development-rails spec, §13 (a pilot): a test command that installs a tool and puts it
+    # on PATH on one line uses it on the next, because the lines run in one bash shell. An
+    # export, a shell variable and the working directory all carry over.
+    lines = 'export RAILFORM_ONE=1\nTWO=2\ncd ..\ntest "$RAILFORM_ONE" = 1\ntest "$TWO" = 2\npwd'
+    done = _pipeline_step(workflow, lines)
+    assert done.returncode == 0, done.stdout + done.stderr
+    from_frame = frame.pipeline(
+        frame.effective_frame({'python': {'test_command': 'export X=1\ntest "$X" = 1'}})
+    )
+    assert from_frame[-2:] == ['export X=1', 'test "$X" = 1']
+    done = _pipeline_step(workflow, '\n'.join(from_frame[-2:]))
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+@pytest.mark.skipif(bash() is None, reason='no bash on this machine')
 def test_a_pipeline_step_cannot_read_the_remaining_steps(workflow: dict[Any, Any]) -> None:
     # A command that reads standard input must not swallow the steps after it.
     done = _pipeline_step(workflow, 'cat\necho after')
