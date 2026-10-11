@@ -19,7 +19,7 @@ jobs:
       railform-sha: ${{ github.event.pull_request.head.sha || github.sha }}
   gate:
     if: always()
-    needs: [railform]
+    needs: [railform, extra]
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -28,3 +28,8 @@ jobs:
         shell: bash
         run: exit 1
   # <<< railform
+  extra:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail on purpose, as a red proof of gate
+        run: exit 1
