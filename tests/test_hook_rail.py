@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from pre_commit.git import no_git_env
 
 from migration_fixtures import PIN, PRE_COMMIT, TYPES, build
 from railform.adopt import HYGIENE_URL
@@ -156,17 +157,66 @@ def railform_under_test(
     return _session_cache['railform']  # type: ignore[return-value]
 
 
-def _require_network(cache: dict[str, object], cwd: Path, env: dict[str, str]) -> None:
+def _require_network(cache: dict[str, object], cwd: Path, outside: dict[str, str]) -> None:
     """Fail at once, with one message, when the first network step of the session failed.
 
     The first step is reaching the hygiene hooks' repository, which pre-commit clones; asked
     once per session, so an offline run never waits through the retries of pre-commit or uv.
+    The probe runs in the environment of pre-commit's clones (`no_git_env`, which reads the
+    system git configuration), and a probe that times out is cached like any other failure.
     """
     if 'network' not in cache:
-        done = _run(cwd, ['git', 'ls-remote', '--quiet', HYGIENE_URL, 'HEAD'], env)
-        cache['network'] = '' if done.returncode == 0 else done.stderr.strip()
+        command = ['git', 'ls-remote', '--quiet', HYGIENE_URL, 'HEAD']
+        try:
+            done = _run(cwd, command, no_git_env(_environment(outside)))
+        except subprocess.TimeoutExpired as exc:
+            stderr = exc.stderr or b''
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode('utf-8', 'replace')
+            cache['network'] = f'no answer in {TIMEOUT} s {stderr.strip()}'.strip()
+        else:
+            cache['network'] = '' if done.returncode == 0 else done.stderr.strip()
     if cache['network']:
         pytest.fail(f'{OFFLINE} (git ls-remote {HYGIENE_URL}: {cache["network"]})', pytrace=False)
+
+
+def test_the_network_probe_runs_in_the_environment_of_pre_commit_s_clones(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # pre-commit clones with `no_git_env()`, which drops conftest's `GIT_CONFIG_NOSYSTEM` and
+    # `GIT_CONFIG_GLOBAL`: a machine that reaches GitHub through its system git configuration
+    # must not be told it is offline.
+    seen: list[dict[str, str]] = []
+
+    def answer(cwd: Path, command: list[str], env: dict[str, str] | None = None) -> object:
+        seen.append(env or {})
+        return subprocess.CompletedProcess(command, 0, '', '')
+
+    monkeypatch.setattr(f'{__name__}._run', answer)
+    assert os.environ['GIT_CONFIG_NOSYSTEM'] == '1' and 'GIT_CONFIG_GLOBAL' in os.environ
+    home = {'HOME': str(tmp_path), 'USERPROFILE': str(tmp_path)}
+    _require_network({}, tmp_path, home)
+    [env] = seen
+    assert 'GIT_CONFIG_NOSYSTEM' not in env and 'GIT_CONFIG_GLOBAL' not in env, env
+    assert env['HOME'] == env['USERPROFILE'] == str(tmp_path)
+    assert env['PATH'] == os.environ['PATH']
+
+
+def test_a_network_probe_that_times_out_fails_every_test_after_one_wait(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[list[str]] = []
+
+    def hang(cwd: Path, command: list[str], env: dict[str, str] | None = None) -> object:
+        calls.append(command)
+        raise subprocess.TimeoutExpired(command, TIMEOUT, stderr=b'still connecting')
+
+    monkeypatch.setattr(f'{__name__}._run', hang)
+    cache: dict[str, object] = {}
+    for _ in range(2):
+        with pytest.raises(pytest.fail.Exception, match='still connecting'):
+            _require_network(cache, tmp_path, {})
+    assert len(calls) == 1
 
 
 @pytest.fixture
@@ -181,7 +231,7 @@ def fixture_origin(
     later test of its type at once, with the first failure."""
 
     def origin(project_type: str) -> Path:
-        _require_network(_session_cache, tmp_path_factory.getbasetemp(), _environment(outside))
+        _require_network(_session_cache, tmp_path_factory.getbasetemp(), outside)
         key = f'origin:{project_type}'
         if key not in _session_cache:
             try:
