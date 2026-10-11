@@ -1010,7 +1010,16 @@ def test_red_proof_a_hooks_path_that_windows_reads_as_hooks_dir_gets_no_stub(
     code, _, out = run_adopt(capsys, '--pin', PIN)
     assert code == 0, out
     assert 'stub' not in out
-    assert 'arm this clone' not in out  # the clone is armed, folded
+    # The arm hint follows `hooks-check --armed`, which compares the spelling: a spelling that
+    # folds to hooks.dir is reported, and the clone is told to arm (development-rails spec, §13).
+    if configured == '.githooks/./':
+        assert 'arm this clone' not in out
+        assert main(['hooks-check', '--armed']) == 0
+    else:
+        assert 'only by case or trailing dots or spaces' in out
+        assert 'arm this clone' in out
+        assert main(['hooks-check', '--armed']) == 1
+    capsys.readouterr()
     effective = frame.load(scratch_repo)
     for hook in HOOKS:
         assert read(scratch_repo, f'.githooks/{hook}') == wrapper.render(effective, hook)
@@ -1066,7 +1075,7 @@ def test_every_skipped_candidate_is_reported(
     _track(scratch_repo, '.githooks/old/commit-msg', '#!/bin/sh\n', executable=True)
     code, _, out = run_adopt(capsys, '--pin', PIN)
     assert code == 0
-    assert 'lies outside the repository or inside .git' in out
+    assert 'core.hooksPath is not a directory of the repository' in out
     assert 'docs/pre-commit: not taken as the previous hooks directory (tracked as 100644)' in out
     assert 'skills/x/pre-push: not taken as the previous hooks directory (a path a session' in out
     assert '.githooks/old/commit-msg: not taken as the previous hooks directory (hooks.dir' in out
@@ -1613,6 +1622,70 @@ def test_the_stub_prints_the_arm_command_and_fails(
 
 
 # --- the folds of Wave A's reviews (development-rails spec, §13) ------------------------------
+
+
+def test_red_proof_a_case_variant_hooks_path_on_a_case_sensitive_filesystem_is_reported(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On Linux `.GitHooks` and `.githooks` are two directories. A second run took `.GitHooks` as
+    # the previous directory, and the guard against a stub landing on a wrapper stopped it with
+    # exit 2. The filesystem's answer is forced here, so the case runs on every system.
+    monkeypatch.setattr(adopt_module.os.path, 'samefile', lambda first, second: False)
+    build(scratch_repo, 'python-package')
+    (scratch_repo / '.GitHooks').mkdir(exist_ok=True)
+    (scratch_repo / '.githooks').mkdir(exist_ok=True)
+    git(scratch_repo, 'config', '--local', 'core.hooksPath', '.GitHooks')
+    for _ in range(2):
+        code, line, out = run_adopt(capsys, '--pin', PIN)
+        assert (code, line) == (0, f'{VERDICT} pass ok'), out
+        assert 'stub written' not in out
+        assert 'core.hooksPath .GitHooks differs from hooks.dir .githooks only by case' in out
+        assert 'arm this clone' in out
+
+
+@pytest.mark.parametrize('configured', ['~/hooks', '~', '%(prefix)/etc/hooks'])
+def test_red_proof_a_hooks_path_that_git_expands_is_outside_the_repository(
+    configured: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # git expands `~` and `%(prefix)`: such a hooks path is never a directory of the repository,
+    # so adopt writes no stub under a literal `~` directory.
+    build(scratch_repo, 'python-package')
+    git(scratch_repo, 'config', '--local', 'core.hooksPath', configured)
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0, out
+    assert 'stub written' not in out
+    assert 'core.hooksPath is not a directory of the repository' in out
+    assert not (scratch_repo / '~').exists()
+    assert not (scratch_repo / '%(prefix)').exists()
+    assert 'arm this clone' in out
+
+
+@pytest.mark.parametrize('configured', ['tools/a:b', 'tools/hooks?', 'tools/<hooks>', 'a|b/hooks'])
+def test_red_proof_a_hooks_path_with_a_character_windows_forbids_gets_no_stub(
+    configured: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A `:` past the first segment passed, and the stub's mkdir failed on Windows after the other
+    # writes. Every segment is now judged, before anything is written.
+    build(scratch_repo, 'python-package')
+    git(scratch_repo, 'config', '--local', 'core.hooksPath', configured)
+    code, line, out = run_adopt(capsys, '--pin', PIN)
+    assert (code, line) == (0, f'{VERDICT} pass ok'), out
+    assert 'stub written' not in out
+    assert 'core.hooksPath is not a directory of the repository' in out
+
+
+@pytest.mark.parametrize('directory', ['tools/a:b', 'hooks?', 'x/<y>', 'a"b'])
+def test_a_hooks_dir_with_a_character_windows_forbids_is_a_configuration_error(
+    directory: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    write(scratch_repo, 'railform.toml', f'[hooks]\ndir = {json.dumps(directory)}\n')
+    before = snapshot(scratch_repo)
+    code = main(['adopt', '--pin', PIN])
+    captured = capsys.readouterr()
+    assert (code, captured.out.splitlines()[-1]) == (2, f'{VERDICT} fail usage')
+    assert 'Windows forbids' in captured.err
+    assert snapshot(scratch_repo) == before
 
 
 @pytest.mark.parametrize('key', ['paths', 'paths-ignore', 'branches', 'branches-ignore'])

@@ -290,11 +290,20 @@ nothing.
   command and fails, so a clone armed to the old directory cannot commit unchecked.
   - Directories are compared as Windows reads them: each segment without its trailing dots and
     spaces, then casefolded. The filesystem decides when both directories exist.
+  - A `core.hooksPath` that differs from `hooks.dir` only that way (`.GitHooks`, `.githooks.`)
+    is never the previous directory, even on a filesystem that holds both: on Windows they are
+    one directory, so a stub there would land on a wrapper. It is reported, and adopt tells the
+    clone to arm, as `hooks-check --armed` does, which compares the spelling.
+  - A `core.hooksPath` that git expands (`~`, `%(prefix)`), lies outside the repository or inside
+    `.git`, or holds a character Windows forbids in a name (`<>:"|?*`) is not a directory adopt
+    writes in; it is reported and gets no stub.
   - Every candidate passed over is reported in a finding line.
   - A file there that is tracked but not `100755`, or not tracked at all, is reported and left
     alone.
 - Adopt refuses, before writing anything, a target path with a symlink or junction on the way, a
-  `hooks.dir` inside `.git` (`.git.` and `.git ` included), and an `on:` block it would have to
+  `hooks.dir` inside `.git` (`.git.` and `.git ` included) or holding a character Windows forbids,
+  an index entry that Windows reads as a wrapper's file but spelled differently (such as a tracked
+  `.GitHooks/pre-commit`; adopt names the `git mv` that fixes it), and an `on:` block it would have to
   rewrite as a mapping when that block holds comments.
 - railform itself calls its own workflow by local path. With `ci.self_hosted = true` (and an
   `exceptions` row), adopt writes the `railform` job as a call to

@@ -28,6 +28,8 @@ TEMPLATE = (
 # the frame sets no version: `pre-commit== hook-impl`.
 _EMPTY_PIN = re.compile(r'==(?=\s|$)')
 _HOOK_NAME = re.compile(r'[a-z][a-z0-9]*(-[a-z0-9]+)*')
+# Characters Windows refuses in a file or directory name, besides the separators.
+_WINDOWS_FORBIDDEN = frozenset('<>:"|?*')
 
 
 class WrapperError(Exception):
@@ -68,17 +70,17 @@ def hooks_dir(frame: dict[str, Any]) -> str:
 
     Separators become `/` and `.` segments and doubled or trailing slashes go, so `./.githooks`
     and `.githooks/` name `.githooks`. Raises WrapperError when the path is empty, is the
-    repository itself, is absolute, has a drive letter or leaves the repository.
+    repository itself, is absolute, leaves the repository, or holds in any segment a character
+    Windows forbids in a file name (`<>:"|?*` and control characters; so a drive letter too).
     """
     directory = frame['hooks']['dir']
     slashed = directory.replace('\\', '/')
     path = posixpath.normpath(slashed) if slashed.strip() else '.'
-    if (
-        path == '.'
-        or path.startswith('/')
-        or ':' in path.split('/')[0]
-        or path == '..'
-        or path.startswith('../')
-    ):
+    if path == '.' or path.startswith('/') or path == '..' or path.startswith('../'):
         raise WrapperError(f'hooks.dir {directory!r} is not a directory inside the repository')
+    if any(char in _WINDOWS_FORBIDDEN or ord(char) < 0x20 for char in path):
+        raise WrapperError(
+            f'hooks.dir {directory!r} holds a character Windows forbids in a file name '
+            '(<>:"|?* or a control character)'
+        )
     return path

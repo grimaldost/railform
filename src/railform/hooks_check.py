@@ -83,6 +83,12 @@ def hooks_path(root: Path) -> str | None:
     return done.stdout.decode('utf-8', 'replace').rstrip('\r\n')
 
 
+def is_armed(current: str | None, directory: str) -> bool:
+    """Whether a `core.hooksPath` value names `directory`, spelled as `hooks.dir` is (separators
+    and `.` segments aside): the rule of `--armed`, which `railform adopt`'s arm hint follows."""
+    return current is not None and posixpath.normpath(current.replace('\\', '/')) == directory
+
+
 def _check_hook(
     root: Path, frame: dict[str, Any], directory: str, hook: str
 ) -> list[tuple[str, str]]:
@@ -141,7 +147,7 @@ def run(args: argparse.Namespace) -> Verdict:
             problems += _check_hook(root, frame, directory, hook)
         if args.armed:
             current = hooks_path(root)
-            if current is None or posixpath.normpath(current.replace('\\', '/')) != directory:
+            if not is_armed(current, directory):
                 shown = 'unset' if current is None else repr(current)
                 problems.append(
                     (

@@ -47,7 +47,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from railform import frame as frame_module
-from railform.hooks_check import CONFIG_ERRORS, EXECUTABLE, GitError, git, hooks_path
+from railform.hooks_check import CONFIG_ERRORS, EXECUTABLE, GitError, git, hooks_path, is_armed
 from railform.verdict import Verdict
 from railform.wrapper import WrapperError, hooks_dir, render
 
@@ -881,7 +881,11 @@ def _same_directory(root: Path, path: str, directory: str) -> bool:
 
 
 def _relative_dir(value: str) -> str | None:
-    """A configured hooks directory as a repository-relative path, or None outside the clone."""
+    """A configured hooks directory as a repository-relative path, or None when it is not a
+    directory of the repository adopt can write: outside the clone, inside `.git`, a path git
+    expands (`~`, `%(prefix)`), or a name with a character Windows forbids."""
+    if value.startswith(('~', '%(prefix)')):
+        return None
     try:
         directory = hooks_dir({'hooks': {'dir': value}})
     except WrapperError:
@@ -936,6 +940,10 @@ def _previous_hooks_dir(
     subdirectory of it included); else the tracked directory, outside hooks.dir and outside
     every `session_loaded` glob, that holds the most `100755` entries named after a hook (the
     first by name on a tie).
+
+    A core.hooksPath that differs from hooks.dir only by case or by trailing dots and spaces is
+    never the previous directory, even where the filesystem holds both: on Windows the two are
+    one directory, so a stub there would land on a wrapper. It is reported instead.
     """
     skipped: list[str] = []
     done = git(root, 'config', '--local', '--get', 'core.hooksPath')
@@ -946,8 +954,15 @@ def _previous_hooks_dir(
         relative = _relative_dir(configured)
         if relative is None:
             skipped.append(
-                'core.hooksPath lies outside the repository or inside .git; not taken as the '
-                'previous hooks directory'
+                'core.hooksPath is not a directory of the repository adopt can write (outside '
+                'it, inside .git, a path git expands such as ~, or a name with a character '
+                'Windows forbids); not taken as the previous hooks directory'
+            )
+        elif relative != directory and _fold(relative) == _fold(directory):
+            skipped.append(
+                f'core.hooksPath {relative} differs from hooks.dir {directory} only by case or '
+                'trailing dots or spaces; not taken as the previous hooks directory, since on '
+                'Windows the two are one directory'
             )
         elif not _same_directory(root, relative, directory):
             return relative, skipped
@@ -1174,8 +1189,9 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
             notes.append(f'{path}: exists and is not tracked; left as it is, no stub')
         else:
             stubs[path] = _stub(directory)
-    # Defensive: the choice above already passes over any directory that folds to hooks.dir, so
-    # no stub can land on a wrapper today; this stops it before any write if that ever changes.
+    # Defensive: the choice above passes over any directory that folds to hooks.dir, a
+    # core.hooksPath spelled differently included (reported, not taken), so no stub lands on a
+    # wrapper today; this stops it before any write if that ever changes.
     wrapper_paths = {_fold(path) for path in wrappers}
     if any(_fold(path) in wrapper_paths for path in stubs):
         raise AdoptError(
@@ -1205,9 +1221,8 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         message + '; railform adopt --check fails until then'
         for message in _extra_pr_workflows(root, frame['ci']['extra_workflows'])
     ]
-    configured = hooks_path(root)
-    relative = _relative_dir(configured) if configured is not None else None
-    if relative is None or not _same_directory(root, relative, directory):
+    # The hint follows `hooks-check --armed`, so the two never disagree about this clone.
+    if not is_armed(hooks_path(root), directory):
         findings.append(f'arm this clone with `railform arm` (core.hooksPath to {directory})')
     return Verdict.ok(VERB, tuple(findings))
 
