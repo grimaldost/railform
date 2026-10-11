@@ -14,3 +14,14 @@ self_hosted = true
 key = "ci.self_hosted"
 value = true
 reason = "railform calls its own reusable workflow by local path"
+
+# The release version is written in two places: the package metadata and the newest heading of the
+# changelog, which arrives with its section and is written by hand.
+[[version.sites]]
+path = "pyproject.toml"
+pattern = "(?m)^version = '([0-9][^']*)'"
+
+[[version.sites]]
+path = "CHANGELOG.md"
+pattern = '(?m)^## \[([0-9]+\.[0-9]+\.[0-9]+)\]'
+authored = true

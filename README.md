@@ -6,8 +6,9 @@ command-line tool that runs the checks, and a default configuration (the "frame"
 checks. A repository that adopts railform pins one commit of this repository and gets the same
 CI pipeline, hook wrappers and commit checks as every other adopter at that commit.
 
-Nothing in railform is usable yet. The verbs, the hook manifest and the reusable CI workflow
-exist, and railform's own CI runs through that workflow; nothing is usable before 0.1.0.
+The verbs, the hook manifest and the reusable CI workflow exist, and railform's own CI runs
+through that workflow. The first release is 0.1.0; an adopter pins the commit the tag
+`v0.1.0` points at, the release pull request's merge commit.
 
 ## What it is
 
@@ -36,7 +37,7 @@ Every reference names a commit, never a branch or a version range. A CI caller u
 uvx --from git+https://github.com/grimaldost/railform@<40-hex sha> railform <verb>
 ```
 
-The version in `pyproject.toml` stays `0.1.0.dev0` until the first release.
+The version in `pyproject.toml` names the release; a pin is still a commit, never the version.
 
 ## The command
 
