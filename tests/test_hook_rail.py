@@ -17,31 +17,10 @@ the hygiene hooks from GitHub and builds each hook environment with pip, and uv 
 fixtures' tools. Without the network every test fails at once with one message; run
 `pytest -m "not slow"` offline. These tests are marked `slow` and run by default, in CI too.
 
-Isolation. Git is isolated by `tests/conftest.py`. pre-commit runs its own clones under
-`no_git_env()`, which drops `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM`, so the hooks also run
-with `HOME`, `USERPROFILE` and `XDG_CONFIG_HOME` pointing at a temporary directory that holds an
-empty `.gitconfig`; the network probe runs in that same environment.
-
-What still reaches the tests:
-- every inherited environment variable the tests do not drop or set (`DROPPED`,
-  `PRE_COMMIT_REMOTE_BRANCH`, git's locating variables), for example `PIP_INDEX_URL`,
-  `UV_INDEX_URL` or a proxy, passed on to git, pip and uv;
-- the system git configuration, in pre-commit's clones and the network probe;
-- on Windows (checked), uv's user configuration `%APPDATA%\\uv\\uv.toml`, as `APPDATA` is not
-  redirected, and pip's site-wide `%PROGRAMDATA%\\pip\\pip.ini`; pip's user configuration and
-  cache, and virtualenv's app-data, resolve inside the temporary home;
-- on Linux and macOS (derived from the tools' documented paths, not run), the swap stops the
-  user-level pip and uv configuration and `~/.netrc` from reaching the hooks and the fixtures'
-  `uv lock`; system-wide pip and uv configuration still reaches them.
-A developer behind a private package mirror sets `PIP_INDEX_URL` and `UV_INDEX_URL` in the
-environment.
-
-What the tests write outside the temporary directories: the uv cache (`UV_CACHE_DIR`, pinned to
-the developer's own so uv stays warm); uv-managed Python installs (`UV_PYTHON_INSTALL_DIR`, pinned
-likewise), an interpreter install rather than a cache, when a fixture asks for a Python uv has
-not installed; and whatever pip and virtualenv write outside the home directory. On Windows
-(checked) pip's cache and virtualenv's app-data land in the temporary home; on Linux and macOS
-(derived) they follow it too unless `XDG_CACHE_HOME` or `XDG_DATA_HOME` is set.
+Isolation: every hook runs in the environment of `tests/hook_isolation.py`, away from the
+developer's home, configuration and pre-commit cache; its docstring says what still reaches
+the tests and what they write outside the temporary directories. The network probe runs in
+that environment under `no_git_env()`, as pre-commit's own clones do.
 """
 
 from __future__ import annotations
@@ -55,6 +34,7 @@ from typing import TYPE_CHECKING
 import pytest
 from pre_commit.git import no_git_env
 
+from hook_isolation import hook_environment
 from migration_fixtures import PIN, PRE_COMMIT, TYPES, build
 from railform.adopt import HYGIENE_URL
 from railform.cli import main
@@ -76,41 +56,7 @@ DEPENDABOT_PATTERN_ACCEPTS = 'dependabot/github_actions/actions/checkout-4.2.2'
 DEPENDABOT_PATTERN_REFUSES = 'dependabot/pip/Django-4.2'
 NOTE = 'notes.md'
 HOOKS = ('pre-commit', 'commit-msg', 'pre-push')
-# Variables that would point uv at railform's own environment, or make pre-commit skip hooks.
-DROPPED = {'VIRTUAL_ENV', 'UV_PROJECT_ENVIRONMENT', 'UV_FROZEN', 'UV_LOCKED', 'UV_NO_SYNC', 'SKIP'}
 OFFLINE = 'these tests need the network; run `pytest -m "not slow"` offline'
-
-
-def _uv_dir(kind: str) -> str:
-    """Where uv keeps its `cache` or its managed `python` interpreters for the developer."""
-    done = subprocess.run(
-        ['uv', kind, 'dir'], capture_output=True, text=True, encoding='utf-8', check=True
-    )
-    return done.stdout.strip()
-
-
-@pytest.fixture(scope='session')
-def outside(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
-    """The variables that point the hooks' tools away from the developer's home and caches."""
-    home = tmp_path_factory.mktemp('home')
-    (home / '.gitconfig').write_bytes(b'')
-    (home / '.config').mkdir()
-    return {
-        'PRE_COMMIT_HOME': str(tmp_path_factory.mktemp('pre-commit-home')),
-        'HOME': str(home),
-        'USERPROFILE': str(home),
-        'XDG_CONFIG_HOME': str(home / '.config'),
-        'UV_CACHE_DIR': _uv_dir('cache'),
-        'UV_PYTHON_INSTALL_DIR': _uv_dir('python'),
-    }
-
-
-def _environment(outside: dict[str, str]) -> dict[str, str]:
-    """The environment of every hook-running command: the test's own, git already isolated by
-    `tests/conftest.py`, with `outside` on top."""
-    env = {key: value for key, value in os.environ.items() if key not in DROPPED}
-    env.pop('PRE_COMMIT_REMOTE_BRANCH', None)
-    return env | outside
 
 
 def _run(
@@ -183,7 +129,7 @@ def _require_network(cache: dict[str, object], cwd: Path, outside: dict[str, str
     if 'network' not in cache:
         command = ['git', 'ls-remote', '--quiet', HYGIENE_URL, 'HEAD']
         try:
-            done = _run(cwd, command, no_git_env(_environment(outside)))
+            done = _run(cwd, command, no_git_env(hook_environment(outside)))
         except subprocess.TimeoutExpired as exc:
             stderr = exc.stderr or b''
             if isinstance(stderr, bytes):
@@ -285,7 +231,7 @@ def _build_origin(
     config.write_bytes(text.encode('utf-8'))
     if project_type != 'plugin-marketplace':
         # The wrapper runs pre-commit from the fixture's own locked dev group.
-        locked = _run(root, ['uv', 'lock'], _environment(outside))
+        locked = _run(root, ['uv', 'lock'], hook_environment(outside))
         assert locked.returncode == 0, locked.stderr
     # Stage the rest, never re-staging from the working tree what adopt staged as executable:
     # its index entries are the ones a clone checks out, whatever the working tree's mode reads.
@@ -326,7 +272,7 @@ def clone(
 
 @pytest.fixture
 def env(outside: dict[str, str]) -> dict[str, str]:
-    return _environment(outside)
+    return hook_environment(outside)
 
 
 def _commit(

@@ -1,0 +1,42 @@
+repos:
+  # >>> railform: owned by `railform adopt`; `railform adopt --check` fails on any edit
+  - repo: local
+    hooks:
+      - id: railform-commit-msg
+        name: railform commit-msg
+        entry: uv run --frozen railform commit-msg
+        language: system
+        stages: [commit-msg]
+      - id: railform-branch-name
+        name: railform branch-name
+        entry: uv run --frozen railform branch-name
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
+      - id: railform-hooks-check
+        name: railform hooks-check
+        entry: uv run --frozen railform hooks-check
+        language: system
+        stages: [pre-commit]
+        always_run: true
+        files: '^\.githooks/'
+        pass_filenames: false
+      - id: railform-private-refs
+        name: railform private-refs
+        entry: uv run --frozen railform private-refs
+        language: system
+        stages: [pre-commit]
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: cef0300fd0fc4d2a87a85fa2093c6b283ea36f4b  # frozen: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+        args: [--assume-in-merge]
+      - id: check-added-large-files
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+  # <<< railform

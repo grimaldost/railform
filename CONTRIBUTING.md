@@ -21,7 +21,9 @@ uv run --frozen python -m pytest -q
 uvx zizmor==1.30.0 --min-severity high .github/workflows
 ```
 
-CI runs the same commands on Ubuntu and Windows with Python 3.11 and 3.14. Use `uv run --frozen
+CI runs the same commands on Ubuntu and Windows with Python 3.11 and 3.14, through railform's own
+reusable workflow: `ci.yml` calls `.github/workflows/python-ci.yml` by local path at the commit
+under test, and the commands come from `railform.toml` and the frame. Use `uv run --frozen
 python`, not a bare `python`, so the interpreter and dependencies are the locked ones.
 
 ## Commits and pull requests

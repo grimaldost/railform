@@ -1,15 +1,14 @@
 """The type's pipeline steps pass in each adopted migration fixture (development-rails spec, §7).
 
-These tests show that the migration fixtures are valid projects of their type once adopted. They
-stand in for the type's pipeline until §9's reusable workflow exists, which then runs the real
-steps in a fixture caller.
-
-The steps are the `checks` job of the project type (spec design decision 3), each built from the
-effective frame of the fixture after adoption: for the two uv types the sync, the format check,
-the lint, `ty` over `python.type_check` when the type sets it, and `python.test_command`; for
-`plugin-marketplace` ruff from `uvx` at `ci.ruff_version` and `python.test_command`. They run
-under the interpreter of this test run. The fixture's lock is written here with `uv lock`, so a
-lock check would only restate it and is left out.
+These tests show that the migration fixtures are valid projects of their type once adopted. The
+steps are the ones the `checks` job of the reusable workflow runs (§9): `frame.pipeline`, built
+from the effective frame of the fixture after adoption, one command per step, with the Python
+version in `UV_PYTHON` as the workflow sets it per matrix leg. For the two uv types they are the
+lock check, the sync, the format check, the lint, `ty` over `python.type_check` when the type
+sets it, and `python.test_command`; for `plugin-marketplace`, ruff from `uvx` at
+`ci.ruff_version` and `python.test_command`. They run under the interpreter of this test run;
+the fixture's lock is written here with `uv lock`, as any uv project commits one.
+`tests/test_python_ci_runs.py` runs the same steps through the workflow's own text.
 
 These tests resolve and install the fixtures' tools, so they need the network (or a warm uv
 cache): they are marked `slow` and still run by default. Git is isolated by `tests/conftest.py`.
@@ -18,7 +17,6 @@ cache): they are marked `slow` and still run by default. Git is isolated by `tes
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 import sys
 from typing import TYPE_CHECKING, Any
@@ -28,43 +26,32 @@ import pytest
 from migration_fixtures import PIN, TYPES, build
 from railform import frame
 from railform.cli import main
+from workflow_model import bash
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-pytestmark = pytest.mark.slow
+pytestmark = [
+    pytest.mark.slow,
+    pytest.mark.skipif(bash() is None, reason='no bash on this machine'),
+]
 
 TIMEOUT = 600
 PYTHON = f'{sys.version_info.major}.{sys.version_info.minor}'
 
 
 def _environment() -> dict[str, str]:
-    """This run's environment without the variables that would point uv at railform's own venv."""
+    """This run's environment without the variables that would point uv at railform's own venv,
+    and with the Python version of this run, as the workflow sets it per matrix leg."""
     dropped = {'VIRTUAL_ENV', 'UV_PROJECT_ENVIRONMENT', 'UV_FROZEN', 'UV_LOCKED', 'UV_NO_SYNC'}
-    return {key: value for key, value in os.environ.items() if key not in dropped}
+    kept = {key: value for key, value in os.environ.items() if key not in dropped}
+    return {**kept, 'UV_PYTHON': PYTHON}
 
 
-def pipeline(effective: dict[str, Any], python: str) -> list[list[str]]:
-    """The steps of the `checks` job for the fixture's frame, in the type's fixed order."""
-    settings = effective['python']
-    lint = list(settings['lint_paths'])
-    test = shlex.split(settings['test_command'])
-    if effective['project']['type'] == 'plugin-marketplace':
-        ruff = ['uvx', f'ruff=={effective["ci"]["ruff_version"]}']
-        return [[*ruff, 'format', '--check', *lint], [*ruff, 'check', *lint], test]
-    steps = [
-        ['uv', 'sync', '--frozen', '--python', python, *settings['sync_args']],
-        ['uv', 'run', '--frozen', 'ruff', 'format', '--check', *lint],
-        ['uv', 'run', '--frozen', 'ruff', 'check', *lint],
-    ]
-    if settings['type_check']:
-        steps.append(['uv', 'run', '--frozen', 'ty', 'check', settings['type_check']])
-    return [*steps, test]
-
-
-def _run(root: Path, command: list[str]) -> subprocess.CompletedProcess[str]:
+def _run(root: Path, step: str) -> subprocess.CompletedProcess[str]:
+    """Run one pipeline step, a bash command line, as the workflow's bash does."""
     return subprocess.run(
-        command,
+        [*_shell(), step],
         cwd=root,
         env=_environment(),
         capture_output=True,
@@ -74,6 +61,12 @@ def _run(root: Path, command: list[str]) -> subprocess.CompletedProcess[str]:
         timeout=TIMEOUT,
         check=False,
     )
+
+
+def _shell() -> list[str]:
+    executable = bash()
+    assert executable is not None, 'no bash on this machine'
+    return [executable, '--noprofile', '--norc', '-eo', 'pipefail', '-c']
 
 
 def _adopted(root: Path, project_type: str, capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
@@ -86,7 +79,7 @@ def _adopted(root: Path, project_type: str, capsys: pytest.CaptureFixture[str]) 
     assert effective['project']['type'] == project_type
     if project_type != 'plugin-marketplace':
         # The lock is part of the fixture, as in any uv project.
-        locked = _run(root, ['uv', 'lock'])
+        locked = _run(root, 'uv lock')
         assert locked.returncode == 0, locked.stderr
     return effective
 
@@ -96,8 +89,8 @@ def test_the_type_pipeline_steps_pass_in_the_adopted_fixture(
     project_type: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     effective = _adopted(scratch_repo, project_type, capsys)
-    steps = pipeline(effective, PYTHON)
-    expected = {'python-package': 5, 'python-scripts': 4, 'plugin-marketplace': 3}
+    steps = frame.pipeline(effective)
+    expected = {'python-package': 6, 'python-scripts': 5, 'plugin-marketplace': 3}
     assert len(steps) == expected[project_type]
     for step in steps:
         done = _run(scratch_repo, step)
@@ -109,7 +102,7 @@ def test_red_proof_a_failing_test_fails_the_test_step(
 ) -> None:
     # The steps above prove something only if a broken fixture fails them.
     effective = _adopted(scratch_repo, 'plugin-marketplace', capsys)
-    step = pipeline(effective, PYTHON)[-1]
+    step = frame.pipeline(effective)[-1]
     passed = _run(scratch_repo, step)
     assert passed.returncode == 0, passed.stdout[-2000:]
     test = scratch_repo / 'tests' / 'test_names.py'

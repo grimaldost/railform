@@ -12,8 +12,8 @@ branch (a tag): there is no branch name to judge.
 
 pre-commit runs no `pre-push` hook for a ref whose commits are all on the remote already, and in
 a push of several refs it hands the hooks only the first ref with new commits; the README names
-both blind cases. The `commit-lane` job of the reusable workflow, once it exists (§9, not yet
-built), will judge every pull request's head branch with this verb.
+both blind cases. The `commit-lane` job of the reusable workflow (§9) judges every pull request's
+head branch with this verb, so a branch no pre-push saw is still judged.
 """
 
 from __future__ import annotations

@@ -1,81 +1,102 @@
-"""The repository's own CI runs the gate commands on both systems and pins every action."""
+"""railform's own CI is a caller of its reusable workflow by local path (development-rails spec,
+§9): `ci.yml` holds the `railform` and `gate` jobs that `railform adopt` writes, with
+`ci.self_hosted` declared in `railform.toml`, so every change runs through the workflow it ships.
+
+The workflow itself is tested in `tests/test_python_ci_workflow.py`.
+"""
+
+from __future__ import annotations
 
 import re
-from pathlib import Path
+import tomllib
 from typing import Any
 
 import pytest
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = ROOT / '.github' / 'workflows' / 'ci.yml'
-USES = re.compile(r'[\w.-]+/[\w./-]+@[0-9a-f]{40}')
+from workflow_model import ROOT, WORKFLOWS, load, triggers
+
+CALLER = WORKFLOWS / 'ci.yml'
+COMMIT_UNDER_TEST = '${{ github.event.pull_request.head.sha || github.sha }}'
 
 
 @pytest.fixture(scope='module')
-def workflow() -> dict[Any, Any]:
-    return yaml.safe_load(WORKFLOW.read_text(encoding='utf-8'))
+def caller() -> dict[Any, Any]:
+    return load(CALLER)
 
 
-def _triggers(workflow: dict[Any, Any]) -> dict[str, Any]:
-    # YAML 1.1 reads the key `on` as the boolean True.
-    return workflow.get('on', workflow.get(True))
+def test_it_runs_on_push_to_main_and_on_every_pull_request_change(caller: dict[Any, Any]) -> None:
+    on = triggers(caller)
+    assert on['push']['branches'] == ['main']
+    # `edited` re-runs the commit lane when the title or body changes.
+    assert on['pull_request']['types'] == ['opened', 'synchronize', 'reopened', 'edited']
+    assert set(on) == {'push', 'pull_request'}
 
 
-def test_it_runs_on_push_to_main_and_on_pull_requests(workflow: dict[Any, Any]) -> None:
-    triggers = _triggers(workflow)
-    assert triggers['push']['branches'] == ['main']
-    assert 'pull_request' in triggers
+def test_the_token_is_read_only(caller: dict[Any, Any]) -> None:
+    assert caller['permissions'] == {'contents': 'read'}
+    for name, job in caller['jobs'].items():
+        block = job.get('permissions')
+        assert block is None or 'write' not in block.values(), (name, block)
+    assert not re.search(r':\s*write\b', CALLER.read_text(encoding='utf-8'))
 
 
-def test_the_token_is_read_only(workflow: dict[Any, Any]) -> None:
-    assert workflow['permissions'] == {'contents': 'read'}
+def test_it_never_runs_on_pull_request_target() -> None:
+    assert 'pull_request_target' not in CALLER.read_text(encoding='utf-8')
 
 
-def test_the_checks_job_covers_two_systems_and_two_pythons(workflow: dict[Any, Any]) -> None:
-    matrix = workflow['jobs']['checks']['strategy']['matrix']
-    assert matrix['os'] == ['ubuntu-latest', 'windows-latest']
-    assert matrix['python'] == ['3.11', '3.14']
+def test_every_remote_action_is_pinned_to_a_commit() -> None:
+    for uses in re.findall(r'^\s*(?:-\s+)?uses:\s*(\S+)', CALLER.read_text(encoding='utf-8'), re.M):
+        if uses.startswith('./'):
+            continue
+        assert re.fullmatch(r'[\w.-]+/[\w./-]+@[0-9a-f]{40}', uses), uses
 
 
-def test_the_checks_job_runs_the_gate_commands_in_order(workflow: dict[Any, Any]) -> None:
-    runs = [step['run'] for step in workflow['jobs']['checks']['steps'] if 'run' in step]
-    assert runs == [
-        'uv lock --check',
-        'uv sync --frozen --python ${{ matrix.python }}',
-        'uv run --frozen railform private-refs',
-        'uv run --frozen ruff format --check .',
-        'uv run --frozen ruff check .',
-        'uv run --frozen ty check src',
-        'uv run --frozen python -m pytest -q',
-    ]
+def test_no_run_text_interpolates_an_expression(caller: dict[Any, Any]) -> None:
+    for job in caller['jobs'].values():
+        for step in job.get('steps', []):
+            assert '${{' not in step.get('run', ''), step
 
 
-def test_the_audit_job_runs_zizmor_at_a_pinned_version(workflow: dict[Any, Any]) -> None:
-    runs = [step['run'] for step in workflow['jobs']['audit']['steps'] if 'run' in step]
-    assert runs == ['uvx zizmor==1.30.0 --min-severity high .github/workflows']
+def test_the_railform_job_calls_the_reusable_workflow_by_local_path(
+    caller: dict[Any, Any],
+) -> None:
+    job = caller['jobs']['railform']
+    assert job['uses'] == './.github/workflows/python-ci.yml'
+    # The pin is always an input; in railform itself it is the commit under test.
+    assert job['with'] == {'railform-sha': COMMIT_UNDER_TEST}
+    assert job['permissions'] == {'contents': 'read'}
 
 
-def test_every_action_is_pinned_by_a_full_sha_with_a_version_comment() -> None:
-    lines = [line for line in WORKFLOW.read_text(encoding='utf-8').splitlines() if 'uses:' in line]
-    assert lines
-    for line in lines:
-        assert USES.search(line), line
-        assert re.search(r'# v\d+(\.\d+)*\s*$', line), line
+def test_the_gate_job_needs_every_other_job(caller: dict[Any, Any]) -> None:
+    gate = caller['jobs']['gate']
+    assert gate['needs'] == [name for name in caller['jobs'] if name != 'gate']
+    assert gate['needs'][0] == 'railform'
+    assert gate['if'] == 'always()'
 
 
-def test_checkout_does_not_persist_credentials(workflow: dict[Any, Any]) -> None:
-    checkouts = [
-        step
-        for job in workflow['jobs'].values()
-        for step in job['steps']
-        if step.get('uses', '').startswith('actions/checkout@')
-    ]
-    assert checkouts
-    assert all(step['with']['persist-credentials'] is False for step in checkouts)
+def test_railform_declares_that_it_hosts_its_own_workflow() -> None:
+    config = tomllib.loads((ROOT / 'railform.toml').read_text(encoding='utf-8'))
+    assert config['project']['type'] == 'python-package'
+    assert config['ci']['self_hosted'] is True
+    rows = [row for row in config['exceptions'] if row['key'] == 'ci.self_hosted']
+    assert len(rows) == 1
+    assert rows[0]['value'] is True
+    assert 'local path' in rows[0]['reason']
 
 
-def test_dependabot_watches_github_actions_weekly() -> None:
+def test_the_pre_commit_railform_entry_runs_the_code_of_this_checkout() -> None:
+    config = yaml.safe_load((ROOT / '.pre-commit-config.yaml').read_text(encoding='utf-8'))
+    local = [repo for repo in config['repos'] if repo['repo'] == 'local']
+    assert len(local) == 1
+    entries = {hook['id']: hook['entry'] for hook in local[0]['hooks']}
+    assert entries == {
+        f'railform-{verb}': f'uv run --frozen railform {verb}'
+        for verb in ('commit-msg', 'branch-name', 'hooks-check', 'private-refs')
+    }
+
+
+def test_dependabot_watches_github_actions_weekly_and_ignores_railform() -> None:
     config = yaml.safe_load((ROOT / '.github' / 'dependabot.yml').read_text(encoding='utf-8'))
     assert config['updates'] == [
         {
@@ -83,5 +104,6 @@ def test_dependabot_watches_github_actions_weekly() -> None:
             'directory': '/',
             'schedule': {'interval': 'weekly'},
             'commit-message': {'prefix': 'ci'},
+            'ignore': [{'dependency-name': 'grimaldost/railform'}],
         }
     ]

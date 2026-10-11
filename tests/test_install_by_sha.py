@@ -2,6 +2,12 @@
 
 Every install in a tracked text file names `git+https://github.com/grimaldost/railform@<sha>`.
 No file writes a bare `railform` requirement or an `uvx` call without `--from git+...@<sha>`.
+
+The reusable workflow is the one file that names the commit by a variable (with the local model
+of its runs, which replaces that install line with the code under test): it installs railform
+at `$RAILFORM_SHA`, the required input `railform-sha` passed through `env:`, which its `frame`
+job checks to be 40 hexadecimal characters before anything is installed (development-rails spec,
+§9 and its round-6 amendment).
 """
 
 import re
@@ -27,6 +33,12 @@ BARE_REQUIREMENT = re.compile(
     r'|(?:^|dependencies\s*=\s*\[)\s*["\']railform\s*(?:[<>=!~][^"\']*)?["\']\s*(?:[\],]|$)'
 )
 PINNED_URL = re.compile(re.escape(GIT_URL) + r'@(?:[0-9a-f]{40}|<[^>]+>)(?![0-9A-Za-z])')
+# The reusable workflow's install, at the commit its caller passes as `railform-sha`.
+VARIABLE_URL = re.compile(re.escape(GIT_URL) + r'@\$RAILFORM_SHA(?![0-9A-Za-z_])')
+REUSABLE_WORKFLOW = '.github/workflows/python-ci.yml'
+# The files that may name it: the workflow, and the local model of a run, which replaces that
+# exact install line with the code under test.
+VARIABLE_PIN_FILES = (REUSABLE_WORKFLOW, 'tests/workflow_model.py')
 
 
 def _tracked_text_files() -> list[Path]:
@@ -41,7 +53,8 @@ def _tracked_text_files() -> list[Path]:
     return [p for p in paths if p.suffix in TEXT_SUFFIXES and p.name != Path(__file__).name]
 
 
-def violations_in(text: str) -> list[str]:
+def violations_in(text: str, *, variable_pin: bool = False) -> list[str]:
+    """The unpinned installs in `text`; with `variable_pin`, `@$RAILFORM_SHA` is a pin."""
     found = []
     for number, line in enumerate(text.splitlines(), start=1):
         if INDEX_INSTALL.search(line):
@@ -49,8 +62,11 @@ def violations_in(text: str) -> list[str]:
         elif BARE_REQUIREMENT.search(line):
             found.append(f'{number}: bare railform requirement: {line.strip()}')
         for match in re.finditer(re.escape(GIT_URL), line):
-            if not PINNED_URL.match(line, match.start()):
-                found.append(f'{number}: git URL without a commit pin: {line.strip()}')
+            if PINNED_URL.match(line, match.start()):
+                continue
+            if variable_pin and VARIABLE_URL.match(line, match.start()):
+                continue
+            found.append(f'{number}: git URL without a commit pin: {line.strip()}')
     return found
 
 
@@ -98,9 +114,27 @@ def test_the_scanner_accepts_a_pinned_install_and_plain_prose(line: str) -> None
 def test_no_tracked_file_installs_railform_without_a_commit_pin() -> None:
     files = _tracked_text_files()
     assert files, 'the scan found no file, so it proves nothing'
-    problems = {
-        str(path.relative_to(ROOT)).replace('\\', '/'): found
-        for path in files
-        if (found := violations_in(path.read_text(encoding='utf-8')))
-    }
+    problems: dict[str, list[str]] = {}
+    for path in files:
+        name = str(path.relative_to(ROOT)).replace('\\', '/')
+        text = path.read_text(encoding='utf-8')
+        found = violations_in(text, variable_pin=name in VARIABLE_PIN_FILES)
+        if found:
+            problems[name] = found
     assert problems == {}
+
+
+def test_the_variable_pin_is_accepted_only_where_it_is_allowed() -> None:
+    line = 'run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform x'
+    assert violations_in(line, variable_pin=True) == []
+    assert violations_in(line) != []
+    # Another variable, the same name run on, or a branch is no pin.
+    for other in ('$OTHER_SHA', '$RAILFORM_SHA_X', '${RAILFORM_SHA}', 'main'):
+        changed = line.replace('$RAILFORM_SHA', other)
+        assert violations_in(changed, variable_pin=True) != [], other
+
+
+def test_the_reusable_workflow_installs_railform_at_the_variable_pin() -> None:
+    text = (ROOT / REUSABLE_WORKFLOW).read_text(encoding='utf-8')
+    assert VARIABLE_URL.search(text)
+    assert violations_in(text, variable_pin=True) == []
