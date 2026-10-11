@@ -221,6 +221,41 @@ No output contains a matched name or the user segment of a matched home path: a 
 shows the shape with `<name>` in its place, and a private-name finding gives only the term's line
 number in the names file.
 
+## The version-site check
+
+`railform version-sites [--bump X.Y.Z [--prefix PREFIX]]` checks that every place a release
+version is written agrees, and with `--bump` writes the version first. The places are the rows of
+`version.sites`: `{ path, pattern, authored }`, where `path` is a repository-relative file with
+`/` separators, `pattern` is a Python regular expression searched over the whole file text (with
+no flags implied; write `(?m)` where the pattern needs it) whose first group is the version, and
+`authored` marks a site whose value is written with its own content: the newest changelog
+heading arrives with a section under it, so a writer that rewrote the number would rename the
+previous release. An authored site is checked and never rewritten. The command reads the working
+tree only, and a shallow checkout is enough.
+
+- **Release lines.** Sites are grouped by the `release.tag_prefix` row their path falls under (the
+  longest matching `prefix`), so two plugins at different versions both pass. Within a line the
+  expected version is the one most sites read, and the earliest of them in `version.sites` order
+  on a tie. Authored sites take part. Versions compare as exact strings.
+- **Failures.** A site that reads another version fails with `mismatch`
+  (`<path>: reads <value>, not <expected>`, with `(authored: write it by hand)` for an authored
+  site). A site whose file is missing or is not UTF-8, or whose pattern matches nothing, fails with
+  `unreadable` (`<path>: no version (...)`), which wins over `mismatch` when both occur. Every
+  failing site is listed in one run. With no `version.sites` the check passes and says so.
+- **`--bump X.Y.Z`** replaces the first group's span, and nothing else, in each non-authored,
+  readable site of one line whose version differs, keeping its line endings, then runs the check
+  over every line. So a bump that leaves an authored heading behind ends `mismatch` and names the
+  heading, and a second identical bump writes nothing. With more than one line holding a
+  non-authored site, `--prefix` is required and must be a `release.tag_prefix` row's `prefix`
+  exactly (`--prefix plugins/humblepowers/`, or `--prefix ""` for the root row). Regenerate a
+  lockfile that records the version (`uv lock`) by hand after a bump.
+- **Configuration errors** (exit 2): a path that is absolute, holds `..` or a backslash, a pattern
+  that does not compile or has no group, a site that no `release.tag_prefix` row covers, two rows
+  with one prefix in `release.tag_prefix` or `changelog.records`, a `--bump` value that is not
+  three integers, and `--prefix` without `--bump`.
+
+The reusable workflow runs it in the `checks` job on every leg, right after `private-refs`.
+
 ## Adopting
 
 `railform adopt` writes the parts of a repository that railform owns, and `railform adopt --check`
@@ -339,7 +374,7 @@ checks that the input is 40 hexadecimal characters before anything is installed.
 | Job | Runs | On |
 |---|---|---|
 | `frame` | `railform frame --check`, then `railform frame --github-output` | every run |
-| `checks` | `railform private-refs`, then the type's pipeline, on every leg of `ci.os` by `python.versions` | every run |
+| `checks` | `railform private-refs`, `railform version-sites`, then the type's pipeline, on every leg of `ci.os` by `python.versions` | every run |
 | `commit-lane` | `railform commit-range`, `railform pr-text`, and `railform branch-name` on the head branch | pull requests |
 | `changelog` | nothing yet: a placeholder, skipped until the changelog gate exists | none |
 | `hooks` | `railform hooks-check`, `railform adopt --check`, and the hygiene hooks over the changed files, with pre-commit on the newest of `python.versions`, else `python.newest` (the `hooks_python` output of `frame --github-output`), so a `default_language_version` naming that Python resolves | every run; the hygiene hooks on pull requests |

@@ -7,6 +7,18 @@ All notable changes to this project are recorded here, in the
 
 ### Added
 
+- `railform version-sites [--bump X.Y.Z [--prefix PREFIX]]` (development-rails spec, §15), the
+  version-site registry ported from keel's `VERSION_SITES` and `scripts/bump_version.py`. The
+  sites are `version.sites` rows of `{ path, pattern, authored }`, grouped into release lines by
+  `release.tag_prefix`; within a line the sites must agree on the version most of them read, and
+  every disagreeing or unreadable site is named in one run (`mismatch`, `unreadable`). `--bump`
+  writes the version to the non-authored sites of one line, byte for byte except the version, and
+  then runs the check; an authored site (the newest changelog heading) is checked and never
+  rewritten. The reusable workflow runs it in the `checks` job on every leg. The module also holds
+  the reading of release lines and version sites that the changelog gate and the release check
+  share.
+- The verb table of the command names `changelog-gate`, `version-sites` and `release-check`; a
+  name without a module exits 2 with `not-implemented`.
 - The pilots' folds (development-rails spec, §13). Each of the three pilots, one per project
   type, needed a railform change; each change listed here, under Changed and under Fixed has a
   test that fails without it.
