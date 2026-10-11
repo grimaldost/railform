@@ -136,15 +136,15 @@ def test_checkout_does_not_persist_credentials(workflow: dict[Any, Any]) -> None
         for step in job['steps']
         if step.get('uses', '').startswith('actions/checkout@')
     ]
-    assert len(checkouts) == 5
+    assert len(checkouts) == 6
     assert all(step['with']['persist-credentials'] is False for step in checkouts)
 
 
-@pytest.mark.parametrize('name', ['commit-lane', 'hooks'])
+@pytest.mark.parametrize('name', ['commit-lane', 'changelog', 'hooks'])
 def test_the_jobs_that_read_history_check_out_all_of_it(
     workflow: dict[Any, Any], name: str
 ) -> None:
-    # The commit range and the pull request's changed files need the base branch's history.
+    # The commit range, the changelog gate and the changed files need the base branch's history.
     checkout = next(
         step
         for step in _job(workflow, name)['steps']

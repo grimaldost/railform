@@ -110,12 +110,20 @@ jobs:
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform branch-name -- "$HEAD_REF"
 
   # A placeholder until the changelog gate exists (the development-rails spec, §14): skipped on
-  # every event. §14 drops `false &&` and gives it its steps.
+  # every event. §14 drops `false &&` and replaces the last step with the gate; the gate reads
+  # every commit of the pull request, so the checkout already takes the whole history.
   changelog:
     needs: frame
     if: false && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.19'
       - name: The changelog gate is not written yet
         run: exit 0
 
