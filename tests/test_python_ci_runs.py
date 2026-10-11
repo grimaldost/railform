@@ -357,6 +357,17 @@ def test_a_key_the_model_does_not_read_fails_the_run(tmp_path: Path, where: str,
         _model_run(tmp_path, ''.join(blocks))
 
 
+def test_red_proof_an_unreadable_expression_in_a_uses_step_fails_the_run(tmp_path: Path) -> None:
+    # Wave A's review (folded at §13): a `uses:` step runs nothing in the model, but its `with:`
+    # is evaluated, so an expression the model cannot read fails here as it would on GitHub.
+    head = 'name: model\non: push\njobs:\n  one:\n    runs-on: ubuntu-latest\n    steps:\n'
+    readable = '      - uses: actions/checkout@x\n        with:\n          ref: ${{ github.sha }}\n'
+    assert _model_run(tmp_path, head + readable).conclusion == 'success'
+    unreadable = readable.replace('github.sha', 'hashFiles(github.sha)')
+    with pytest.raises(ValueError, match='no function hashFiles'):
+        _model_run(tmp_path, head + unreadable)
+
+
 def test_the_model_runs_bash_from_git_on_windows() -> None:
     # The WSL launcher in System32 is never the shell these tests run.
     path = bash()

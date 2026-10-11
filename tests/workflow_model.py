@@ -19,7 +19,10 @@ locally, modelling only what they use:
   checks every leg of a job that is not skipped, given jobs and legs not selected included, so a
   workflow whose Windows legs would run pwsh fails here.
 - The model reads only the workflow, job, step and strategy keys listed in `_KEYS`, and ignores
-  only `name`, `permissions` and `timeout-minutes`, which change no result of a run that ends.
+  only `name`, `permissions` and `timeout-minutes`, which change no result of a run that ends,
+  and `strategy.fail-fast`, which it accepts and never reads: fail-fast cancels the other legs
+  of a matrix once one fails, and a matrix job with a failed leg fails either way, so it changes
+  no job's conclusion.
   Any other key (`continue-on-error`, `working-directory`, `concurrency`, a matrix `include`...)
   fails the run, so a workflow never passes here on a key the model does not read.
 - `${{ }}` expressions: string, number and boolean literals and null; the contexts `github`,
@@ -92,6 +95,7 @@ _KEYS = {
     )
     | IGNORED,
     'step': frozenset({'id', 'if', 'uses', 'with', 'run', 'shell', 'env'}) | IGNORED,
+    # `fail-fast` is accepted and never read: it changes no job's conclusion.
     'strategy': frozenset({'matrix', 'fail-fast'}),
     'defaults': frozenset({'run'}),
     'defaults.run': frozenset({'shell'}),
