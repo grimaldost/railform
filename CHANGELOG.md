@@ -5,6 +5,16 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-11
+
+The first release of railform: the shared CI workflow, the commit hooks and the repository checks
+of the development-rails spec, referenced at a pinned commit. It has thirteen verbs: `frame`,
+`private-refs`, `commit-msg`, `commit-range`, `pr-text`, `hooks-check`, `arm`, `session-paths`,
+`adopt`, `branch-name`, `changelog-gate`, `version-sites` and `release-check`.
+
+Four public repositories move to this pin with `railform adopt --pin <release SHA>`: keel,
+craft-collection, convoy and mantis-research.
+
 ### Added
 
 - `railform version-sites [--bump X.Y.Z [--prefix PREFIX]]` (development-rails spec, §15), the
