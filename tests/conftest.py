@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from hook_isolation import outside_variables
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -89,3 +91,10 @@ def scratch_repo(
     a file one test writes never reaches the next.
     """
     return new_scratch_repo(tmp_path_factory, monkeypatch, empty_git_config)
+
+
+@pytest.fixture(scope='session')
+def outside(tmp_path_factory: pytest.TempPathFactory) -> dict[str, str]:
+    """The variables that point pre-commit and the hooks' tools away from the developer's home
+    and caches, one set per session (`tests/hook_isolation.py`)."""
+    return outside_variables(tmp_path_factory)

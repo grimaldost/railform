@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import yaml
 
+from hook_isolation import hook_environment
 from railform import frame
 from railform.cli import VERBS
 from workflow_model import (
@@ -435,9 +436,10 @@ def _git(root: Path, *args: str) -> None:
 @pytest.mark.slow
 @pytest.mark.skipif(bash() is None, reason='no bash on this machine')
 def test_red_proof_the_hygiene_replay_fails_a_changed_file_with_trailing_whitespace(
-    workflow: dict[Any, Any], scratch_repo: Path
+    workflow: dict[Any, Any], scratch_repo: Path, outside: dict[str, str]
 ) -> None:
-    # Needs the network: pre-commit installs the hygiene hooks from their repository.
+    # Needs the network: pre-commit installs the hygiene hooks from their repository, into the
+    # session's own pre-commit home, away from the developer's (`tests/hook_isolation.py`).
     script = _step(_job(workflow, 'hooks'), 'pre-commit')['run']
     hygiene = (resources.files('railform') / 'templates' / 'pre-commit-hygiene.yaml').read_text(
         encoding='utf-8'
@@ -451,7 +453,7 @@ def test_red_proof_the_hygiene_replay_fails_a_changed_file_with_trailing_whitesp
     _git(scratch_repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
     executable = bash()
     assert executable is not None
-    env = {key: value for key, value in os.environ.items() if key != 'VIRTUAL_ENV'}
+    env = hook_environment(outside)
 
     def replay() -> subprocess.CompletedProcess[str]:
         return subprocess.run(
