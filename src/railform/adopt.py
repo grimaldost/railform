@@ -12,8 +12,9 @@ Development-rails spec, §7, invented here; interface contract, section 9. Adopt
   between marker lines (and that update block, when there is none);
 - whole files: the hook wrappers in `hooks.dir` (staged as their exact bytes, 100755 in the git
   index), `.github/workflows/railform-tag-watch.yml` (the caller of the reusable `tag-watch.yml`,
-  written from its template when absent; when it exists, only its two pin sites move, the
-  `uses:` commit and the `railform-sha` input), and the first `railform.toml`.
+  written from its template when absent; when it exists, only its two pin sites, the whole
+  `uses:` value and the `railform-sha` value, are written with the current mode's values), and
+  the first `railform.toml`.
 
 Everything outside those parts is kept byte for byte, line endings included: files are read and
 written as bytes, and lines adopt adds take the file's own line ending. A stub replaces each hook
@@ -57,6 +58,7 @@ from railform.wrapper import WrapperError, hooks_dir, render
 
 if TYPE_CHECKING:
     import argparse
+    from collections.abc import Callable
     from pathlib import Path
 
 VERB = 'adopt'
@@ -107,6 +109,8 @@ _TAG_WATCH_USES = re.compile(
 # The `railform-sha` input of the tag-watch caller: the value is the rest of the line, its
 # trailing blanks and a CR left out, so a CRLF file keeps its line endings.
 _TAG_WATCH_INPUT = re.compile(r'^([ \t]*railform-sha:[ \t]*)([^\r\n]*?)([ \t]*\r?)$', re.MULTILINE)
+# The caller's `uses:` value, the other pin site: the whole value, whatever mode wrote it.
+_TAG_WATCH_USES_LINE = re.compile(r'^([ \t]*uses:[ \t]*)([^\r\n]*?)([ \t]*\r?)$', re.MULTILINE)
 # How an edited caller is cleared: adopt never writes over it.
 _TAG_WATCH_RESTORE = '; to restore it, delete the file and run railform adopt'
 _TOKEN = re.compile(r'__([A-Z][A-Z_]*)__')
@@ -762,30 +766,35 @@ def _dependabot_text(text: str | None) -> str:
 # --- railform-tag-watch.yml --------------------------------------------------------------------
 
 
-def _render_tag_watch(pin: str | None) -> str:
-    """The tag-watch caller at `pin`, or the self-hosted caller (by local path, at the commit
-    under test) when `pin` is None."""
+def _tag_watch_values(pin: str | None) -> dict[str, str]:
+    """The values of the caller's two pin sites: the pinned call and the pin, or, self-hosted
+    (`pin` None), the call by local path and the commit under test."""
     if pin is None:
-        values = {'USES': LOCAL_TAG_WATCH, 'RAILFORM_SHA': SELF_HOSTED_TAG_WATCH_SHA}
-    else:
-        values = {'USES': f'{REMOTE_TAG_WATCH}@{pin}', 'RAILFORM_SHA': pin}
-    return '\n'.join(_fill(TAG_WATCH_NAME, **values)) + '\n'
+        return {'USES': LOCAL_TAG_WATCH, 'RAILFORM_SHA': SELF_HOSTED_TAG_WATCH_SHA}
+    return {'USES': f'{REMOTE_TAG_WATCH}@{pin}', 'RAILFORM_SHA': pin}
+
+
+def _render_tag_watch(pin: str | None) -> str:
+    """The tag-watch caller at `pin`, or the self-hosted caller when `pin` is None."""
+    return '\n'.join(_fill(TAG_WATCH_NAME, **_tag_watch_values(pin))) + '\n'
 
 
 def _plan_tag_watch(text: str | None, pin: str | None) -> str:
     """The tag-watch caller (development-rails spec, §16), a whole file adopt owns: written from
-    the template when absent, pinned or self-hosted (`pin` None). When it exists, only its two
-    pin sites move with the pin, the `uses:` commit and the `railform-sha` input; a self-hosted
-    file has none to move."""
+    the template when absent, pinned or self-hosted (`pin` None). When it exists, adopt writes
+    its two pin sites, the whole `uses:` value and the `railform-sha` value, with the current
+    mode's values and keeps everything else, line endings included, so a switch between pinned
+    and self-hosted in either direction leaves a file `--check` passes (interface contract, Wave
+    C, section 11.9)."""
     if text is None:
         return _render_tag_watch(pin)
-    if pin is None:
-        return text
-    moved, count = _TAG_WATCH_USES.subn(lambda match: match.group(1) + pin, text)
-    if not count:
-        # No pinned call to move (a local-path call, for one): the input stays with it.
-        return text
-    return _TAG_WATCH_INPUT.sub(lambda match: match.group(1) + pin + match.group(3), moved)
+    values = _tag_watch_values(pin)
+
+    def site(value: str) -> Callable[[re.Match[str]], str]:
+        return lambda match: match.group(1) + value + match.group(3)
+
+    moved = _TAG_WATCH_USES_LINE.sub(site(values['USES']), text)
+    return _TAG_WATCH_INPUT.sub(site(values['RAILFORM_SHA']), moved)
 
 
 # --- the repository ----------------------------------------------------------------------------

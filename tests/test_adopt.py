@@ -607,19 +607,65 @@ def test_re_pinning_a_crlf_tag_watch_caller_changes_only_its_two_shas(
     assert moved.count(OTHER_PIN.encode()) == 2
 
 
-def test_a_local_path_caller_in_a_pinned_repository_is_left_whole(
-    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+LOCAL_TAG_WATCH_CALLER = TAG_WATCH_TEMPLATE.replace(
+    '__USES__', './.github/workflows/tag-watch.yml'
+).replace('__RAILFORM_SHA__', '${{ github.sha }}')
+SELF_HOSTED_ROWS = (
+    '\n[ci]\nself_hosted = true\n\n[[exceptions]]\nkey = "ci.self_hosted"\nvalue = true\n'
+    'reason = "the repository calls the reusable workflow by local path"\n'
+)
+
+
+def _to_self_hosted(root: Path) -> None:
+    """Switch a pinned repository to self-hosting: the frame row and the local call."""
+    write(root, 'railform.toml', read(root, 'railform.toml') + SELF_HOSTED_ROWS)
+    ci = read(root, CI)
+    remote = f'uses: grimaldost/railform/.github/workflows/python-ci.yml@{PIN}'
+    assert remote in ci
+    write(root, CI, ci.replace(remote, 'uses: ./.github/workflows/python-ci.yml'))
+
+
+def _to_pinned(root: Path) -> None:
+    write(root, 'railform.toml', read(root, 'railform.toml').replace(SELF_HOSTED_ROWS, ''))
+
+
+def test_the_caller_follows_a_switch_from_pinned_to_self_hosted_and_back(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Only a pinned call moves, and its input with it: a local-path caller keeps its input.
-    local = TAG_WATCH_TEMPLATE.replace('__USES__', './.github/workflows/tag-watch.yml').replace(
-        '__RAILFORM_SHA__', '${{ github.sha }}'
-    )
-    write(adopted.root, TAG_WATCH, local)
-    assert run_adopt(capsys, '--pin', OTHER_PIN)[0] == 0
-    assert read(adopted.root, TAG_WATCH) == local
+    # Contract (Wave C) 11.9: adopt writes both pin sites with the current mode's values.
+    build(scratch_repo, 'python-package')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    _to_self_hosted(scratch_repo)
+    assert run_adopt(capsys)[0] == 0
+    assert read(scratch_repo, TAG_WATCH) == LOCAL_TAG_WATCH_CALLER
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (0, f'{VERDICT} pass ok'), out
+    _to_pinned(scratch_repo)
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    assert read(scratch_repo, TAG_WATCH) == tag_watch_caller(PIN)
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (0, f'{VERDICT} pass ok'), out
+
+
+def test_an_edited_caller_keeps_its_edit_across_both_switches(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    edit = ("'23 7 * * *'", "'0 0 * * *'")
+    write(scratch_repo, TAG_WATCH, read(scratch_repo, TAG_WATCH).replace(*edit))
+    _to_self_hosted(scratch_repo)
+    assert run_adopt(capsys)[0] == 0
+    assert read(scratch_repo, TAG_WATCH) == LOCAL_TAG_WATCH_CALLER.replace(*edit)
     code, line, out = run_adopt(capsys, '--check')
     assert (code, line) == (1, f'{VERDICT} fail drift')
-    assert f'{TAG_WATCH}: calls no railform workflow at a pin' in out
+    assert f'{TAG_WATCH}:' in out
+    _to_pinned(scratch_repo)
+    assert run_adopt(capsys, '--pin', OTHER_PIN)[0] == 0
+    assert read(scratch_repo, TAG_WATCH) == tag_watch_caller(OTHER_PIN).replace(*edit)
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{TAG_WATCH}:' in out
 
 
 def test_a_missing_tag_watch_caller_is_drift_until_adopt_writes_it(
