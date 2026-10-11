@@ -326,6 +326,50 @@ def test_red_proof_a_staged_merge_conflict_marker_is_refused(
     assert _head(clone) == before
 
 
+def test_red_proof_every_wrapper_launches_pre_commit_through_an_interpreter(
+    clone: Path, env: dict[str, str]
+) -> None:
+    # The development-rails spec, §13 (the craft-collection review): every type's wrapper runs
+    # `python -m pre_commit`, never pre-commit's console-script shim, which an application-control
+    # policy may refuse to launch. A commit then goes through every hook of the wrapper.
+    for hook in HOOKS:
+        text = (clone / '.githooks' / hook).read_text(encoding='utf-8')
+        assert ' python -m pre_commit hook-impl ' in text, text
+        assert 'uvx pre-commit==' not in text, text
+    before = _head(clone)
+    _committed(clone, env, 'docs: add a note')
+    assert _head(clone) != before
+
+
+def test_red_proof_a_message_quoting_a_conflict_marker_is_accepted(
+    clone: Path, env: dict[str, str]
+) -> None:
+    # The development-rails spec, §13 (the keel pilot): the hygiene hooks run at the pre-commit
+    # stage only, so check-merge-conflict --assume-in-merge no longer judges the message file.
+    # The staged marker is still refused (the test above).
+    before = _head(clone)
+    message = 'docs: explain a conflict\n\nGit writes a line such as:\n\n<<<<<<< HEAD\n'
+    done = _commit(clone, env, message, text='A note with no marker.\n')
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _head(clone) != before
+
+
+def test_red_proof_a_fixup_commit_is_accepted(clone: Path, env: dict[str, str]) -> None:
+    # The development-rails spec, §13 (the keel pilot): `git commit --fixup` writes
+    # `fixup! <subject>`, which the local commit-msg hook accepts; commit-range still refuses it
+    # (tests/test_commit_lane.py), so it never reaches the base branch.
+    _committed(clone, env, 'docs: add a note')
+    target = _head(clone)
+    (clone / NOTE).write_bytes(b'A better note.\n')
+    _git(clone, 'add', '--', NOTE)
+    done = _run(clone, ['git', 'commit', '-q', '--fixup', target], env)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _git(clone, 'log', '-1', '--format=%s') == 'fixup! docs: add a note'
+    with pytest.MonkeyPatch.context() as patch:
+        patch.chdir(clone)
+        assert main(['commit-range', f'{target}~1...HEAD']) == 1
+
+
 def test_red_proof_a_staged_home_path_is_refused_and_only_staged_files_are_judged(
     clone: Path, env: dict[str, str]
 ) -> None:
