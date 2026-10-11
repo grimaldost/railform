@@ -6,9 +6,8 @@ command-line tool that runs the checks, and a default configuration (the "frame"
 checks. A repository that adopts railform pins one commit of this repository and gets the same
 CI pipeline, hook wrappers and commit checks as every other adopter at that commit.
 
-Nothing in railform is usable yet. The package skeleton and the `frame` and `session-paths`
-verbs exist; every other verb exits with `not-implemented` until the section that adds it lands.
-Nothing is usable before 0.1.0.
+Nothing in railform is usable yet. The verbs and the hook manifest exist; the reusable CI
+workflow does not. Nothing is usable before 0.1.0.
 
 ## What it is
 
@@ -272,7 +271,64 @@ nothing.
   becomes `repo: local` running `uv run --frozen railform <verb>`, `--pin` rewrites nothing, and
   `--check` skips the pin comparisons and says so. Without the key, a local-path call is `drift`.
 
+## The hook manifest
+
+`.pre-commit-hooks.yaml` declares four hooks, each with `language: python` and
+`entry: railform <verb>`, so pre-commit installs the command from the same commit as the
+manifest:
+
+| Hook | Stage | Runs on |
+|---|---|---|
+| `railform-commit-msg` | `commit-msg` | the message file |
+| `railform-branch-name` | `pre-push` | every push pre-commit runs hooks for (`always_run: true`, `pass_filenames: false`) |
+| `railform-hooks-check` | `pre-commit` | every commit (`always_run: true`, `pass_filenames: false`), since a commit that only deletes a wrapper stages no file a filter could match |
+| `railform-private-refs` | `pre-commit` | the staged files only |
+
+The hygiene hooks (trailing whitespace, end of file, merge-conflict markers and the rest) are
+`pre-commit/pre-commit-hooks`, which `railform adopt` references beside these, pinned by commit.
+
+## The branch rail
+
+`railform branch-name [-- NAME]` judges a branch name. The name is the given `NAME`; else
+`$PRE_COMMIT_REMOTE_BRANCH` without `refs/heads/`, which pre-commit sets on `pre-push`, so the
+name judged is the one the branch gets on the remote (`git push origin feat/x:foo` is judged as
+`foo`); else the current branch. Put `--` before a name that starts with a dash.
+
+- A name passes when it matches a glob of `branch.allow` (`**` spans `/`, `*` and `?` do not),
+  or when the whole name matches the regular expression `branch.pattern`. Otherwise it fails
+  with `branch`, and so does an empty name.
+- The default pattern is `^[a-z][a-z0-9-]*/[a-z0-9][a-z0-9._/-]*$`: a lowercase category, a slash
+  and a lowercase slug, such as `feat/hook-rail` or `release/1.2.3`. It was measured over the
+  head branches of 454 merged pull requests: with the commit types as the only categories, 93% of
+  them passed; with this shape, all of them.
+- The default refuses `main` and every other name without a slash: a direct
+  `git push origin main` that carries new commits is refused. Work reaches the default branch
+  through pull requests.
+- The default `branch.allow` is `dependabot/**`, the branches Dependabot creates. GitHub's web
+  editor names its branches `<user>-patch-<N>`, which the default refuses; a repository that
+  takes changes from the web editor adds a glob such as `*-patch-*` with an `exceptions` row.
+- A detached HEAD with no other source passes, and so does a pushed ref that is not a branch
+  (a tag): there is no branch name to judge.
+
+The `pre-push` hook cannot see every push. pre-commit runs no `pre-push` hook for a ref whose
+commits are all reachable from the push remote's tracking refs already, and hands the hooks
+only the first ref with new commits. So the rail is blind to:
+
+- a new branch with no commit outside the push remote's tracking refs, such as `git branch foo`
+  on `main` and `git push origin foo`;
+- every ref after the first in a push of several refs.
+
+The `commit-lane` job of the reusable CI workflow will close both gaps on the server, once that
+workflow exists (§9 of the development-rails spec, not yet built): it will run
+`railform branch-name` on the head branch of every pull request, so a misnamed branch will be
+refused once it opens a pull request, however it was pushed. A fork's pull request from its
+`main` will be refused there too.
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the gate commands and the commit rules, and
 [CHANGELOG.md](CHANGELOG.md) for what changed. The license is MIT.
+
+The tests marked `slow` need the network; the hook-rail tests, which run real `git commit` and
+`git push` through pre-commit, need it in every session. Offline, run
+`uv run --frozen python -m pytest -q -m "not slow"`.

@@ -28,6 +28,7 @@ test = ['pytest>=8.0']
 dev = [
     { include-group = 'lint' },
     { include-group = 'test' },
+    'pre-commit>=4.6.2',
 ]
 
 [tool.ruff]
@@ -52,5 +53,5 @@ known-first-party = ['railform']
 testpaths = ['tests']
 addopts = '--strict-markers --strict-config -ra'
 markers = [
-    'slow: needs the network or a warm uv cache; runs by default',
+    'slow: needs the network (uv resolution, pre-commit hook environments); runs by default',
 ]
