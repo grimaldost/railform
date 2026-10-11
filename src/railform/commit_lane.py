@@ -13,7 +13,10 @@ Two rules:
 
 - **Subject.** The first line of a commit message reads `type(scope)!: description`, the scope
   and the `!` optional, the type one of `commit.types`. A commit with more than one parent is
-  exempt: git writes its subject.
+  exempt: git writes its subject. The local `commit-msg` hook also accepts an autosquash
+  subject (`fixup! `, `squash! ` or `amend! ` before a valid subject), so `git commit --fixup`
+  works while a branch is in progress; `commit-range` refuses it, so it never reaches the base
+  branch (development-rails spec, §13, the keel pilot).
 - **Attribution.** No line of any message, merges included, matches a pattern of
   `commit.attribution_patterns` (Python `re`, case-insensitive, per line). The pull request's
   title and body are held to the same patterns.
@@ -42,6 +45,8 @@ ATTRIBUTION = 'attribution'
 SCISSORS_TAIL = ' ------------------------ >8 ------------------------'
 DEFAULT_COMMENT_CHAR = '#'
 SUBJECT_MESSAGE = 'the subject is not "type(scope)!: description" with a type of the frame'
+# What `git commit --fixup`, `--squash` and `--fixup=amend:` put before the subject they target.
+AUTOSQUASH_PREFIXES = ('fixup! ', 'squash! ', 'amend! ')
 
 
 class LaneError(Exception):
@@ -111,11 +116,25 @@ def numbered_lines(message: str, *, comment_char: str | None = None) -> list[tup
     return kept
 
 
-def subject_finding(lines: Sequence[tuple[int, str]], rules: Rules) -> tuple[int, str] | None:
-    """The line number and message when the subject breaks the rule, else None."""
+def without_autosquash(subject: str) -> str:
+    """The subject without the prefixes `git commit --fixup`, `--squash` and `--fixup=amend:`
+    write (`fixup! `, `squash! `, `amend! `, repeated when a fixup targets a fixup)."""
+    while subject.startswith(AUTOSQUASH_PREFIXES):
+        subject = subject.split(' ', 1)[1]
+    return subject
+
+
+def subject_finding(
+    lines: Sequence[tuple[int, str]], rules: Rules, *, autosquash: bool = False
+) -> tuple[int, str] | None:
+    """The line number and message when the subject breaks the rule, else None.
+
+    With `autosquash`, an autosquash prefix is read past and the subject after it is judged.
+    """
     for number, line in lines:
         if line.strip():
-            if rules.subject.match(line):
+            subject = without_autosquash(line) if autosquash else line
+            if rules.subject.match(subject):
                 return None
             return number, SUBJECT_MESSAGE
     return 1, 'the message is empty'
@@ -137,15 +156,17 @@ def check_message(
     *,
     subject_exempt: bool = False,
     comment_char: str | None = None,
+    autosquash: bool = False,
 ) -> tuple[list[str], list[str]]:
     """Judge one message; returns its subject findings and its attribution findings.
 
-    A finding reads `<label>:<line>: <message>`.
+    A finding reads `<label>:<line>: <message>`. With `autosquash`, a subject that starts with
+    an autosquash prefix is judged on what follows it.
     """
     lines = numbered_lines(message, comment_char=comment_char)
     subject = []
     if not subject_exempt:
-        found = subject_finding(lines, rules)
+        found = subject_finding(lines, rules, autosquash=autosquash)
         if found is not None:
             subject.append(f'{label}:{found[0]}: {found[1]}')
     attribution = [f'{label}:{n}: {text}' for n, text in attribution_findings(lines, rules)]

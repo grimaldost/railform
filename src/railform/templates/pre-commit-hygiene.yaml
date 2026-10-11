@@ -3,10 +3,17 @@
   hooks:
     - id: trailing-whitespace
       args: [--markdown-linebreak-ext=md]
+      stages: [pre-commit]
     - id: end-of-file-fixer
+      stages: [pre-commit]
     - id: check-merge-conflict
       args: [--assume-in-merge]
+      stages: [pre-commit]
     - id: check-added-large-files
+      stages: [pre-commit]
     - id: check-yaml
+      stages: [pre-commit]
     - id: check-toml
+      stages: [pre-commit]
     - id: check-json
+      stages: [pre-commit]

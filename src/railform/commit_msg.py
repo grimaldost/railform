@@ -2,7 +2,9 @@
 
 Development-rails spec, §4; the rules live in `railform.commit_lane`. Lines starting with the
 comment character (`core.commentChar`, else `#`) are git comments and are ignored, and so is
-everything after the scissors line.
+everything after the scissors line. An autosquash subject (`fixup! `, `squash! ` or `amend! `
+before a valid subject) passes here, so `git commit --fixup` works locally; `commit-range` refuses
+it before the branch merges.
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ def run(args: argparse.Namespace) -> Verdict:
             rules,
             subject_exempt=commit_lane.is_merging(root),
             comment_char=commit_lane.comment_char(root),
+            autosquash=True,
         )
     except commit_lane.LaneError as exc:
         return Verdict.usage(VERB, f'{VERB}: {exc}')

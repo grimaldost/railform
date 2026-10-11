@@ -47,7 +47,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from railform import frame as frame_module
-from railform.hooks_check import CONFIG_ERRORS, EXECUTABLE, GitError, git, hooks_path
+from railform.hooks_check import CONFIG_ERRORS, EXECUTABLE, GitError, git, hooks_path, is_armed
 from railform.verdict import Verdict
 from railform.wrapper import WrapperError, hooks_dir, render
 
@@ -438,6 +438,25 @@ def _trigger_edits(ci: _Ci) -> list[_Edit]:
     text = doc.lines[start.line].rstrip('\r\n')
     merged = text[: start.column] + '[' + ', '.join(present + missing) + ']' + text[end.column :]
     return [_Edit(start.line, start.line + 1, (merged,))]
+
+
+PR_FILTERS = ('paths', 'paths-ignore', 'branches', 'branches-ignore')
+
+
+def _pull_request_filters(ci: _Ci) -> list[str]:
+    """A finding line for each filter of the `pull_request` trigger. A filter is the
+    repository's, outside what adopt owns, but a pull request it filters out runs no ci.yml and
+    reports no gate, which a ruleset that requires gate then waits on."""
+    found = _entry(ci.root, 'on')
+    trigger = _entry(found[1], 'pull_request') if found is not None else None
+    if trigger is None or not isinstance(trigger[1], yaml.MappingNode):
+        return []
+    return [
+        f'{CI_PATH}: on.pull_request has {key}:, so a pull request it filters out runs no ci.yml '
+        'and reports no gate; a ruleset that requires gate then waits on it'
+        for key in PR_FILTERS
+        if _entry(trigger[1], key) is not None
+    ]
 
 
 def _plan_ci(ci: _Ci, uses: str, railform_sha: str) -> str:
@@ -862,7 +881,9 @@ def _same_directory(root: Path, path: str, directory: str) -> bool:
 
 
 def _relative_dir(value: str) -> str | None:
-    """A configured hooks directory as a repository-relative path, or None outside the clone."""
+    """A configured hooks directory as a repository-relative path, or None when it is not a
+    directory of the repository adopt can write: outside the clone, inside `.git`, a path git
+    expands (`~`, `%(prefix)`), or a name with a character Windows forbids."""
     try:
         directory = hooks_dir({'hooks': {'dir': value}})
     except WrapperError:
@@ -917,6 +938,10 @@ def _previous_hooks_dir(
     subdirectory of it included); else the tracked directory, outside hooks.dir and outside
     every `session_loaded` glob, that holds the most `100755` entries named after a hook (the
     first by name on a tie).
+
+    A core.hooksPath that differs from hooks.dir only by case or by trailing dots and spaces is
+    never the previous directory, even where the filesystem holds both: on Windows the two are
+    one directory, so a stub there would land on a wrapper. It is reported instead.
     """
     skipped: list[str] = []
     done = git(root, 'config', '--local', '--get', 'core.hooksPath')
@@ -927,8 +952,15 @@ def _previous_hooks_dir(
         relative = _relative_dir(configured)
         if relative is None:
             skipped.append(
-                'core.hooksPath lies outside the repository or inside .git; not taken as the '
-                'previous hooks directory'
+                'core.hooksPath is not a directory of the repository adopt can write (outside '
+                'it, inside .git, a path git expands such as ~, or a name with a character '
+                'Windows forbids); not taken as the previous hooks directory'
+            )
+        elif relative != directory and _fold(relative) == _fold(directory):
+            skipped.append(
+                f'core.hooksPath {relative} differs from hooks.dir {directory} only by case or '
+                'trailing dots or spaces; not taken as the previous hooks directory, since on '
+                'Windows the two are one directory'
             )
         elif not _same_directory(root, relative, directory):
             return relative, skipped
@@ -951,6 +983,20 @@ def _previous_hooks_dir(
     if not counts:
         return None, skipped
     return min(counts, key=lambda parent: (-counts[parent], parent)), skipped
+
+
+def _refuse_case_variants(entries: dict[str, str], wrapper_paths: list[str]) -> None:
+    """Refuse, before any write, an index entry spelled differently from a wrapper path that
+    Windows reads as the same file (by case, or by trailing dots and spaces): writing the
+    wrapper would stage a second entry, and no Windows checkout can hold both."""
+    for wrapper_path in wrapper_paths:
+        for path in entries:
+            if path != wrapper_path and _fold(path) == _fold(wrapper_path):
+                raise AdoptError(
+                    f'{path}: tracked under another spelling of the wrapper {wrapper_path}, which '
+                    f'Windows reads as the same file; rename it first (git mv {path} '
+                    f'{wrapper_path}) and run adopt again'
+                )
 
 
 def _refuse_links(root: Path, paths: list[str]) -> None:
@@ -1103,7 +1149,7 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
     dependabot_text = _read(root, DEPENDABOT_PATH)
     tag_watch_text = _read(root, TAG_WATCH_PATH)
     planned: list[tuple[str, str | None, str | None]] = []
-    notes: list[str] = []
+    notes: list[str] = _pull_request_filters(ci)
     if frame['ci']['self_hosted']:
         if pin is not None:
             notes.append(
@@ -1128,6 +1174,7 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         planned.append((TAG_WATCH_PATH, tag_watch_text, _plan_tag_watch(tag_watch_text, pin)))
     planned.append((DEPENDABOT_PATH, dependabot_text, _plan_dependabot(dependabot_text)))
     entries = _index_entries(root)
+    _refuse_case_variants(entries, list(wrappers))
     previous, skipped = _previous_hooks_dir(root, frame, directory, entries)
     notes += skipped
     stubs: dict[str, str] = {}
@@ -1140,8 +1187,9 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
             notes.append(f'{path}: exists and is not tracked; left as it is, no stub')
         else:
             stubs[path] = _stub(directory)
-    # Defensive: the choice above already passes over any directory that folds to hooks.dir, so
-    # no stub can land on a wrapper today; this stops it before any write if that ever changes.
+    # Defensive: the choice above passes over any directory that folds to hooks.dir, a
+    # core.hooksPath spelled differently included (reported, not taken), so no stub lands on a
+    # wrapper today; this stops it before any write if that ever changes.
     wrapper_paths = {_fold(path) for path in wrappers}
     if any(_fold(path) in wrapper_paths for path in stubs):
         raise AdoptError(
@@ -1171,9 +1219,8 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         message + '; railform adopt --check fails until then'
         for message in _extra_pr_workflows(root, frame['ci']['extra_workflows'])
     ]
-    configured = hooks_path(root)
-    relative = _relative_dir(configured) if configured is not None else None
-    if relative is None or not _same_directory(root, relative, directory):
+    # The hint follows `hooks-check --armed`, so the two never disagree about this clone.
+    if not is_armed(hooks_path(root), directory):
         findings.append(f'arm this clone with `railform arm` (core.hooksPath to {directory})')
     return Verdict.ok(VERB, tuple(findings))
 
@@ -1223,6 +1270,7 @@ def _check(root: Path) -> Verdict:
     else:
         try:
             ci = _read_ci(ci_text)
+            notes += _pull_request_filters(ci)
             if ci.region is None:
                 drift(_NO_REGION.format(path=CI_PATH))
             elif self_hosted:

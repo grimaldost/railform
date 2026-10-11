@@ -276,11 +276,15 @@ def test_the_plugin_marketplace_wrapper_reads_the_pinned_pre_commit_version() ->
     effective = frame.effective_frame({'project': {'type': 'plugin-marketplace'}})
     version = effective['hooks']['pre_commit_version']
     assert re.fullmatch(r'\d+\.\d+\.\d+', version)
-    assert effective['hooks']['wrapper'] == f'uvx pre-commit=={version} hook-impl'
+    assert effective['hooks']['wrapper'] == (
+        f'uvx --from pre-commit=={version} python -m pre_commit hook-impl'
+    )
     moved = frame.effective_frame(
         {'project': {'type': 'plugin-marketplace'}, 'hooks': {'pre_commit_version': '9.9.9'}}
     )
-    assert moved['hooks']['wrapper'] == 'uvx pre-commit==9.9.9 hook-impl'
+    assert (
+        moved['hooks']['wrapper'] == 'uvx --from pre-commit==9.9.9 python -m pre_commit hook-impl'
+    )
 
 
 def test_the_type_of_each_preset_shapes_its_pipeline() -> None:
@@ -514,19 +518,45 @@ def test_a_guard_list_may_grow_without_an_exception(
     assert _check(capsys) == (0, 'ok', [])
 
 
+def _guard_list_toml(key: str, items: list[str]) -> str:
+    table, _, leaf = key.rpartition('.')
+    value = json.dumps(items)
+    return f'[{table}]\n{leaf} = {value}\n' if table else f'{leaf} = {value}\n'
+
+
 @pytest.mark.parametrize('key', ['session_loaded', 'private_refs.placeholders'])
-def test_dropping_a_default_element_of_a_guard_list_is_a_departure(
+def test_red_proof_a_guard_list_with_one_extra_element_keeps_every_default_element(
+    key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The development-rails spec, §13 (the craft-collection pilot): the repository's list is
+    # joined to the default, default first, so a repository names only what it adds and its copy
+    # never goes stale when a later pin adds a default element.
+    default = _get(frame.effective_frame(None), key)
+    config = tomllib.loads(_guard_list_toml(key, ['extra/**']))
+    assert _get(frame.effective_frame(config), key) == [*default, 'extra/**']
+    _write(scratch_repo, _guard_list_toml(key, ['extra/**']))
+    assert _check(capsys) == (0, 'ok', [])
+    assert main(['frame', '--json']) == 0
+    printed = json.loads(capsys.readouterr().out.splitlines()[0])
+    assert _get(printed, key) == [*default, 'extra/**']
+
+
+@pytest.mark.parametrize('key', ['session_loaded', 'private_refs.placeholders'])
+def test_a_guard_list_cannot_drop_a_default_element(
     key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     default = _get(frame.effective_frame(None), key)
-    shrunk = json.dumps([*default[1:], 'extra/**'])
-    table, _, leaf = key.rpartition('.')
-    body = f'[{table}]\n{leaf} = {shrunk}\n' if table else f'{leaf} = {shrunk}\n'
-    _write(scratch_repo, body)
-    assert _check(capsys)[:2] == (1, 'unlisted-departure')
-    row = f'[[exceptions]]\nkey = "{key}"\nvalue = {shrunk}\nreason = "measured"\n'
-    _write(scratch_repo, body + row)
+    # A restated list without the first default element, and a repeated element: the union keeps
+    # every default element once, in the default's order, then the repository's own.
+    listed = [*default[1:], 'extra/**', default[2], 'extra/**']
+    config = tomllib.loads(_guard_list_toml(key, listed))
+    assert _get(frame.effective_frame(config), key) == [*default, 'extra/**']
+    _write(scratch_repo, _guard_list_toml(key, listed))
     assert _check(capsys) == (0, 'ok', [])
+    # Nothing departs, so an exceptions row for the key matches no departure.
+    row = f'[[exceptions]]\nkey = "{key}"\nvalue = {json.dumps(listed)}\nreason = "measured"\n'
+    _write(scratch_repo, _guard_list_toml(key, listed) + row)
+    assert _check(capsys)[:2] == (1, 'bad-exception')
 
 
 def test_ci_extra_workflows_is_preset_governed(
@@ -871,7 +901,10 @@ def test_the_wrapper_version_is_read_from_the_frame(monkeypatch: pytest.MonkeyPa
         monkeypatch, f'pre_commit_version = "{version}"', 'pre_commit_version = "1.2.3"'
     )
     effective = frame.effective_frame({'project': {'type': 'plugin-marketplace'}})
-    assert effective['hooks']['wrapper'] == 'uvx pre-commit==1.2.3 hook-impl'
+    assert (
+        effective['hooks']['wrapper']
+        == 'uvx --from pre-commit==1.2.3 python -m pre_commit hook-impl'
+    )
 
 
 # --- commit.attribution_patterns: keel's set and keel's test cases ------------------------------
@@ -902,9 +935,28 @@ def test_attribution_trailers_and_stamps_are_rejected(line: str) -> None:
 @pytest.mark.parametrize(
     'line',
     [
+        'Generated with GPT-5',
+        'Generated with [GPT](https://example.com)',
+        'Generated with Anthropic tools',
+        'generated with anthropic',
+        'Generated with OpenAI GPT-4o',
+        'Generated with the help of Claude',
+        'Generated with: Anthropic Claude',
+    ],
+)
+def test_red_proof_a_stamp_that_names_gpt_or_anthropic_is_rejected(line: str) -> None:
+    # The development-rails spec, §13 (the craft-collection pilot): the "generated with" stamp
+    # arm names GPT and Anthropic as well as Claude, as craft-collection's own check did.
+    assert _attributed(line), f'the frame patterns miss: {line!r}'
+
+
+@pytest.mark.parametrize(
+    'line',
+    [
         'fix(release): hold the tag to its section',
         'The fold follows ADR-0018; co-authored the spec with the operator.',
         'Generated fixtures with the staging script.',
+        'Generated with uv lock.',
         'Signed-off-by: Alice Example',
     ],
 )

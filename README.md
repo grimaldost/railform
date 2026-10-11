@@ -58,8 +58,8 @@ The frame is the configuration every check reads, as data. The effective frame o
 is built in three layers: the default frame shipped in the package
 (`src/railform/default_frame.toml`), then the preset of the repository's project type
 (`python-package`, `python-scripts` or `plugin-marketplace`), then the repository's own
-`railform.toml`. Arrays replace; tables merge key by key. Without a `railform.toml`, the frame is
-the default with the `python-package` preset.
+`railform.toml`. Arrays replace (except the two guard lists below); tables merge key by key.
+Without a `railform.toml`, the frame is the default with the `python-package` preset.
 
 A value that differs from the preset is a departure, and a departure is legal only when an
 `exceptions` row names its key and its value with a non-empty reason:
@@ -76,8 +76,16 @@ reason = "the suite runs in a separate workflow during the migration"
 
 The keys in `meta.parameter_keys` (the project type and layout, the Python versions and package,
 the version sites, the changelog records and contract surfaces, and the release start and tag
-prefixes) are per repository and never depart. `session_loaded` and `private_refs.placeholders`
-may grow without an exception; dropping a default element is a departure.
+prefixes) are per repository and never depart.
+
+The two guard lists, `session_loaded` and `private_refs.placeholders`, are joined to the default
+instead of replacing it: the effective list is the default's elements, then the repository's own
+that the default lacks, each once. A repository lists only what it adds, its list never goes
+stale when a later pin adds a default element, and it cannot drop a default element. These lists
+never depart, so an `exceptions` row for them matches nothing: `railform frame --check` fails on
+one with `bad-exception`, and deleting the row is the fix, since the default element it dropped is
+back in the list. `railform frame` and `railform frame --json` print the joined list. For example,
+`session_loaded = ["docs/prompts/**"]` keeps every default glob and adds one.
 
 Some keys hold rows rather than plain values:
 
@@ -99,15 +107,20 @@ Some keys hold rows rather than plain values:
 - `railform frame --github-output` appends one `name=value` line per key to the file
   `$GITHUB_OUTPUT` names, as `<table>_<key>`; lists, tables, booleans and numbers are written as
   compact JSON. It also writes `pipeline`, the type's pipeline (see the reusable CI workflow
-  below), one command per line, and exits 2 when a step cannot be written: ruff at no
-  `ci.ruff_version`, or `ci.setup.extra_installs` in a `plugin-marketplace` repository, which has
-  no uv project to install into.
+  below), one command per line, and `hooks_python`, the newest of `python.versions` (else
+  `python.newest`), which the `hooks` job runs pre-commit on. It exits 2 when a step cannot be
+  written: ruff at no `ci.ruff_version`, or `ci.setup.extra_installs` in a `plugin-marketplace`
+  repository, which has no uv project to install into.
 
 ## Hook wrappers
 
 A repository tracks one small shell script per git hook in `hooks.dir` (`.githooks` by default),
 each of which runs that stage of `.pre-commit-config.yaml` through the frame's `hooks.wrapper`
-command. The text is fixed by a template, so a wrapper is correct or it is not.
+command. The text is fixed by a template, so a wrapper is correct or it is not. The command is
+`uv run --frozen python -m pre_commit hook-impl` for the two uv types and
+`uvx --from pre-commit==<hooks.pre_commit_version> python -m pre_commit hook-impl` for
+`plugin-marketplace`. Both launch an interpreter, never pre-commit's console-script shim, which an
+application-control policy may refuse to launch.
 
 - `railform hooks-check` checks every hook in `hooks.names`: the file exists (`missing`), the git
   index tracks it as `100755` (`mode`; git skips a hook that is not executable on Linux and
@@ -135,17 +148,22 @@ Three verbs judge commit text, with the rules read from the frame (`commit.types
 
 The subject rule: the first line reads `type(scope)!: description`, the scope and the `!` optional
 and the type one of `commit.types`. A commit with more than one parent (a merge) is exempt, since
-git writes its subject; `commit-msg` treats a merge in progress the same way. The title of a pull
+git writes its subject; `commit-msg` treats a merge in progress the same way. `commit-msg` also
+accepts an autosquash subject, `fixup! `, `squash! ` or `amend! ` before a valid subject, so
+`git commit --fixup` and `git rebase --autosquash` work while a branch is in progress;
+`commit-range` refuses such a subject, so it never reaches the base branch. The title of a pull
 request is not held to the subject rule. Git's own `Revert "..."` subject, and GitHub's, fail the
 subject rule; write the revert as `revert: ...`.
 
 The attribution rule applies to every message, merges and the pull request's title and body
 included: no line may match a pattern of `commit.attribution_patterns` (Python regular
 expressions, matched case-insensitively per line). The default set is keel's. It rejects a trailer
-that names Claude, GPT, Anthropic or Copilot as author, co-author, signer or assistant, but its
-"generated with" stamp pattern names Claude only, so another tool's stamp passes. The second arm of
-the mantis-research script (a stamp that names GPT or Anthropic) was not added. Dependabot bodies
-quote upstream release notes, which could, rarely, trip the stamp pattern.
+that names Claude, GPT, Anthropic or Copilot as author, co-author, signer or assistant, and a
+"generated with" stamp that names Claude, GPT or Anthropic anywhere later on the line (keel's stamp
+arm named Claude only, directly after the words; the wider reach comes from the mantis-research
+script and craft-collection's check). Dependabot bodies quote upstream release notes, and a line
+that opens "Generated with" and names one of the three words later could, rarely, trip the stamp
+pattern.
 
 When both rules fail, the verdict code is `subject`; a failure of the attribution rule alone is
 `attribution`. An unreadable message file, a bad range, a missing event payload and an invalid
@@ -155,11 +173,12 @@ pattern exit 2.
 
 `railform session-paths --diff BASE...HEAD --frame-from REF [--glob PATTERN ...]` is the guard an
 adoption series runs so that no change touches a file a Claude Code session loads (skills,
-agents, commands, a plugin's hooks, plugin manifests, `.claude/`, `CLAUDE.md`, `AGENTS.md`,
-`.mcp.json`). It lists the changed paths with `git diff --no-renames --name-only`, so a file
-moved out of a loaded path still counts, and fails with `session-loaded` when one matches a glob
-of `session_loaded` in the frame at `REF`. Pass the base as `REF`: the globs are then never the
-ones the change writes. `--glob` adds a pattern (a series adds its own) and never removes one.
+agents, commands, output styles, a plugin's hooks, plugin manifests, `.claude/`, `CLAUDE.md`,
+`AGENTS.md`, `.mcp.json`). It lists the changed paths with
+`git diff --no-renames --name-only`, so a file moved out of a loaded path still counts, and fails
+with `session-loaded` when one matches a glob of `session_loaded` in the frame at `REF`. Pass the
+base as `REF`: the globs are then never the ones the change writes.
+`--glob` adds a pattern (a series adds its own) and never removes one.
 
 A glob matches the whole repository-relative path or any suffix of it that starts at a `/`:
 `**` spans any number of segments, `*` none or more characters inside one segment, and names
@@ -167,7 +186,8 @@ compare case-insensitively. So `**/hooks/**` matches `plugins/x/hooks/hooks.json
 `.githooks/pre-commit`. A malformed glob (an empty segment, a `.` or `..` segment, a leading or
 trailing `/`, or a backslash), from the frame or from `--glob`, is a configuration error (exit
 2), because it would match nothing. The check also fails with `guard-narrowed` when the
-`railform.toml` at HEAD removes or excepts a glob the frame at `REF` had.
+`railform.toml` at HEAD removes or excepts a glob the frame at `REF` had. Since the list is joined
+to the default, only a glob the repository added itself can be removed.
 
 The check is blind to the inside of a submodule: git lists a submodule as its own path, so a
 change to files in its contents is not seen unless the submodule path itself is changed.
@@ -183,7 +203,8 @@ scope, such as a pull request's title or body. Binary files are skipped.
 - **Home paths.** A home-directory path fails (`home-path`) unless its user segment is in
   `private_refs.placeholders` (default: `me`, `x`, `someone`, `alice`, `user`, `runner`, and the
   system folders `public`, `default`, `shared` and `runneradmin`) or plainly a placeholder (it
-  contains `<`, `>`, `$`, `%`, `{`, `}` or `*`). The six shapes are `X:\Users\<name>\`,
+  contains `<`, `>`, `$`, `%`, `{`, `}` or `*`, or is made only of full stops and ellipsis
+  characters, as in `/home/.../` or `C:\Users\…\`). The six shapes are `X:\Users\<name>\`,
   `X:/Users/<name>/`, the JSON-escaped `X:\\Users\\<name>`, the project-slug form
   `X--Users-<name>-`, `/Users/<name>/` and `/home/<name>/`, with any drive letter and without
   regard to case for the Windows ones. A segment ends at a separator, whitespace, a quote or the
@@ -209,9 +230,16 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
   `grimaldost/railform/.github/workflows/python-ci.yml` at the pin and passes the same pin as the
   input `railform-sha`. `gate` needs every other job in the file, runs with `if: always()`, and
   fails when a needed job failed or was cancelled; it is the one status a branch ruleset requires.
+  `gate` protects nothing on its own: only a ruleset (or branch protection) that names `gate` as a
+  required status stops a red pull request from merging. A repository without one, such as a
+  private repository on a plan that offers no rulesets, still runs every check, but a red `gate`
+  is advice there, not a block.
   The `pull_request` trigger also gains `types: [opened, synchronize, reopened, edited]`.
 - In `.pre-commit-config.yaml`, the railform entry at the pin and the hygiene entry
-  (`pre-commit/pre-commit-hooks` v5.0.0, pinned by its commit).
+  (`pre-commit/pre-commit-hooks` v5.0.0, pinned by its commit). Each hygiene hook carries
+  `stages: [pre-commit]`: without it a hook runs at every stage a wrapper is installed for, so
+  `check-merge-conflict --assume-in-merge` would refuse a commit message that quotes a conflict
+  marker, and the whole set would run again at `pre-push`.
 - In `.github/dependabot.yml`, an ignore entry for `grimaldost/railform` in the `github-actions`
   update. Adopt adds that update when there is none.
 - Whole files: the hook wrappers in `hooks.dir`, staged as their exact bytes and tracked as
@@ -255,19 +283,36 @@ nothing.
   `pull_request_target`, or cannot be parsed. A job's `needs:` cannot reach another workflow
   file, so move such a job into `ci.yml` (the next adopt adds it to `gate`), or list the file in
   `ci.extra_workflows`, by name or by path, with an `exceptions` row.
+
+  A `paths`, `paths-ignore`, `branches` or `branches-ignore` filter on the `pull_request` trigger
+  is the repository's, but adopt and `--check` name it in a finding line: a pull request the
+  filter leaves out runs no `ci.yml` and reports no `gate`, so a ruleset that requires `gate`
+  waits on it.
 - Where the hooks lived before, adopt leaves a stub for each hook. That is the local
   `core.hooksPath` when it is not the same directory as `hooks.dir` (a subdirectory of it
   counts), or else the tracked directory, outside `hooks.dir` and outside every `session_loaded`
   glob, with the most `100755` files named after a hook. The stub prints the `railform arm`
-  command and fails, so a clone armed to the old directory cannot commit unchecked.
+  command and fails, so a clone armed to the old directory cannot commit unchecked. The stub is
+  meant to be removed one release later: the first railform patch release after an adopter's
+  adoption leaves it.
   - Directories are compared as Windows reads them: each segment without its trailing dots and
     spaces, then casefolded. The filesystem decides when both directories exist.
+  - A `core.hooksPath` that differs from `hooks.dir` only that way (`.GitHooks`, `.githooks.`)
+    is never the previous directory, even on a filesystem that holds both: on Windows they are
+    one directory, so a stub there would land on a wrapper. It is reported, and adopt tells the
+    clone to arm, as `hooks-check --armed` does, which compares the spelling.
+  - A `core.hooksPath` that git expands (`~`, `%(prefix)`), lies outside the repository or inside
+    `.git`, or holds a character Windows forbids in a name (`<>:"|?*`) is not a directory adopt
+    writes in; it is reported and gets no stub.
   - Every candidate passed over is reported in a finding line.
   - A file there that is tracked but not `100755`, or not tracked at all, is reported and left
     alone.
 - Adopt refuses, before writing anything, a target path with a symlink or junction on the way, a
-  `hooks.dir` inside `.git` (`.git.` and `.git ` included), and an `on:` block it would have to
-  rewrite as a mapping when that block holds comments.
+  `hooks.dir` inside `.git` (`.git.` and `.git ` included), starting with a `~` or `%(` that git
+  expands, or holding a character Windows forbids,
+  an index entry that Windows reads as a wrapper's file but spelled differently (such as a tracked
+  `.GitHooks/pre-commit`; adopt names the `git mv` that fixes it), and an `on:` block it would
+  have to rewrite as a mapping when that block holds comments.
 - railform itself calls its own workflow by local path. With `ci.self_hosted = true` (and an
   `exceptions` row), adopt writes the `railform` job as a call to
   `./.github/workflows/python-ci.yml` with the commit under test as the input, the pre-commit entry
@@ -297,7 +342,7 @@ checks that the input is 40 hexadecimal characters before anything is installed.
 | `checks` | `railform private-refs`, then the type's pipeline, on every leg of `ci.os` by `python.versions` | every run |
 | `commit-lane` | `railform commit-range`, `railform pr-text`, and `railform branch-name` on the head branch | pull requests |
 | `changelog` | nothing yet: a placeholder, skipped until the changelog gate exists | none |
-| `hooks` | `railform hooks-check`, `railform adopt --check`, and the hygiene hooks over the changed files | every run; the hygiene hooks on pull requests |
+| `hooks` | `railform hooks-check`, `railform adopt --check`, and the hygiene hooks over the changed files, with pre-commit on the newest of `python.versions`, else `python.newest` (the `hooks_python` output of `frame --github-output`), so a `default_language_version` naming that Python resolves | every run; the hygiene hooks on pull requests |
 | `audit` | zizmor 1.30.0 at high severity over the caller's workflows | every run |
 
 - **The pipeline comes from the frame.** The workflow names no step of the type's pipeline.
@@ -308,11 +353,16 @@ checks that the input is 40 hexadecimal characters before anything is installed.
   `ruff check` over `python.lint_paths`, `ty check` over `python.type_check`, and
   `python.test_command`; `python-scripts` is the same without `ty` (its `python.type_check` is
   empty); `plugin-marketplace` runs ruff from `uvx` at `ci.ruff_version`, then
-  `python.test_command`. A test command of several lines is one command per line. The Python
+  `python.test_command`. A test command of several lines is one command per line. The lines run
+  in order in one bash shell, so a line can prepare the next: an
+  `export PATH="$HOME/.local/bin:$PATH"` on one line holds for every line after it, and so do
+  `cd` and shell variables. The Python
   version reaches uv through `UV_PYTHON`, set per matrix leg, and the checkout depth of `checks`
   is `ci.setup.fetch_depth`.
 - **What the workflow allows.** Every action is pinned by a 40-hex commit, every setup-uv step
-  pins the same uv version, and the token is read-only (`contents: read`). It runs from the
+  pins the same uv version, and the token is read-only (`contents: read`). Every job has a time
+  limit (`timeout-minutes`, 45 for `checks` and 10 to 20 for the others), and only `checks`, which
+  syncs the caller's lock, keeps setup-uv's cache. It runs from the
   caller's `pull_request` and `push` events, never `pull_request_target`. The jobs that read
   history (`commit-lane`, `hooks`, and `changelog` once it runs) check out all of it. No `run:`
   text holds an expression: values such as the head branch's name reach the scripts through
@@ -320,7 +370,9 @@ checks that the input is 40 hexadecimal characters before anything is installed.
 - **What passes.** A job counts as passing when it succeeded or was skipped by its own condition
   (`commit-lane` and `changelog` on a push). The caller's `gate` job is the one required status.
   Every job runs on every pull request event, `edited` included: a run that skipped the checks
-  on an edit of the title would post a green `gate` over a red one on the same commit.
+  on an edit of the title would post a green `gate` over a red one on the same commit. The cost:
+  each edit of a pull request's title or body runs the whole workflow again, the full `checks`
+  matrix included, though only `commit-lane` reads the text that changed.
 - **The jobs after `frame`.** `checks`, `commit-lane`, `changelog` and `hooks` need `frame`, so a
   pin that is not a full commit, or a `railform.toml` that `frame --check` fails, stops them
   before they install anything. `audit` installs no railform and runs on its own.

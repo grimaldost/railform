@@ -380,6 +380,29 @@ def test_a_plainly_placeholder_segment_passes(
     assert check(capsys)[0] == 0
 
 
+ELLIPSIS = chr(0x2026)
+
+
+@pytest.mark.parametrize('name', [ELLIPSIS, ELLIPSIS * 2, '...', '.', f'.{ELLIPSIS}.'])
+def test_red_proof_a_segment_made_only_of_dots_is_a_placeholder(
+    name: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The development-rails spec, §13 (the pilots): `C:\Users\…\` and `/home/.../` are written
+    # as placeholders, a user segment of full stops or ellipsis characters only.
+    for shape in SHAPE_NAMES:
+        stage(scratch_repo, f'{shape}.md', home(shape, name) + '\n')
+    assert check(capsys)[0] == 0
+
+
+@pytest.mark.parametrize('name', [f'bob{ELLIPSIS}', f'{ELLIPSIS}bob', 'b.o.b'])
+def test_a_segment_with_dots_and_letters_is_still_a_name(
+    name: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, 'a.md', home('linux', name) + '\n')
+    code, out, _ = check(capsys)
+    assert (code, verdict(out)) == (1, 'railform-verdict: private-refs fail home-path')
+
+
 def test_the_placeholder_paths_craft_collection_uses_under_its_skills_pass(
     scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

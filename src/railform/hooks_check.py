@@ -12,8 +12,11 @@ frame:
 - `content`: its text, with CRLF read as LF, is not the rendered wrapper;
 - `not-armed` (`--armed` only): `git config core.hooksPath` is not `hooks.dir`.
 
-The source's other rules (each hook's configuration declares its stage, pre-commit is in the dev
-group, every `uv run` is frozen) are not ported here.
+The source's other rules are not rules of this verb (development-rails spec, §13). Each hook
+declaring its stage and every `uv run` being frozen are held over what railform ships and adopt
+writes, by railform's own tests: an adopter's own hooks lie outside what adopt owns. pre-commit
+in the dev group is not checked: a uv wrapper without it fails at the first commit with
+pre-commit's own error, and judging it would mean re-reading uv's group resolution.
 """
 
 from __future__ import annotations
@@ -83,6 +86,12 @@ def hooks_path(root: Path) -> str | None:
     return done.stdout.decode('utf-8', 'replace').rstrip('\r\n')
 
 
+def is_armed(current: str | None, directory: str) -> bool:
+    """Whether a `core.hooksPath` value names `directory`, spelled as `hooks.dir` is (separators
+    and `.` segments aside): the rule of `--armed`, which `railform adopt`'s arm hint follows."""
+    return current is not None and posixpath.normpath(current.replace('\\', '/')) == directory
+
+
 def _check_hook(
     root: Path, frame: dict[str, Any], directory: str, hook: str
 ) -> list[tuple[str, str]]:
@@ -141,7 +150,7 @@ def run(args: argparse.Namespace) -> Verdict:
             problems += _check_hook(root, frame, directory, hook)
         if args.armed:
             current = hooks_path(root)
-            if current is None or posixpath.normpath(current.replace('\\', '/')) != directory:
+            if not is_armed(current, directory):
                 shown = 'unset' if current is None else repr(current)
                 problems.append(
                     (

@@ -90,8 +90,11 @@ def test_the_renderer_writes_the_text_of_the_contract_for_each_wrapper_command()
     for hook in HOOKS:
         assert wrapper.render(uv, hook) == expected_wrapper(hook)
     marketplace = frame.effective_frame({'project': {'type': 'plugin-marketplace'}})
-    pinned = f'uvx pre-commit=={marketplace["hooks"]["pre_commit_version"]} hook-impl'
-    assert re.fullmatch(r'uvx pre-commit==\d+\.\d+\.\d+ hook-impl', pinned)
+    # The development-rails spec, §13: an interpreter launch, as the uv types' wrapper is, never
+    # pre-commit's console-script shim, which an application-control policy may refuse to run.
+    version = marketplace['hooks']['pre_commit_version']
+    pinned = f'uvx --from pre-commit=={version} python -m pre_commit hook-impl'
+    assert re.fullmatch(r'\d+\.\d+\.\d+', version)
     assert wrapper.render(marketplace, 'commit-msg') == expected_wrapper('commit-msg', pinned)
 
 
@@ -265,7 +268,7 @@ def test_changing_the_project_type_changes_the_wrapper_command(
     write_config(scratch_repo, '[project]\ntype = "plugin-marketplace"\n')
     assert check(capsys)[:2] == (1, 'railform-verdict: hooks-check fail content')
     pinned = wrapper.command(frame.load(scratch_repo))
-    assert re.fullmatch(r'uvx pre-commit==\S+ hook-impl', pinned)
+    assert re.fullmatch(r'uvx --from pre-commit==\S+ python -m pre_commit hook-impl', pinned)
     for hook in HOOKS:
         put(scratch_repo, f'.githooks/{hook}', expected_wrapper(hook, pinned))
     assert check(capsys)[:2] == (0, 'railform-verdict: hooks-check pass ok')

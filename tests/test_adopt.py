@@ -20,10 +20,12 @@ the condition is evaluated over every result. Git is isolated for every test by
 from __future__ import annotations
 
 import itertools
+import json
 import os
 import re
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -173,6 +175,42 @@ def test_the_hygiene_entry_is_pre_commit_hooks_v5_at_its_sha(adopted: Fixture) -
     railform = [repo for repo in repos if repo['repo'] == 'https://github.com/grimaldost/railform']
     assert len(railform) == 1
     assert railform[0]['rev'] == PIN
+
+
+def test_red_proof_every_hygiene_hook_runs_at_the_pre_commit_stage_only(adopted: Fixture) -> None:
+    # The development-rails spec, §13 (the keel pilot): a hook with no stages runs at every
+    # stage a wrapper is installed for, so check-merge-conflict --assume-in-merge judged the
+    # commit message at commit-msg, and the whole set ran again at pre-push.
+    repos = yaml.safe_load(read(adopted.root, PRE_COMMIT))['repos']
+    [hygiene] = [repo for repo in repos if repo['repo'].endswith('/pre-commit/pre-commit-hooks')]
+    assert [hook.get('stages') for hook in hygiene['hooks']] == [['pre-commit']] * 7
+
+
+def test_every_hook_adopt_writes_runs_at_a_declared_stage(adopted: Fixture) -> None:
+    # The stage rule of the source hooks-check was ported from, held over the hooks adopt owns:
+    # each declares its stages in the entry adopt writes or in railform's own manifest.
+    manifest_path = Path(__file__).resolve().parents[1] / '.pre-commit-hooks.yaml'
+    manifest = yaml.safe_load(manifest_path.read_text(encoding='utf-8'))
+    declared = {hook['id']: hook['stages'] for hook in manifest}
+    owned = yaml.safe_load(textwrap.dedent(region(read(adopted.root, PRE_COMMIT))))
+    hooks = [hook for repo in owned for hook in repo['hooks']]
+    assert len(hooks) == 11
+    for hook in hooks:
+        assert hook.get('stages') or declared.get(hook['id']), hook
+
+
+def test_red_proof_a_hygiene_hook_without_its_stage_fails_check_with_drift(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = read(adopted.root, PRE_COMMIT)
+    marker = re.compile(r'(\[--assume-in-merge\]\n)[ ]+stages: \[pre-commit\]\n')
+    assert len(marker.findall(text)) == 1, text
+    write(adopted.root, PRE_COMMIT, marker.sub(r'\1', text))
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{PRE_COMMIT}:' in out
+    assert run_adopt(capsys)[0] == 0
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
 
 
 def test_dependabot_ignores_railform_in_the_github_actions_update(adopted: Fixture) -> None:
@@ -972,24 +1010,45 @@ def test_red_proof_a_hooks_path_that_windows_reads_as_hooks_dir_gets_no_stub(
     code, _, out = run_adopt(capsys, '--pin', PIN)
     assert code == 0, out
     assert 'stub' not in out
-    assert 'arm this clone' not in out  # the clone is armed, folded
+    # The arm hint follows `hooks-check --armed`, which compares the spelling: a spelling that
+    # folds to hooks.dir is reported, and the clone is told to arm (development-rails spec, §13).
+    if configured == '.githooks/./':
+        assert 'arm this clone' not in out
+        assert main(['hooks-check', '--armed']) == 0
+    else:
+        assert 'only by case or trailing dots or spaces' in out
+        assert 'arm this clone' in out
+        assert main(['hooks-check', '--armed']) == 1
+    capsys.readouterr()
     effective = frame.load(scratch_repo)
     for hook in HOOKS:
         assert read(scratch_repo, f'.githooks/{hook}') == wrapper.render(effective, hook)
     assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
 
 
-def test_red_proof_a_tracked_hook_under_a_case_variant_of_hooks_dir_gets_no_stub(
-    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize('variant', ['.GitHooks/pre-commit', '.GITHOOKS/commit-msg'])
+def test_red_proof_a_tracked_case_variant_of_a_wrapper_is_refused_before_any_write(
+    variant: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Without the fold, `.GitHooks` would be the previous directory and its stubs would land on
-    # the wrappers on a case-insensitive filesystem; the guard before any write stops that too.
+    # Wave A's review (folded at §13): on Windows `.GitHooks/pre-commit` is the wrapper's file,
+    # so adopt overwrote it and staged a second index entry that differs only by case, which no
+    # Windows checkout can hold. Adopt now names the rename and writes nothing.
     build(scratch_repo, 'python-package')
-    _track(scratch_repo, '.GitHooks/pre-commit', '#!/bin/sh\necho old\n', executable=True)
-    code, _, out = run_adopt(capsys, '--pin', PIN)
-    assert code == 0, out
-    assert 'stub written' not in out
-    assert '.GitHooks/pre-commit: not taken as the previous hooks directory' in out
+    done = subprocess.run(
+        ['git', 'hash-object', '-w', '--stdin'],
+        cwd=scratch_repo,
+        input=b'#!/bin/sh\necho old\n',
+        capture_output=True,
+        check=True,
+    )
+    oid = done.stdout.decode('ascii').strip()
+    git(scratch_repo, 'update-index', '--add', '--cacheinfo', f'100755,{oid},{variant}')
+    before = snapshot(scratch_repo)
+    code = main(['adopt', '--pin', PIN])
+    captured = capsys.readouterr()
+    assert (code, captured.out.splitlines()[-1]) == (2, f'{VERDICT} fail usage'), captured
+    assert variant in captured.err and 'git mv' in captured.err
+    assert snapshot(scratch_repo) == before
 
 
 def test_a_hooks_path_under_hooks_dir_is_the_previous_directory(
@@ -1016,7 +1075,7 @@ def test_every_skipped_candidate_is_reported(
     _track(scratch_repo, '.githooks/old/commit-msg', '#!/bin/sh\n', executable=True)
     code, _, out = run_adopt(capsys, '--pin', PIN)
     assert code == 0
-    assert 'lies outside the repository or inside .git' in out
+    assert 'core.hooksPath is not a directory of the repository' in out
     assert 'docs/pre-commit: not taken as the previous hooks directory (tracked as 100644)' in out
     assert 'skills/x/pre-push: not taken as the previous hooks directory (a path a session' in out
     assert '.githooks/old/commit-msg: not taken as the previous hooks directory (hooks.dir' in out
@@ -1560,3 +1619,107 @@ def test_the_stub_prints_the_arm_command_and_fails(
     assert done.returncode == 1
     assert 'railform arm' in done.stderr
     assert 'git config core.hooksPath .githooks' in done.stderr
+
+
+# --- the folds of Wave A's reviews (development-rails spec, §13) ------------------------------
+
+
+def test_red_proof_a_case_variant_hooks_path_on_a_case_sensitive_filesystem_is_reported(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # On Linux `.GitHooks` and `.githooks` are two directories. A second run took `.GitHooks` as
+    # the previous directory, and the guard against a stub landing on a wrapper stopped it with
+    # exit 2. The filesystem's answer is forced here, so the case runs on every system.
+    monkeypatch.setattr(adopt_module.os.path, 'samefile', lambda first, second: False)
+    build(scratch_repo, 'python-package')
+    (scratch_repo / '.GitHooks').mkdir(exist_ok=True)
+    (scratch_repo / '.githooks').mkdir(exist_ok=True)
+    git(scratch_repo, 'config', '--local', 'core.hooksPath', '.GitHooks')
+    for _ in range(2):
+        code, line, out = run_adopt(capsys, '--pin', PIN)
+        assert (code, line) == (0, f'{VERDICT} pass ok'), out
+        assert 'stub written' not in out
+        assert 'core.hooksPath .GitHooks differs from hooks.dir .githooks only by case' in out
+        assert 'arm this clone' in out
+
+
+@pytest.mark.parametrize('configured', ['~/hooks', '~', '%(prefix)/etc/hooks'])
+def test_red_proof_a_hooks_path_that_git_expands_is_outside_the_repository(
+    configured: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # git expands `~` and `%(prefix)`: such a hooks path is never a directory of the repository,
+    # so adopt writes no stub under a literal `~` directory.
+    build(scratch_repo, 'python-package')
+    git(scratch_repo, 'config', '--local', 'core.hooksPath', configured)
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0, out
+    assert 'stub written' not in out
+    assert 'core.hooksPath is not a directory of the repository' in out
+    assert not (scratch_repo / '~').exists()
+    assert not (scratch_repo / '%(prefix)').exists()
+    assert 'arm this clone' in out
+
+
+@pytest.mark.parametrize('configured', ['tools/a:b', 'tools/hooks?', 'tools/<hooks>', 'a|b/hooks'])
+def test_red_proof_a_hooks_path_with_a_character_windows_forbids_gets_no_stub(
+    configured: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A `:` past the first segment passed, and the stub's mkdir failed on Windows after the other
+    # writes. Every segment is now judged, before anything is written.
+    build(scratch_repo, 'python-package')
+    git(scratch_repo, 'config', '--local', 'core.hooksPath', configured)
+    code, line, out = run_adopt(capsys, '--pin', PIN)
+    assert (code, line) == (0, f'{VERDICT} pass ok'), out
+    assert 'stub written' not in out
+    assert 'core.hooksPath is not a directory of the repository' in out
+
+
+@pytest.mark.parametrize('directory', ['tools/a:b', 'hooks?', 'x/<y>', 'a"b'])
+def test_a_hooks_dir_with_a_character_windows_forbids_is_a_configuration_error(
+    directory: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    write(scratch_repo, 'railform.toml', f'[hooks]\ndir = {json.dumps(directory)}\n')
+    before = snapshot(scratch_repo)
+    code = main(['adopt', '--pin', PIN])
+    captured = capsys.readouterr()
+    assert (code, captured.out.splitlines()[-1]) == (2, f'{VERDICT} fail usage')
+    assert 'Windows forbids' in captured.err
+    assert snapshot(scratch_repo) == before
+
+
+@pytest.mark.parametrize('directory', ['~/hooks', '~', '%(prefix)/hooks'])
+def test_a_hooks_dir_that_git_expands_is_a_configuration_error(
+    directory: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # git runs hooks from the expanded path, so a clone armed on the literal one is not armed.
+    build(scratch_repo, 'python-package')
+    write(scratch_repo, 'railform.toml', f'[hooks]\ndir = {json.dumps(directory)}\n')
+    before = snapshot(scratch_repo)
+    code = main(['adopt', '--pin', PIN])
+    captured = capsys.readouterr()
+    assert (code, captured.out.splitlines()[-1]) == (2, f'{VERDICT} fail usage')
+    assert 'git expands' in captured.err
+    assert snapshot(scratch_repo) == before
+
+
+@pytest.mark.parametrize('key', ['paths', 'paths-ignore', 'branches', 'branches-ignore'])
+def test_red_proof_a_filter_on_the_pull_request_trigger_is_reported(
+    key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A filter can keep ci.yml from running on a pull request, and then no gate is reported; a
+    # ruleset that requires gate waits on it. `--check` names the filter in a finding line.
+    build(scratch_repo, 'python-package')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (0, f'{VERDICT} pass ok')
+    assert 'on.pull_request' not in out
+    text = read(scratch_repo, CI)
+    anchor = f'    {PR_TYPES_LINE}\n'
+    assert text.count(anchor) == 1
+    write(scratch_repo, CI, text.replace(anchor, anchor + f'    {key}: ["docs/**"]\n'))
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (0, f'{VERDICT} pass ok'), out
+    assert f'{CI}: on.pull_request has {key}:' in out
+    assert 'reports no gate' in out
+    assert f'{CI}: on.pull_request has {key}:' in run_adopt(capsys)[2]
