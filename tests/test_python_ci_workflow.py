@@ -197,7 +197,7 @@ def test_every_railform_command_is_installed_from_the_input(workflow: dict[Any, 
             installed = run.count(f'{INSTALL} {verb}')
             assert invoked == installed, (verb, run)
             commands += invoked
-    assert commands == 8
+    assert commands == 9
 
 
 def test_no_run_text_interpolates_an_expression(workflow: dict[Any, Any]) -> None:
@@ -290,7 +290,10 @@ def test_the_checks_job_runs_the_frame_pipeline_on_the_frame_matrix(
     )
     runs = _runs(job)
     assert runs[0] == f'{INSTALL} private-refs'
-    assert len(runs) == 2
+    assert runs[1] == f'{INSTALL} version-sites'
+    # The step has no condition of its own, so it runs on every leg, on pull requests and pushes.
+    assert set(_step(job, f'{INSTALL} version-sites')) == {'name', 'run'}
+    assert len(runs) == 3
     assert _step(job, 'PIPELINE')['env'] == {'PIPELINE': '${{ needs.frame.outputs.pipeline }}'}
 
 
