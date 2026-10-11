@@ -1017,17 +1017,29 @@ def test_red_proof_a_hooks_path_that_windows_reads_as_hooks_dir_gets_no_stub(
     assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
 
 
-def test_red_proof_a_tracked_hook_under_a_case_variant_of_hooks_dir_gets_no_stub(
-    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize('variant', ['.GitHooks/pre-commit', '.GITHOOKS/commit-msg'])
+def test_red_proof_a_tracked_case_variant_of_a_wrapper_is_refused_before_any_write(
+    variant: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Without the fold, `.GitHooks` would be the previous directory and its stubs would land on
-    # the wrappers on a case-insensitive filesystem; the guard before any write stops that too.
+    # Wave A's review (folded at §13): on Windows `.GitHooks/pre-commit` is the wrapper's file,
+    # so adopt overwrote it and staged a second index entry that differs only by case, which no
+    # Windows checkout can hold. Adopt now names the rename and writes nothing.
     build(scratch_repo, 'python-package')
-    _track(scratch_repo, '.GitHooks/pre-commit', '#!/bin/sh\necho old\n', executable=True)
-    code, _, out = run_adopt(capsys, '--pin', PIN)
-    assert code == 0, out
-    assert 'stub written' not in out
-    assert '.GitHooks/pre-commit: not taken as the previous hooks directory' in out
+    done = subprocess.run(
+        ['git', 'hash-object', '-w', '--stdin'],
+        cwd=scratch_repo,
+        input=b'#!/bin/sh\necho old\n',
+        capture_output=True,
+        check=True,
+    )
+    oid = done.stdout.decode('ascii').strip()
+    git(scratch_repo, 'update-index', '--add', '--cacheinfo', f'100755,{oid},{variant}')
+    before = snapshot(scratch_repo)
+    code = main(['adopt', '--pin', PIN])
+    captured = capsys.readouterr()
+    assert (code, captured.out.splitlines()[-1]) == (2, f'{VERDICT} fail usage'), captured
+    assert variant in captured.err and 'git mv' in captured.err
+    assert snapshot(scratch_repo) == before
 
 
 def test_a_hooks_path_under_hooks_dir_is_the_previous_directory(

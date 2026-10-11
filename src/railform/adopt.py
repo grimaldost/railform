@@ -972,6 +972,20 @@ def _previous_hooks_dir(
     return min(counts, key=lambda parent: (-counts[parent], parent)), skipped
 
 
+def _refuse_case_variants(entries: dict[str, str], wrapper_paths: list[str]) -> None:
+    """Refuse, before any write, an index entry spelled differently from a wrapper path that
+    Windows reads as the same file (by case, or by trailing dots and spaces): writing the
+    wrapper would stage a second entry, and no Windows checkout can hold both."""
+    for wrapper_path in wrapper_paths:
+        for path in entries:
+            if path != wrapper_path and _fold(path) == _fold(wrapper_path):
+                raise AdoptError(
+                    f'{path}: tracked under another spelling of the wrapper {wrapper_path}, which '
+                    f'Windows reads as the same file; rename it first (git mv {path} '
+                    f'{wrapper_path}) and run adopt again'
+                )
+
+
 def _refuse_links(root: Path, paths: list[str]) -> None:
     """Refuse, before any write, a target path with a symlink or junction on the way."""
     base = os.path.realpath(root)
@@ -1147,6 +1161,7 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         planned.append((TAG_WATCH_PATH, tag_watch_text, _plan_tag_watch(tag_watch_text, pin)))
     planned.append((DEPENDABOT_PATH, dependabot_text, _plan_dependabot(dependabot_text)))
     entries = _index_entries(root)
+    _refuse_case_variants(entries, list(wrappers))
     previous, skipped = _previous_hooks_dir(root, frame, directory, entries)
     notes += skipped
     stubs: dict[str, str] = {}
