@@ -817,10 +817,7 @@ class TestAsciiDigits:
         assert changelog_gate.cut_version(f'## [{arabic_indic}]\n') is None
         assert changelog_gate.cut_version('## [1.2.3]\n') == (1, 2, 3)
 
-    def test_a_site_in_other_digits_reads_no_version(self) -> None:
-        site = changelog_gate.Site('v.txt', re.compile(r'v=(\S+)'), authored=False)
-        assert changelog_gate.site_version(f'v={OTHER_DIGITS}', site) is None
-        assert changelog_gate.site_version('v=1.2.3', site) == (1, 2, 3)
+    # A site's version in other digits is `version_sites.triple`'s rule, tested with it.
 
 
 # --- a watch that covers nothing ---------------------------------------------------------------
@@ -1200,6 +1197,9 @@ class TestUsage:
             '[[release.tag_prefix]]\nprefix = ""\ntag = "w"\n',
             '[changelog]\ntrailer = "Changelog: none"\n',
             '[[version.sites]]\npath = "pyproject.toml"\npattern = "version"\n',
+            '[[release.tag_prefix]]\nprefix = "plugins/a/"\ntag = "a--v"\n'
+            '[[version.sites]]\npath = "pyproject.toml"\npattern = "(.+)"\n',
+            '[[version.sites]]\npath = "../pyproject.toml"\npattern = "(.+)"\n',
             '[changelog]\nrecords = 1\n',
         ],
         ids=[
@@ -1209,6 +1209,8 @@ class TestUsage:
             'tag-prefix-twice',
             'trailer-without-reason',
             'site-without-group',
+            'site-no-tag-row-covers',
+            'site-path-leaves-the-repository',
             'wrong-type',
         ],
     )

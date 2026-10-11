@@ -28,7 +28,10 @@ All notable changes to this project are recorded here, in the
   surface changed without `(consumer-affecting)` in a record is a `::warning::` by default and
   fails with `changelog.consumer_affecting = "error"` (`consumer-affecting`). An edited released
   heading (a new date, a trailing space, a CRLF conversion) is not a cut, versions read ASCII
-  digits only, and a records watch that covers no tracked path prints a `::warning::`.
+  digits only, and a records watch that covers no tracked path prints a `::warning::`. The gate
+  reads release lines and version sites through `railform.version_sites`, so the version-site
+  check's configuration errors (a duplicated prefix, a site path that is empty, absolute, holds
+  `..` or a backslash, a pattern with no group, a site no tag row covers) exit 2 here too.
 - The pilots' folds (development-rails spec, §13). Each of the three pilots, one per project
   type, needed a railform change; each change listed here, under Changed and under Fixed has a
   test that fails without it.

@@ -45,7 +45,9 @@ have; the trailer is the frame's template; the range is `BASE...HEAD`; and the s
 that an added `###` heading belongs to the Keep a Changelog vocabulary is not ported, since the
 spec does not name it and adopters use other section headings.
 
-`changelog.enabled = false` passes at once and reads no history.
+Release lines and version sites are read through `railform.version_sites`, the one reading the
+gates share, so a site configuration that `railform version-sites` refuses is a configuration
+error here too (exit 2). `changelog.enabled = false` passes at once and reads no history.
 """
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from railform import commit_lane, frame
+from railform import commit_lane, frame, version_sites
 from railform.verdict import Verdict
 
 if TYPE_CHECKING:
@@ -82,7 +84,6 @@ Version = tuple[int, int, int]
 
 # ASCII digits only: `\d` would also read other scripts' digits, which no version carries.
 _ADDED_HEADING = re.compile(r'^## \[([0-9]+)\.([0-9]+)\.([0-9]+)\]', re.MULTILINE)
-_VERSION = re.compile(r'([0-9]+)\.([0-9]+)\.([0-9]+)')
 # What `git merge-tree --write-tree` prints on its first line when it wrote a tree: a SHA-1 or a
 # SHA-256 object id.
 _OBJECT_ID = re.compile(r'[0-9a-f]{40}(?:[0-9a-f]{24})?')
@@ -101,15 +102,6 @@ class GateError(Exception):
 
 
 @dataclass(frozen=True)
-class Site:
-    """A row of `version.sites`."""
-
-    path: str
-    pattern: re.Pattern[str]
-    authored: bool
-
-
-@dataclass(frozen=True)
 class Settings:
     """What the gate reads from the effective frame."""
 
@@ -118,8 +110,8 @@ class Settings:
     template: str
     surfaces: tuple[str, ...]
     consumer_affecting: str
-    lines: tuple[str, ...]
-    sites: tuple[Site, ...]
+    lines: tuple[version_sites.Line, ...]
+    sites: tuple[version_sites.Site, ...]
 
     @property
     def files(self) -> tuple[str, ...]:
@@ -139,16 +131,14 @@ def trailer_pattern(template: str) -> re.Pattern[str]:
     return re.compile(f'{re.escape(before)}(.*){re.escape(after)}', re.IGNORECASE)
 
 
-def _unique_prefixes(key: str, prefixes: Iterable[str]) -> None:
-    seen: set[str] = set()
-    for prefix in prefixes:
-        if prefix in seen:
-            raise GateError(f'{key}: two rows have the prefix {prefix!r}')
-        seen.add(prefix)
+def settings(effective: dict[str, Any]) -> Settings:
+    """The gate's settings from an effective frame; GateError when they cannot be obeyed.
 
-
-def settings(effective: Mapping[str, Any]) -> Settings:
-    """The gate's settings from an effective frame; GateError when they cannot be obeyed."""
+    Release lines and version sites are read by `railform.version_sites`, the one reading the
+    gates share, so its configuration errors are this verb's too: two rows of
+    `changelog.records` or `release.tag_prefix` with one prefix, and a site path that is empty,
+    absolute, holds `..` or a backslash, a pattern with no group, or a site no tag row covers.
+    """
     changelog = effective['changelog']
     records = tuple((row['prefix'], row['file']) for row in changelog['records'])
     if not records:
@@ -159,18 +149,11 @@ def settings(effective: Mapping[str, Any]) -> Settings:
     for prefix, file in records:
         if not file:
             raise GateError(f'changelog.records: the row with the prefix {prefix!r} names no file')
-    _unique_prefixes('changelog.records', (prefix for prefix, _ in records))
-    lines = tuple(row['prefix'] for row in effective['release']['tag_prefix'])
-    _unique_prefixes('release.tag_prefix', lines)
-    sites = []
-    for row in effective['version']['sites']:
-        try:
-            pattern = re.compile(row['pattern'])
-        except re.error as exc:
-            raise GateError(f'version.sites: {row["pattern"]!r} is not a regex: {exc}') from exc
-        if pattern.groups < 1:
-            raise GateError(f'version.sites: the pattern of {row["path"]} has no group')
-        sites.append(Site(row['path'], pattern, bool(row.get('authored', False))))
+    try:
+        lines = version_sites.release_lines(effective)
+        sites = version_sites.version_sites(effective, lines)
+    except version_sites.SitesError as exc:
+        raise GateError(str(exc)) from exc
     template = changelog['trailer']
     return Settings(
         records=records,
@@ -178,13 +161,14 @@ def settings(effective: Mapping[str, Any]) -> Settings:
         template=template,
         surfaces=tuple(changelog['contract_surfaces']),
         consumer_affecting=changelog['consumer_affecting'],
-        lines=lines,
+        lines=tuple(lines),
         sites=tuple(sites),
     )
 
 
 def owner(path: str, prefixes: Sequence[str]) -> int | None:
-    """The index of the row whose prefix is the longest that `path` starts with, or None."""
+    """The index of the `changelog.records` row whose prefix is the longest that `path` starts
+    with, or None. (Release lines are `version_sites.line_of`'s.)"""
     best: int | None = None
     for index, prefix in enumerate(prefixes):
         if path.startswith(prefix) and (best is None or len(prefix) > len(prefixes[best])):
@@ -272,29 +256,12 @@ def cut_version(added: str, removed: str = '') -> Version | None:
     return next((version for version in _headings(added) if version not in gone), None)
 
 
-def site_version(text: str | None, site: Site) -> Version | None:
-    """The version a site's text reads: the first match's group 1, as three integers."""
-    if text is None:
-        return None
-    found = site.pattern.search(text)
-    if found is None or found.group(1) is None:
-        return None
-    parts = _VERSION.fullmatch(found.group(1))
-    if parts is None:
-        return None
-    major, minor, patch = (int(part) for part in parts.groups())
-    return (major, minor, patch)
-
-
-def site_of_record(file: str, settings: Settings) -> Site | None:
+def site_of_record(file: str, settings: Settings) -> version_sites.Site | None:
     """The first non-authored site of the release line that `file` belongs to, or None."""
-    line = owner(file, settings.lines)
+    line = version_sites.line_of(settings.lines, file)
     if line is None:
         return None
-    for site in settings.sites:
-        if not site.authored and owner(site.path, settings.lines) == line:
-            return site
-    return None
+    return next((site for site in settings.sites if not site.authored and site.line == line), None)
 
 
 def dotted(version: Version) -> str:
@@ -334,7 +301,11 @@ def unrecorded(
 
 
 def heading_findings(
-    file: str, cut: Version, site: Site, head: Version | None, base: Version | None
+    file: str,
+    cut: Version,
+    site: version_sites.Site,
+    head: Version | None,
+    base: Version | None,
 ) -> list[str]:
     """The release-heading failures of one record file's added heading."""
     heading = f'## [{dotted(cut)}]'
@@ -515,15 +486,16 @@ class _Git:
     def changed(self, base: str, head: str) -> list[str]:
         return self.names('diff', '--no-renames', '--name-only', '-z', base, head)
 
-    def show(self, revision: str, path: str) -> str | None:
-        """A file's text at a revision, or None when it is missing or not UTF-8."""
+    def show(self, revision: str, path: str) -> bytes | None:
+        """A file's bytes at a revision, or None when the revision has no such file."""
         done = self.run('show', '--no-textconv', f'{revision}:{path}')
-        if done.returncode != 0:
-            return None
-        try:
-            return done.stdout.decode('utf-8')
-        except UnicodeDecodeError:
-            return None
+        return done.stdout if done.returncode == 0 else None
+
+    def site_version(self, revision: str, site: version_sites.Site) -> Version | None:
+        """The version a site reads at a revision, as three integers, or None."""
+        return version_sites.triple(
+            version_sites.reading_of(self.show(revision, site.path), site).value
+        )
 
 
 # --- the verb ----------------------------------------------------------------------------------
@@ -573,8 +545,8 @@ def _judge(git: _Git, spec: str, settings: Settings) -> Verdict:
                 'its release line has no version site that is not authored'
             )
             continue
-        head_version = site_version(git.show(head, site.path), site)
-        base_version = site_version(git.show(merge_base, site.path), site)
+        head_version = git.site_version(head, site)
+        base_version = git.site_version(merge_base, site)
         found[RELEASE_HEADING] += heading_findings(file, cut, site, head_version, base_version)
 
     surfaces: list[str] = []

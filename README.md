@@ -213,11 +213,14 @@ printed. When no tracked path at HEAD other than the record files falls under an
 example), the gate prints `::warning::changelog.records: watches no tracked path` and keeps its
 verdict. `changelog.enabled = false` (with its `exceptions` row) passes at once.
 
-These exit 2: an empty `changelog.records`, a records row with no file, two `changelog.records`
-or `release.tag_prefix` rows with the same prefix, a trailer template without exactly one
-`<reason>`, a `version.sites` pattern with no group, a range not of the form `BASE...HEAD`, a
-revision git cannot resolve, a range with no merge base, and a git older than 2.38 when a merge
-must be charged.
+These exit 2: an empty `changelog.records`, a records row with no file, a trailer template
+without exactly one `<reason>`, a range not of the form `BASE...HEAD`, a revision git cannot
+resolve, a range with no merge base, and a git older than 2.38 when a merge must be charged. The
+gate reads release lines and version sites through the version-site check's own reading, so it
+also exits 2 on that check's configuration errors: two `changelog.records` or
+`release.tag_prefix` rows with the same prefix, and a version site whose path is empty, absolute,
+holds `..` or a backslash, whose pattern has no group, or that no `release.tag_prefix` row
+covers.
 
 ## The session-paths check
 
