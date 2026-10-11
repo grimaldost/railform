@@ -197,7 +197,7 @@ def test_every_railform_command_is_installed_from_the_input(workflow: dict[Any, 
             installed = run.count(f'{INSTALL} {verb}')
             assert invoked == installed, (verb, run)
             commands += invoked
-    assert commands == 9
+    assert commands == 10
 
 
 def test_no_run_text_interpolates_an_expression(workflow: dict[Any, Any]) -> None:
@@ -426,16 +426,20 @@ def test_red_proof_the_branch_name_step_takes_the_head_branch_through_the_enviro
 # --- changelog, hooks, audit -------------------------------------------------------------------
 
 
-def test_the_changelog_job_is_a_placeholder_skipped_on_every_event(
-    workflow: dict[Any, Any],
-) -> None:
+def test_the_changelog_job_runs_the_gate_on_pull_requests_only(workflow: dict[Any, Any]) -> None:
+    # The development-rails spec, §14, and the Wave C contract, section 6.1: the placeholder's
+    # `false &&` is gone, and the job runs the gate over the pull request's range.
     job = _job(workflow, 'changelog')
-    for event in ('pull_request', 'push'):
+    assert job['if'] == PR_CONDITION
+    for event, runs in (('pull_request', True), ('push', False)):
         context = {'github': github_context(event)}
-        assert holds(job['if'], context, Status()) is False, event
-    # Without the placeholder's `false &&`, it is a pull-request job, as §9 has it.
-    unblocked = job['if'].removeprefix('false && ')
-    assert unblocked == PR_CONDITION
+        assert holds(job['if'], context, Status()) is runs, event
+    assert job['needs'] == 'frame'
+    assert _runs(job) == [f'{INSTALL} changelog-gate "origin/${{BASE_REF}}...HEAD"']
+    step = _step(job, 'changelog-gate')
+    assert step['name'] == 'railform changelog-gate'
+    assert step['env'] == {'BASE_REF': '${{ github.base_ref }}'}
+    assert 'if' not in step  # it runs under the job's condition, nothing narrower
 
 
 def _hygiene_ids() -> list[str]:

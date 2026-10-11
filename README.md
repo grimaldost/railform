@@ -92,7 +92,8 @@ Some keys hold rows rather than plain values:
 - `changelog.records` is an array of `{ prefix, file }` rows and `release.tag_prefix` an array of
   `{ prefix, tag }` rows. A changed path or a tag belongs to the row with the longest matching
   `prefix` (`""` matches everything). A repository's own array replaces the default whole, so a
-  repository whose only changelogs are per plugin lists those rows and has no root row.
+  repository whose only changelogs are per plugin lists those rows and has no root row. The
+  `python-package` preset's records row watches `src/` only; the other types watch every path.
 - `version.sites` is an array of `{ path, pattern, authored }` rows: the pattern's first group is
   the version, and `authored` (default `false`) marks a site that is checked and never rewritten.
 - `release.metadata_paths` holds globs of the release metadata (the manifests). The release check
@@ -168,6 +169,58 @@ pattern.
 When both rules fail, the verdict code is `subject`; a failure of the attribution rule alone is
 `attribution`. An unreadable message file, a bad range, a missing event payload and an invalid
 pattern exit 2.
+
+## The changelog gate
+
+`railform changelog-gate BASE...HEAD` fails a change that the changelog does not record. It
+judges every commit HEAD adds to BASE, merges included, and reads the record diff from their
+merge base to HEAD. In CI the `changelog` job runs it on pull requests as
+`changelog-gate "origin/${BASE_REF}...HEAD"`.
+
+- **Record or declare** (`unrecorded`). Each path a commit changes is charged to the
+  `changelog.records` row with the longest matching prefix, and so to that row's file; a path no
+  row matches is not watched, and a record file is never charged to itself. The `python-package`
+  preset watches `src/` (`CHANGELOG.md`), the other types every path, and a repository with
+  per-plugin changelogs lists one row per plugin. For each commit and each record file it is
+  charged to, the range must add a line to that file, or the commit must carry the trailer
+  `changelog.trailer` spells, by default `Changelog: none (<reason>)` with a reason that is not
+  blank (`changelog: None (a rename)` counts; `Changelog: none ()` does not). A trailer declares
+  its own commit only. A line counts as added when it is not blank once its whitespace is
+  collapsed and the same diff does not also remove it, so trailing spaces, re-indenting,
+  reordering and a CRLF conversion record nothing.
+- **Merges.** A merge is charged only with its resolution: the paths where its tree differs from
+  the automatic merge of its parents, from `git merge-tree --write-tree` (git 2.38 or newer). A
+  clean merge, such as the merge commit CI checks out for a pull request, is charged nothing; a
+  hand resolution of a watched path needs a record or the trailer on the merge. A merge of
+  unrelated histories, and an octopus merge, are charged their combined diff.
+- **Release headings** (`release-heading`). The first heading `## [X.Y.Z]` that a record file's
+  diff adds, among those whose version no heading the diff removes carries, is the cut: a new
+  date on a released heading, a trailing space on it or a CRLF conversion of the file is no cut.
+  The version must already read `X.Y.Z` at HEAD and must have been lower at the merge base. The
+  version is read from the first `version.sites` row that is not `authored` on the record's
+  release line (the `release.tag_prefix` row with the longest prefix of the record file), in
+  ASCII digits. A side with no readable three-part version, such as `0.1.0.dev0`, is not
+  compared; a line with no such site skips the rule and says so.
+- **Contract surfaces** (`consumer-affecting`). When the range changes a path of
+  `changelog.contract_surfaces` and no record's added lines say `(consumer-affecting)`, the rule
+  fires once per surface. By default (`changelog.consumer_affecting = "advisory"`) a firing is a
+  `::warning::<path>: consumer-affecting (advisory): ...` line and the verdict stays a pass;
+  `"error"`, declared with an `exceptions` row, makes it fail.
+
+When several rules fail, the verdict names the first in the order above and every finding is
+printed. When no tracked path at HEAD other than the record files falls under any
+`changelog.records` row (a flat-layout package on the `python-package` preset's `src/`, for
+example), the gate prints `::warning::changelog.records: watches no tracked path` and keeps its
+verdict. `changelog.enabled = false` (with its `exceptions` row) passes at once.
+
+These exit 2: an empty `changelog.records`, a records row with no file, a trailer template
+without exactly one `<reason>`, a range not of the form `BASE...HEAD`, a revision git cannot
+resolve, a range with no merge base, and a git older than 2.38 when a merge must be charged. The
+gate reads release lines and version sites through the version-site check's own reading, so it
+also exits 2 on that check's configuration errors: two `changelog.records` or
+`release.tag_prefix` rows with the same prefix, and a version site whose path is empty, absolute,
+holds `..` or a backslash, whose pattern has no group, or that no `release.tag_prefix` row
+covers.
 
 ## The session-paths check
 
@@ -382,7 +435,7 @@ checks that the input is 40 hexadecimal characters before anything is installed.
 | `frame` | `railform frame --check`, then `railform frame --github-output` | every run |
 | `checks` | `railform private-refs`, `railform version-sites`, then the type's pipeline, on every leg of `ci.os` by `python.versions` | every run |
 | `commit-lane` | `railform commit-range`, `railform pr-text`, and `railform branch-name` on the head branch | pull requests |
-| `changelog` | nothing yet: a placeholder, skipped until the changelog gate exists | none |
+| `changelog` | `railform changelog-gate "origin/${BASE_REF}...HEAD"` (see the changelog gate above) | pull requests |
 | `hooks` | `railform hooks-check`, `railform adopt --check`, and the hygiene hooks over the changed files, with pre-commit on the newest of `python.versions`, else `python.newest` (the `hooks_python` output of `frame --github-output`), so a `default_language_version` naming that Python resolves | every run; the hygiene hooks on pull requests |
 | `audit` | zizmor 1.30.0 at high severity over the caller's workflows | every run |
 
@@ -405,7 +458,7 @@ checks that the input is 40 hexadecimal characters before anything is installed.
   limit (`timeout-minutes`, 45 for `checks` and 10 to 20 for the others), and only `checks`, which
   syncs the caller's lock, keeps setup-uv's cache. It runs from the
   caller's `pull_request` and `push` events, never `pull_request_target`. The jobs that read
-  history (`commit-lane`, `hooks`, and `changelog` once it runs) check out all of it. No `run:`
+  history (`commit-lane`, `changelog` and `hooks`) check out all of it. No `run:`
   text holds an expression: values such as the head branch's name reach the scripts through
   `env:`.
 - **What passes.** A job counts as passing when it succeeded or was skipped by its own condition

@@ -152,6 +152,11 @@ layout = "src"
 [presets.python-package.hooks]
 wrapper = "uv run --frozen python -m pre_commit hook-impl"
 
+# A package records what it ships: changes under src/. A change that moves only the lock or a
+# workflow (a Dependabot pull request among them, which cannot add a trailer) is not charged.
+[presets.python-package.changelog]
+records = [{ prefix = "src/", file = "CHANGELOG.md" }]
+
 [presets.python-package.ci]
 os = ["ubuntu-latest", "windows-latest"]
 

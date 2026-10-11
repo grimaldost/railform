@@ -19,6 +19,19 @@ All notable changes to this project are recorded here, in the
   share.
 - The verb table of the command names `changelog-gate`, `version-sites` and `release-check`; a
   name without a module exits 2 with `not-implemented`.
+- The `changelog-gate` verb (development-rails spec, §14), ported from the stack-radar engine's
+  changelog gate with its tests: `railform changelog-gate BASE...HEAD` fails a commit that
+  changes a path a `changelog.records` row watches when the range records nothing in that row's
+  file and the commit carries no `changelog.trailer` declaration (`unrecorded`); a merge is
+  charged with its resolution only. An added `## [X.Y.Z]` heading must match the version of
+  record, read through `version.sites`, and move it forward (`release-heading`). A contract
+  surface changed without `(consumer-affecting)` in a record is a `::warning::` by default and
+  fails with `changelog.consumer_affecting = "error"` (`consumer-affecting`). An edited released
+  heading (a new date, a trailing space, a CRLF conversion) is not a cut, versions read ASCII
+  digits only, and a records watch that covers no tracked path prints a `::warning::`. The gate
+  reads release lines and version sites through `railform.version_sites`, so the version-site
+  check's configuration errors (a duplicated prefix, a site path that is empty, absolute, holds
+  `..` or a backslash, a pattern with no group, a site no tag row covers) exit 2 here too.
 - The pilots' folds (development-rails spec, §13). Each of the three pilots, one per project
   type, needed a railform change; each change listed here, under Changed and under Fixed has a
   test that fails without it.
@@ -219,6 +232,10 @@ All notable changes to this project are recorded here, in the
 
 ### Changed
 
+- The `changelog` job of the reusable workflow runs `railform changelog-gate` on pull requests
+  instead of being skipped on every event.
+- The `python-package` preset's `changelog.records` watches `src/` only, so a change that moves
+  only the lock or a workflow, such as a Dependabot pull request, is not charged.
 - The guard lists `session_loaded` and `private_refs.placeholders` are joined to the default
   (default first, each element once) instead of replacing it: a repository lists only what it
   adds, never drops a default element, and its list no longer goes stale when a pin adds one.
