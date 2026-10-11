@@ -54,7 +54,9 @@ def test_railform_sha_is_a_required_string_input(workflow: dict[Any, Any]) -> No
     assert set(inputs) == {'railform-sha'}
     assert inputs['railform-sha']['required'] is True
     assert inputs['railform-sha']['type'] == 'string'
-    assert workflow['env'] == {'RAILFORM_SHA': '${{ inputs.railform-sha }}'}
+    # The resolution date is the other workflow-level constant (tests/test_resolution_date.py).
+    assert set(workflow['env']) == {'RAILFORM_SHA', 'RAILFORM_EXCLUDE_NEWER'}
+    assert workflow['env']['RAILFORM_SHA'] == '${{ inputs.railform-sha }}'
     assert workflow['defaults'] == {'run': {'shell': 'bash'}}
 
 
@@ -128,7 +130,10 @@ def test_release_check_runs_from_the_input_with_the_token_in_its_environment(
 ) -> None:
     runs = [step for step in _steps(workflow) if 'run' in step]
     assert runs[-1]['run'] == f'{INSTALL} release-check'
-    assert runs[-1]['env'] == {'GITHUB_TOKEN': '${{ github.token }}'}
+    assert runs[-1]['env'] == {
+        'GITHUB_TOKEN': '${{ github.token }}',
+        'UV_EXCLUDE_NEWER': '${{ env.RAILFORM_EXCLUDE_NEWER }}',
+    }
     for step in runs:
         assert '${{' not in step['run'], step
 
