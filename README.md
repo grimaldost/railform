@@ -142,7 +142,10 @@ Three verbs judge commit text, with the rules read from the frame (`commit.types
 
 The subject rule: the first line reads `type(scope)!: description`, the scope and the `!` optional
 and the type one of `commit.types`. A commit with more than one parent (a merge) is exempt, since
-git writes its subject; `commit-msg` treats a merge in progress the same way. The title of a pull
+git writes its subject; `commit-msg` treats a merge in progress the same way. `commit-msg` also
+accepts an autosquash subject, `fixup! `, `squash! ` or `amend! ` before a valid subject, so
+`git commit --fixup` and `git rebase --autosquash` work while a branch is in progress;
+`commit-range` refuses such a subject, so it never reaches the base branch. The title of a pull
 request is not held to the subject rule. Git's own `Revert "..."` subject, and GitHub's, fail the
 subject rule; write the revert as `revert: ...`.
 

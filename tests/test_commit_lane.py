@@ -415,6 +415,69 @@ def test_each_half_of_that_range_fails_on_its_own_rule(
     assert run_verb(capsys, 'commit-range', 'base...HEAD')[2] == ('fail', 'subject')
 
 
+# --- autosquash subjects: accepted locally, refused in a range (spec §13, the keel pilot) -------
+
+
+@pytest.mark.parametrize(
+    'subject',
+    [
+        'fixup! feat: add a thing',
+        'squash! fix(frame): repair it',
+        'amend! docs: say more',
+        'fixup! fixup! feat: add a thing',
+    ],
+)
+def test_red_proof_commit_msg_accepts_an_autosquash_subject(
+    subject: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `git commit --fixup`, `--squash` and `--fixup=amend:` write these subjects, and
+    # `git rebase --autosquash` folds them away before the branch is pushed.
+    path = message_file(f'{subject}\n\nA body.\n')
+    assert run_verb(capsys, 'commit-msg', path) == (0, [], ('pass', 'ok'))
+
+
+@pytest.mark.parametrize(
+    'subject',
+    [
+        'fixup! add a thing',
+        'fixup!feat: add a thing',
+        'fixup! ',
+        'Fixup! feat: add a thing',
+        'feat: x fixup! feat: y',
+    ],
+)
+def test_commit_msg_still_judges_what_follows_the_autosquash_prefix(
+    subject: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = message_file(f'{subject}\n')
+    code, _, verdict = run_verb(capsys, 'commit-msg', path)
+    if subject.startswith('feat: '):
+        assert (code, verdict) == (0, ('pass', 'ok'))
+    else:
+        assert (code, verdict) == (1, ('fail', 'subject'))
+
+
+def test_commit_msg_still_checks_an_autosquash_message_for_attribution(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = message_file(f'fixup! feat: add a thing\n\n{ATTRIBUTED_TRAILER}\n')
+    code, _, verdict = run_verb(capsys, 'commit-msg', path)
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+
+
+@pytest.mark.parametrize(
+    'subject', ['fixup! feat: add a thing', 'squash! feat: add a thing', 'amend! feat: add a thing']
+)
+def test_red_proof_commit_range_refuses_an_autosquash_subject(
+    subject: str, history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    commit('feat: add a thing\n')
+    fixup = commit(f'{subject}\n')
+    code, findings, verdict = run_verb(capsys, 'commit-range', 'base...HEAD')
+    assert (code, verdict) == (1, ('fail', 'subject'))
+    assert findings == [f'{fixup[:12]}:1: {commit_lane.SUBJECT_MESSAGE}']
+
+
 def test_a_clean_range_passes(history: Path, capsys: pytest.CaptureFixture[str]) -> None:
     commit('feat: add a thing\n\nA body.\n')
     commit('fix(frame): repair it\n')
