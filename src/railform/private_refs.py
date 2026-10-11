@@ -17,7 +17,8 @@ caught while `(see /home/me)` passes; a trailing full stop is dropped before the
 `src/home/views/` and a URL's `/home/` pass.
 
 A user segment passes when it is in `private_refs.placeholders` (case-insensitive) or is plainly a
-placeholder: it contains one of `<`, `>`, `$`, `%`, `{`, `}` or `*`.
+placeholder: it contains one of `<`, `>`, `$`, `%`, `{`, `}` or `*`, or it is made only of full
+stops and ellipsis characters (`...`, `…`).
 
 The names half reads a private list of terms from the one file that the variable named by
 `private_refs.names_file_env` points to, and nowhere else. It matches whole tokens, case
@@ -53,6 +54,8 @@ NAMES_FILE_MISSING = 'names-file-missing'
 REDACTED = '<name>'
 # A user segment containing one of these is a placeholder, whatever the list says.
 _PLACEHOLDER_MARKS = frozenset('<>$%{}*')
+# A segment made only of these is a placeholder: a full stop and the ellipsis character.
+_DOTS = '.…'
 
 # A segment runs to the next separator, whitespace, quote, backtick, bracket or punctuation mark,
 # or the end of the line: `<>(){}[],;:|` end it, so a prompt `C:\Users\x>`, HTML `/home/x<br>` and
@@ -99,9 +102,13 @@ class Source:
 
 
 def _is_placeholder(name: str, placeholders: frozenset[str]) -> bool:
+    # A segment of full stops and ellipsis characters only (`/home/.../`, `C:\Users\…\`) stands
+    # for a name left out.
+    if not name.strip(_DOTS):
+        return True
     # A full stop at the end is prose (`/Users/me.`), not part of the name.
     name = name.rstrip('.')
-    if not name or any(char in _PLACEHOLDER_MARKS for char in name):
+    if any(char in _PLACEHOLDER_MARKS for char in name):
         return True
     return name.lower() in placeholders
 

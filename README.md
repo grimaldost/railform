@@ -191,7 +191,8 @@ scope, such as a pull request's title or body. Binary files are skipped.
 - **Home paths.** A home-directory path fails (`home-path`) unless its user segment is in
   `private_refs.placeholders` (default: `me`, `x`, `someone`, `alice`, `user`, `runner`, and the
   system folders `public`, `default`, `shared` and `runneradmin`) or plainly a placeholder (it
-  contains `<`, `>`, `$`, `%`, `{`, `}` or `*`). The six shapes are `X:\Users\<name>\`,
+  contains `<`, `>`, `$`, `%`, `{`, `}` or `*`, or is made only of full stops and ellipsis
+  characters, as in `/home/.../` or `C:\Users\…\`). The six shapes are `X:\Users\<name>\`,
   `X:/Users/<name>/`, the JSON-escaped `X:\\Users\\<name>`, the project-slug form
   `X--Users-<name>-`, `/Users/<name>/` and `/home/<name>/`, with any drive letter and without
   regard to case for the Windows ones. A segment ends at a separator, whitespace, a quote or the
