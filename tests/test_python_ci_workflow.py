@@ -197,7 +197,7 @@ def test_every_railform_command_is_installed_from_the_input(workflow: dict[Any, 
             installed = run.count(f'{INSTALL} {verb}')
             assert invoked == installed, (verb, run)
             commands += invoked
-    assert commands == 9
+    assert commands == 10
 
 
 def test_no_run_text_interpolates_an_expression(workflow: dict[Any, Any]) -> None:
