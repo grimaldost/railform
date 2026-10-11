@@ -223,7 +223,10 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
   fails when a needed job failed or was cancelled; it is the one status a branch ruleset requires.
   The `pull_request` trigger also gains `types: [opened, synchronize, reopened, edited]`.
 - In `.pre-commit-config.yaml`, the railform entry at the pin and the hygiene entry
-  (`pre-commit/pre-commit-hooks` v5.0.0, pinned by its commit).
+  (`pre-commit/pre-commit-hooks` v5.0.0, pinned by its commit). Each hygiene hook carries
+  `stages: [pre-commit]`: without it a hook runs at every stage a wrapper is installed for, so
+  `check-merge-conflict --assume-in-merge` would refuse a commit message that quotes a conflict
+  marker, and the whole set would run again at `pre-push`.
 - In `.github/dependabot.yml`, an ignore entry for `grimaldost/railform` in the `github-actions`
   update. Adopt adds that update when there is none.
 - Whole files: the hook wrappers in `hooks.dir`, staged as their exact bytes and tracked as

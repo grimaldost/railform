@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -173,6 +174,42 @@ def test_the_hygiene_entry_is_pre_commit_hooks_v5_at_its_sha(adopted: Fixture) -
     railform = [repo for repo in repos if repo['repo'] == 'https://github.com/grimaldost/railform']
     assert len(railform) == 1
     assert railform[0]['rev'] == PIN
+
+
+def test_red_proof_every_hygiene_hook_runs_at_the_pre_commit_stage_only(adopted: Fixture) -> None:
+    # The development-rails spec, §13 (the keel pilot): a hook with no stages runs at every
+    # stage a wrapper is installed for, so check-merge-conflict --assume-in-merge judged the
+    # commit message at commit-msg, and the whole set ran again at pre-push.
+    repos = yaml.safe_load(read(adopted.root, PRE_COMMIT))['repos']
+    [hygiene] = [repo for repo in repos if repo['repo'].endswith('/pre-commit/pre-commit-hooks')]
+    assert [hook.get('stages') for hook in hygiene['hooks']] == [['pre-commit']] * 7
+
+
+def test_every_hook_adopt_writes_runs_at_a_declared_stage(adopted: Fixture) -> None:
+    # The stage rule of the source hooks-check was ported from, held over the hooks adopt owns:
+    # each declares its stages in the entry adopt writes or in railform's own manifest.
+    manifest_path = Path(__file__).resolve().parents[1] / '.pre-commit-hooks.yaml'
+    manifest = yaml.safe_load(manifest_path.read_text(encoding='utf-8'))
+    declared = {hook['id']: hook['stages'] for hook in manifest}
+    owned = yaml.safe_load(textwrap.dedent(region(read(adopted.root, PRE_COMMIT))))
+    hooks = [hook for repo in owned for hook in repo['hooks']]
+    assert len(hooks) == 11
+    for hook in hooks:
+        assert hook.get('stages') or declared.get(hook['id']), hook
+
+
+def test_red_proof_a_hygiene_hook_without_its_stage_fails_check_with_drift(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = read(adopted.root, PRE_COMMIT)
+    marker = re.compile(r'(\[--assume-in-merge\]\n)[ ]+stages: \[pre-commit\]\n')
+    assert len(marker.findall(text)) == 1, text
+    write(adopted.root, PRE_COMMIT, marker.sub(r'\1', text))
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{PRE_COMMIT}:' in out
+    assert run_adopt(capsys)[0] == 0
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
 
 
 def test_dependabot_ignores_railform_in_the_github_actions_update(adopted: Fixture) -> None:
