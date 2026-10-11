@@ -117,12 +117,12 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform branch-name -- "$HEAD_REF"
 
-  # A placeholder until the changelog gate exists (the development-rails spec, §14): skipped on
-  # every event. §14 drops `false &&` and replaces the last step with the gate; the gate reads
-  # every commit of the pull request, so the checkout already takes the whole history.
+  # The changelog gate (the development-rails spec, §14) judges every commit the pull request
+  # adds, so the checkout takes the whole history. On a push it is skipped, which counts as
+  # passing.
   changelog:
     needs: frame
-    if: false && github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -134,8 +134,10 @@ jobs:
         with:
           version: '0.12.19'
           enable-cache: false
-      - name: The changelog gate is not written yet
-        run: exit 0
+      - name: railform changelog-gate
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform changelog-gate "origin/${BASE_REF}...HEAD"
 
   hooks:
     needs: frame

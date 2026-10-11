@@ -227,6 +227,8 @@ All notable changes to this project are recorded here, in the
 
 ### Changed
 
+- The `changelog` job of the reusable workflow runs `railform changelog-gate` on pull requests
+  instead of being skipped on every event.
 - The `python-package` preset's `changelog.records` watches `src/` only, so a change that moves
   only the lock or a workflow, such as a Dependabot pull request, is not charged.
 - The guard lists `session_loaded` and `private_refs.placeholders` are joined to the default

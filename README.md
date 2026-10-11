@@ -174,7 +174,8 @@ pattern exit 2.
 
 `railform changelog-gate BASE...HEAD` fails a change that the changelog does not record. It
 judges every commit HEAD adds to BASE, merges included, and reads the record diff from their
-merge base to HEAD. Its CI job lands separately.
+merge base to HEAD. In CI the `changelog` job runs it on pull requests as
+`changelog-gate "origin/${BASE_REF}...HEAD"`.
 
 - **Record or declare** (`unrecorded`). Each path a commit changes is charged to the
   `changelog.records` row with the longest matching prefix, and so to that row's file; a path no
@@ -422,7 +423,7 @@ checks that the input is 40 hexadecimal characters before anything is installed.
 | `frame` | `railform frame --check`, then `railform frame --github-output` | every run |
 | `checks` | `railform private-refs`, `railform version-sites`, then the type's pipeline, on every leg of `ci.os` by `python.versions` | every run |
 | `commit-lane` | `railform commit-range`, `railform pr-text`, and `railform branch-name` on the head branch | pull requests |
-| `changelog` | nothing yet: a placeholder, skipped until the changelog gate exists | none |
+| `changelog` | `railform changelog-gate "origin/${BASE_REF}...HEAD"` (see the changelog gate above) | pull requests |
 | `hooks` | `railform hooks-check`, `railform adopt --check`, and the hygiene hooks over the changed files, with pre-commit on the newest of `python.versions`, else `python.newest` (the `hooks_python` output of `frame --github-output`), so a `default_language_version` naming that Python resolves | every run; the hygiene hooks on pull requests |
 | `audit` | zizmor 1.30.0 at high severity over the caller's workflows | every run |
 
@@ -445,7 +446,7 @@ checks that the input is 40 hexadecimal characters before anything is installed.
   limit (`timeout-minutes`, 45 for `checks` and 10 to 20 for the others), and only `checks`, which
   syncs the caller's lock, keeps setup-uv's cache. It runs from the
   caller's `pull_request` and `push` events, never `pull_request_target`. The jobs that read
-  history (`commit-lane`, `hooks`, and `changelog` once it runs) check out all of it. No `run:`
+  history (`commit-lane`, `changelog` and `hooks`) check out all of it. No `run:`
   text holds an expression: values such as the head branch's name reach the scripts through
   `env:`.
 - **What passes.** A job counts as passing when it succeeded or was skipped by its own condition

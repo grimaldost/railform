@@ -18,7 +18,10 @@ The red proofs of §9 that run here, each named in its test:
 - §7's acceptance: a failing extra job of the caller turns `gate` red
   (`test_red_proof_a_failing_extra_job_turns_gate_red`);
 - the round-6 amendment's pull request from a branch named `foo` turns `gate` red
-  (`test_red_proof_a_pull_request_from_foo_turns_gate_red`).
+  (`test_red_proof_a_pull_request_from_foo_turns_gate_red`);
+- §14 through its caller: a pull request whose branch commits an unrecorded change under `src/`
+  turns `gate` red, and a push run of the same fixture skips `changelog` and stays green
+  (`test_red_proof_an_unrecorded_change_turns_gate_red_on_a_pull_request`).
 
 The audit job runs zizmor, which needs the network, so it is given as passed; a test that is not
 about a job may give it too, and says so. The live proofs are the red-proof branches of the pull
@@ -248,6 +251,39 @@ def test_red_proof_a_pull_request_from_foo_turns_gate_red(
     verdict = 'pass ok' if result == 'success' else 'fail branch'
     assert f'railform-verdict: branch-name {verdict}' in run.text()
     assert results['gate'] == result, run.text()
+
+
+def test_red_proof_an_unrecorded_change_turns_gate_red_on_a_pull_request(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The development-rails spec, §14, through its caller: the `changelog` job runs
+    # `railform changelog-gate "origin/${BASE_REF}...HEAD"` on pull requests only.
+    root = _adopted(scratch_repo, 'python-package', capsys)
+    _pull_request(root)
+    module = root / 'src' / 'demo' / '__init__.py'
+    module.write_text(module.read_text(encoding='utf-8') + '\nLOUD = True\n', encoding='utf-8')
+    git(root, *IDENT, 'add', '-A')
+    git(root, *IDENT, 'commit', '-q', '-m', 'feat: a loud flag')
+    payload = {'pull_request': {'title': 'feat: a loud flag', 'body': 'A flag.'}}
+    given = {**AUDIT, 'checks': 'success', 'hooks': 'success'}
+    run = _run(root, tmp_path, 'pull_request', given, payload, head_ref='feat/loud-flag')
+    results = run.results()
+    assert results['railform/changelog'] == 'failure', run.text()
+    assert 'railform-verdict: changelog-gate fail unrecorded' in run.text()
+    assert results['railform/commit-lane'] == 'success', run.text()
+    assert results['gate'] == 'failure', run.text()
+    # A push run skips the job, and gate stays green.
+    run = _run(root, tmp_path, 'push', {**AUDIT, 'checks': 'success', 'hooks': 'success'})
+    assert run.results()['railform/changelog'] == 'skipped', run.text()
+    assert run.results()['gate'] == 'success', run.text()
+    # Recorded, the same pull request passes.
+    (root / 'CHANGELOG.md').write_text('# Changelog\n\n- A loud flag.\n', encoding='utf-8')
+    git(root, *IDENT, 'add', '-A')
+    git(root, *IDENT, 'commit', '-q', '-m', 'docs: record the loud flag')
+    run = _run(root, tmp_path, 'pull_request', given, payload, head_ref='feat/loud-flag')
+    assert run.results()['railform/changelog'] == 'success', run.text()
+    assert 'railform-verdict: changelog-gate pass ok' in run.text()
+    assert run.results()['gate'] == 'success', run.text()
 
 
 def test_a_branch_name_that_looks_like_a_command_is_only_a_name(
