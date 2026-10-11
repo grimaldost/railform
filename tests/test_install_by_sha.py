@@ -3,11 +3,11 @@
 Every install in a tracked text file names `git+https://github.com/grimaldost/railform@<sha>`.
 No file writes a bare `railform` requirement or an `uvx` call without `--from git+...@<sha>`.
 
-The reusable workflow is the one file that names the commit by a variable (with the local model
-of its runs, which replaces that install line with the code under test): it installs railform
-at `$RAILFORM_SHA`, the required input `railform-sha` passed through `env:`, which its `frame`
-job checks to be 40 hexadecimal characters before anything is installed (development-rails spec,
-§9 and its round-6 amendment).
+The reusable workflows are the files that name the commit by a variable (with the local model
+of their runs, which replaces that install line with the code under test): they install railform
+at `$RAILFORM_SHA`, the required input `railform-sha` passed through `env:`, which a step checks
+to be 40 hexadecimal characters before anything is installed (development-rails spec, §9 and its
+round-6 amendment; §16 for the tag watch).
 """
 
 import re
@@ -36,9 +36,10 @@ PINNED_URL = re.compile(re.escape(GIT_URL) + r'@(?:[0-9a-f]{40}|<[^>]+>)(?![0-9A
 # The reusable workflow's install, at the commit its caller passes as `railform-sha`.
 VARIABLE_URL = re.compile(re.escape(GIT_URL) + r'@\$RAILFORM_SHA(?![0-9A-Za-z_])')
 REUSABLE_WORKFLOW = '.github/workflows/python-ci.yml'
-# The files that may name it: the workflow, and the local model of a run, which replaces that
-# exact install line with the code under test.
-VARIABLE_PIN_FILES = (REUSABLE_WORKFLOW, 'tests/workflow_model.py')
+TAG_WATCH_WORKFLOW = '.github/workflows/tag-watch.yml'
+# The files that may name it: the two reusable workflows, and the local model of a run, which
+# replaces that exact install line with the code under test.
+VARIABLE_PIN_FILES = (REUSABLE_WORKFLOW, TAG_WATCH_WORKFLOW, 'tests/workflow_model.py')
 
 
 def _tracked_text_files() -> list[Path]:
@@ -134,7 +135,8 @@ def test_the_variable_pin_is_accepted_only_where_it_is_allowed() -> None:
         assert violations_in(changed, variable_pin=True) != [], other
 
 
-def test_the_reusable_workflow_installs_railform_at_the_variable_pin() -> None:
-    text = (ROOT / REUSABLE_WORKFLOW).read_text(encoding='utf-8')
+@pytest.mark.parametrize('workflow', [REUSABLE_WORKFLOW, TAG_WATCH_WORKFLOW])
+def test_the_reusable_workflow_installs_railform_at_the_variable_pin(workflow: str) -> None:
+    text = (ROOT / workflow).read_text(encoding='utf-8')
     assert VARIABLE_URL.search(text)
     assert violations_in(text, variable_pin=True) == []

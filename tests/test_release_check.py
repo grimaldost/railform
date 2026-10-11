@@ -10,7 +10,8 @@ The red proofs of §16's acceptance criterion, each named in its test:
   (`test_red_proof_a_per_plugin_tag_is_judged_against_its_own_record`);
 - a release commit touching `src/` fails (`test_red_proof_a_release_commit_touching_src_fails`);
 - across two runs in a fixture, a tag re-pointed between them fails the second
-  (`test_red_proof_a_tag_repointed_between_two_runs_fails_the_second`).
+  (`test_red_proof_a_tag_repointed_between_two_runs_fails_the_second`, and through the caller
+  that adopt writes, `test_red_proof_the_tag_watch_caller_fails_the_run_after_a_tag_moves`).
 
 Every repository is a scratch repository built here, with git isolated by `tests/conftest.py`;
 the pull requests come from `$RAILFORM_PULLS_FILE`, and the one test of the real client points
@@ -26,14 +27,17 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from migration_fixtures import PIN, build
 from railform import release_check
 from railform.cli import main
+from workflow_model import Runner, bash, github_context
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 IDENT = ('-c', 'user.name=someone', '-c', 'user.email=someone@example.com')
 UNREACHABLE = 'http://127.0.0.1:9'
+CALLER = '.github/workflows/railform-tag-watch.yml'
 CHANGELOG = '# Changelog\n\n## [Unreleased]\n\n## [0.1.0]\n\n- **The start.**\n'
 RELEASED = '# Changelog\n\n## [Unreleased]\n\n## [0.2.0]\n\n- **A change.**\n\n## [0.1.0]\n'
 
@@ -293,6 +297,41 @@ def test_red_proof_a_tag_repointed_between_two_runs_fails_the_second(
     assert check(capsys)[:2] == (0, 'pass ok')
     git(scratch_repo, 'tag', '-f', '-a', 'v0.2.0', f'{repo.merge}^1', '-m', '0.2.0')
     assert check(capsys)[:2] == (1, 'fail tag-placement')
+
+
+@pytest.mark.skipif(bash() is None, reason='no bash on this machine')
+def test_red_proof_the_tag_watch_caller_fails_the_run_after_a_tag_moves(
+    scratch_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The caller adopt writes, run twice as a `schedule` event in the offline model of a run.
+    root = scratch_repo
+    git(root, 'symbolic-ref', 'HEAD', 'refs/heads/main')
+    build(root, 'python-package')
+    assert main(['adopt', '--pin', PIN]) == 0
+    capsys.readouterr()
+    commit(root, 'chore: adopt railform', {})
+    git(root, 'checkout', '-q', '-b', 'release/0.2.0')
+    commit(root, 'release: 0.2.0', {'CHANGELOG.md': RELEASED, 'uv.lock': 'version = 1\n'})
+    merged = merge(root, 'release/0.2.0', 1)
+    pulls_file(tmp_path, monkeypatch, [pull(1, 'release: 0.2.0', 'release/0.2.0', merged)])
+    tag(root, 'v0.2.0', merged)
+    scratch = tmp_path / 'runs'
+    scratch.mkdir()
+
+    def run() -> tuple[str, str]:
+        done = Runner(root, scratch, github_context('schedule')).run(root / CALLER)
+        return done.conclusion, done.text()
+
+    conclusion, text = run()
+    assert conclusion == 'success', text
+    assert 'railform-verdict: release-check pass ok' in text
+    git(root, 'tag', '-f', '-a', 'v0.2.0', f'{merged}^1', '-m', '0.2.0')
+    conclusion, text = run()
+    assert conclusion == 'failure', text
+    assert 'railform-verdict: release-check fail tag-placement' in text
 
 
 # --- which tags are judged ---------------------------------------------------------------------
