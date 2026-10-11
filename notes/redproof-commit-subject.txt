@@ -1,0 +1,1 @@
+A change committed under a subject that is not a Conventional Commit.
