@@ -22,7 +22,8 @@ the record diff is taken from the merge base of BASE and HEAD to HEAD. Three rul
   which over-charges; any other outcome of `merge-tree` is a configuration error naming the git
   that ran, never a silent fallback. A root commit contributes its paths (`diff-tree --root`).
 - **A release heading moves the version forward** (`release-heading`). When a record file's diff
-  adds a `## [X.Y.Z]` heading, the version of record is read at HEAD and at the merge base from
+  adds a `## [X.Y.Z]` heading whose version no heading it removes carries (an edited heading is
+  not a cut), the version of record is read at HEAD and at the merge base from
   the first non-authored `version.sites` row of that record's release line (the
   `release.tag_prefix` row with the longest prefix of the record file). The heading must equal
   the version at HEAD and be greater than the version at the merge base; a side with no readable
@@ -32,6 +33,10 @@ the record diff is taken from the merge base of BASE and HEAD to HEAD. Three rul
   rule fires once per surface. With `changelog.consumer_affecting = "advisory"` (the default) a
   firing is a `::warning::` finding with the fixed text `consumer-affecting (advisory)` and the
   verdict stays a pass; with `"error"` it fails.
+
+When no tracked path at HEAD other than the record files falls under any `changelog.records` row,
+the gate prints `::warning::changelog.records: watches no tracked path` and keeps its verdict: a
+watch that covers nothing would otherwise pass every run in silence.
 
 What the port changes from its source: the record files and their prefixes come from
 `changelog.records` instead of one `CHANGELOG.md` over `src/`; the version comes from
@@ -68,13 +73,16 @@ CODE_ORDER = (UNRECORDED, RELEASE_HEADING, CONSUMER_AFFECTING)
 
 MARKER = '(consumer-affecting)'
 ADVISORY = 'consumer-affecting (advisory)'
+# A records watch that covers no tracked path passes every run in silence, so it is announced.
+WATCHES_NOTHING = 'watches no tracked path'
 REASON_FIELD = '<reason>'
 LISTED_PATHS = 5
 
 Version = tuple[int, int, int]
 
-_ADDED_HEADING = re.compile(r'^## \[(\d+)\.(\d+)\.(\d+)\]', re.MULTILINE)
-_VERSION = re.compile(r'(\d+)\.(\d+)\.(\d+)')
+# ASCII digits only: `\d` would also read other scripts' digits, which no version carries.
+_ADDED_HEADING = re.compile(r'^## \[([0-9]+)\.([0-9]+)\.([0-9]+)\]', re.MULTILINE)
+_VERSION = re.compile(r'([0-9]+)\.([0-9]+)\.([0-9]+)')
 # What `git merge-tree --write-tree` prints on its first line when it wrote a tree: a SHA-1 or a
 # SHA-256 object id.
 _OBJECT_ID = re.compile(r'[0-9a-f]{40}(?:[0-9a-f]{24})?')
@@ -245,13 +253,23 @@ def diff_side(diff: str, sign: str) -> str:
     return '\n'.join(kept)
 
 
-def cut_version(added: str) -> Version | None:
-    """The version of the first `## [X.Y.Z]` heading among the added lines, or None."""
-    found = _ADDED_HEADING.search(added)
-    if found is None:
-        return None
-    major, minor, patch = (int(part) for part in found.groups())
-    return (major, minor, patch)
+def _headings(side: str) -> list[Version]:
+    found: list[Version] = []
+    for match in _ADDED_HEADING.finditer(side):
+        major, minor, patch = (int(part) for part in match.groups())
+        found.append((major, minor, patch))
+    return found
+
+
+def cut_version(added: str, removed: str = '') -> Version | None:
+    """The version of the first `## [X.Y.Z]` heading among the added lines that no removed
+    heading carries, or None.
+
+    An edited heading is not a cut: a new date on a released heading, a trailing space on it or a
+    CRLF conversion of the file removes the heading and adds it back with the same version.
+    """
+    gone = set(_headings(removed))
+    return next((version for version in _headings(added) if version not in gone), None)
 
 
 def site_version(text: str | None, site: Site) -> Version | None:
@@ -485,6 +503,15 @@ class _Git:
             'diff', '--no-ext-diff', '--no-textconv', '--no-color', base, head, '--', file
         )
 
+    def watches_something(self, head: str, settings: Settings) -> bool:
+        """Whether a tracked path at `head`, other than the record files, falls under a row."""
+        files = set(settings.files)
+        prefixes = [prefix for prefix, _ in settings.records]
+        return any(
+            path not in files and owner(path, prefixes) is not None
+            for path in self.names('ls-tree', '-r', '--name-only', '-z', head)
+        )
+
     def changed(self, base: str, head: str) -> list[str]:
         return self.names('diff', '--no-renames', '--name-only', '-z', base, head)
 
@@ -532,8 +559,11 @@ def _judge(git: _Git, spec: str, settings: Settings) -> Verdict:
     notes: list[str] = []
     found[UNRECORDED] = unrecorded(commits, recorded, settings)
 
-    for file, (added, _) in sides.items():
-        cut = cut_version(added)
+    if not git.watches_something(head, settings):
+        notes.append(f'::warning::changelog.records: {WATCHES_NOTHING}')
+
+    for file, (added, removed) in sides.items():
+        cut = cut_version(added, removed)
         if cut is None:
             continue
         site = site_of_record(file, settings)

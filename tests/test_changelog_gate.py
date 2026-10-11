@@ -123,15 +123,45 @@ def _wide(top: str = 'top', bottom: str = 'bottom') -> str:
     return '\n'.join(lines) + '\n'
 
 
-def _gate(
-    capsys: pytest.CaptureFixture[str], spec: str = 'base...HEAD'
-) -> tuple[int, str, list[str]]:
+class Findings(list):  # type: ignore[type-arg]
+    """The finding lines of a run; shown in an assertion message with the run's stderr."""
+
+    def __init__(self, lines: list[str], stderr: str) -> None:
+        super().__init__(lines)
+        self.stderr = stderr
+
+    def __repr__(self) -> str:
+        return f'{list.__repr__(self)} (stderr: {self.stderr!r})'
+
+
+class Outcome(tuple):  # type: ignore[type-arg]
+    """`(exit code, verdict, findings)`; its repr, and a slice's, carry the run's stderr, so a
+    run that ends in `usage` says why (a git older than 2.38, an unreadable revision)."""
+
+    stderr: str
+
+    def __new__(cls, items: tuple[object, ...], stderr: str) -> Outcome:
+        made = super().__new__(cls, items)
+        made.stderr = stderr
+        return made
+
+    def __getitem__(self, index):  # type: ignore[no-untyped-def]
+        got = super().__getitem__(index)
+        return Outcome(got, self.stderr) if isinstance(index, slice) else got
+
+    def __repr__(self) -> str:
+        return f'{tuple.__repr__(self)} (stderr: {self.stderr!r})'
+
+
+def _gate(capsys: pytest.CaptureFixture[str], spec: str = 'base...HEAD') -> Outcome:
     """Run the verb: its exit code, its verdict (`pass ok`, `fail <code>`) and its findings."""
     code = main(['changelog-gate', spec])
-    lines = capsys.readouterr().out.splitlines()
+    captured = capsys.readouterr()
+    lines = captured.out.splitlines()
     found = VERDICT.fullmatch(lines[-1])
-    assert found is not None, lines
-    return code, f'{found["status"]} {found["code"]}', lines[:-1]
+    assert found is not None, (lines, captured.err)
+    verdict = f'{found["status"]} {found["code"]}'
+    return Outcome((code, verdict, Findings(lines[:-1], captured.err)), captured.err)
 
 
 @pytest.fixture
@@ -720,6 +750,148 @@ class TestReleaseHeading:
         assert any(line.startswith('docs/CHANGELOG.md: ') for line in findings), findings
 
 
+RELEASED = BASE_CHANGELOG.replace(
+    '## [Unreleased]\n', '## [Unreleased]\n\n## [0.2.0] - 2026-10-01\n\n- released\n'
+)
+
+
+class TestAnEditedHeadingIsNotACut:
+    """Wave C contract, 11.1: the cut is the first added heading whose version no removed heading
+    of the same record diff carries."""
+
+    @pytest.fixture
+    def released(self, package: Path) -> Path:
+        _commit(package, 'release: 0.2.0', {'CHANGELOG.md': RELEASED})
+        _git(package, 'branch', '-f', 'base', 'main')
+        return package
+
+    @pytest.mark.parametrize(
+        'edit',
+        [
+            RELEASED.replace('2026-10-01', '2026-10-02').encode('utf-8'),
+            RELEASED.replace('## [0.2.0] - 2026-10-01', '## [0.2.0] - 2026-10-01 ').encode('utf-8'),
+            RELEASED.replace('\n', '\r\n').encode('utf-8'),
+        ],
+        ids=['new-date', 'trailing-space', 'crlf'],
+    )
+    def test_red_proof_an_edited_released_heading_is_not_judged(
+        self, released: Path, edit: bytes, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Before 11.1 each failed `release-heading` (0.2.0 does not move forward from 0.2.0),
+        # and no trailer could clear it.
+        _commit(released, 'docs: fix the release date', {'CHANGELOG.md': edit})
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (0, 'pass ok'), findings
+        assert not any('## [0.2.0]' in line for line in findings), findings
+
+    def test_a_new_heading_beside_an_edited_one_is_still_judged(
+        self, released: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        edit = RELEASED.replace('2026-10-01', '2026-10-02').replace(
+            '## [Unreleased]\n', '## [Unreleased]\n\n## [0.3.0] - 2026-10-11\n\n- next\n'
+        )
+        _commit(released, 'release: 0.3.0', {'CHANGELOG.md': edit})
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (1, 'fail release-heading'), findings
+        assert any('0.3.0' in line and '0.2.0' in line for line in findings), findings
+
+    def test_the_cut_skips_headings_the_diff_also_removes(self) -> None:
+        assert changelog_gate.cut_version('## [0.2.0] - b\n', '## [0.2.0] - a\n') is None
+        assert changelog_gate.cut_version('## [0.2.0] - b\n## [0.3.0]\n', '## [0.2.0]\n') == (
+            0,
+            3,
+            0,
+        )
+        assert changelog_gate.cut_version('## [0.3.0]\n') == (0, 3, 0)
+
+
+# 1.2.3 in Arabic-Indic digits, built at run time.
+OTHER_DIGITS = '.'.join(chr(0x0660 + n) for n in (1, 2, 3))
+
+
+class TestAsciiDigits:
+    """Wave C contract, 11.3: versions and release headings read ASCII digits only."""
+
+    def test_a_heading_in_other_digits_is_no_cut(self) -> None:
+        arabic_indic = OTHER_DIGITS
+        assert changelog_gate.cut_version(f'## [{arabic_indic}]\n') is None
+        assert changelog_gate.cut_version('## [1.2.3]\n') == (1, 2, 3)
+
+    def test_a_site_in_other_digits_reads_no_version(self) -> None:
+        site = changelog_gate.Site('v.txt', re.compile(r'v=(\S+)'), authored=False)
+        assert changelog_gate.site_version(f'v={OTHER_DIGITS}', site) is None
+        assert changelog_gate.site_version('v=1.2.3', site) == (1, 2, 3)
+
+
+# --- a watch that covers nothing ---------------------------------------------------------------
+
+
+class TestAWatchThatCoversNothing:
+    """Wave C contract, 11.2."""
+
+    WARNING = '::warning::changelog.records: watches no tracked path'
+
+    def test_red_proof_a_flat_python_package_is_told_its_watch_is_empty(
+        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A flat-layout package inherits the preset's `src/` and would watch nothing in silence.
+        repo = _start(scratch_repo, records='')
+        _git(repo, 'rm', '-rq', 'src')
+        _commit(repo, 'refactor: flat layout', {'pkg/a.py': 'x = 1\n'})
+        _git(repo, 'branch', '-f', 'base', 'main')
+        _commit(repo, 'fix: change a', {'pkg/a.py': 'x = 2\n'})
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (0, 'pass ok'), findings
+        assert self.WARNING in findings, findings
+
+    def test_the_warning_keeps_a_failing_verdict(
+        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _start(scratch_repo, records='')
+        _git(repo, 'rm', '-rq', 'src')
+        _commit(repo, 'refactor: flat layout', {'pkg/api.py': 'x = 1\n'})
+        _git(repo, 'branch', '-f', 'base', 'main')
+        _frame(
+            repo,
+            '[changelog]\nconsumer_affecting = "error"\ncontract_surfaces = ["pkg/api.py"]\n',
+        )
+        _commit(repo, 'feat: api', {'pkg/api.py': 'x = 2\n'})
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (1, 'fail consumer-affecting'), findings
+        assert self.WARNING in findings, findings
+
+    def test_a_watch_that_covers_a_path_says_nothing(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _commit(repo, 'docs: tidy', {'docs/x.md': 'docs, tidied\n'})
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (0, 'pass ok'), findings
+        assert self.WARNING not in findings, findings
+
+
+# --- an older git says why ---------------------------------------------------------------------
+
+
+def test_a_run_that_needs_a_newer_git_names_it_in_the_assertion_message(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A git older than 2.38 cannot charge a merge; the run ends in `usage`, and the helper keeps
+    # stderr in what an assertion shows, so a red run on such a machine says why.
+    real = changelog_gate.auto_merge_tree
+    old = _merge_tree(128, stderr='fatal: unknown rev --write-tree\n')
+    monkeypatch.setattr(
+        changelog_gate, 'auto_merge_tree', lambda written, version: real(old, 'git version 2.30.0')
+    )
+    _git(repo, 'checkout', '-q', '-b', 'side')
+    _commit(repo, 'docs: side', {'docs/x.md': 'side\n'})
+    _git(repo, 'checkout', '-q', 'main')
+    _git(repo, 'merge', '-q', '--no-ff', '-m', 'Merge branch side', 'side')
+    outcome = _gate(capsys)
+    assert outcome[:2] == (2, 'fail usage')
+    assert '2.38' in repr(outcome[:2])
+    assert '2.38' in repr(outcome[2])
+
+
 # --- craft-collection's shape ------------------------------------------------------------------
 
 CRAFT = """\
@@ -830,7 +1002,7 @@ class TestCraftCollectionShape:
         assert (code, verdict) == (1, 'fail release-heading'), findings
         lines = [line for line in findings if line.startswith('plugins/a/CHANGELOG.md: ')]
         assert len(lines) == 1 and '0.1.0' in lines[0], findings
-        # Plugin a's manifest moves with it; plugin b's, still at 0.1.0, is not its version.
+        # With plugin a's manifest moved to 0.2.0 as well, plugin a's heading passes.
         _commit(
             craft,
             'release(a): manifest',
@@ -838,6 +1010,28 @@ class TestCraftCollectionShape:
         )
         code, verdict, findings = _gate(capsys)
         assert (code, verdict) == (0, 'pass ok'), findings
+
+    def test_red_proof_a_heading_reads_its_own_lines_site_not_the_first_site(
+        self, craft: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The mirror case: plugin a's manifest, the first site overall, moves to 0.2.0, while the
+        # heading is added to plugin b, whose own manifest still reads 0.1.0. Reading the first
+        # site overall would pass this.
+        b_cut = _plugin_log('0.1.0').replace('## [Unreleased]\n', '## [Unreleased]\n\n## [0.2.0]\n')
+        _commit(
+            craft,
+            'release: 0.2.0',
+            {
+                'plugins/a/.claude-plugin/plugin.json': _manifest('0.2.0'),
+                'plugins/a/CHANGELOG.md': _plugin_log('0.1.0') + '- a moves\n',
+                'plugins/b/CHANGELOG.md': b_cut,
+            },
+        )
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (1, 'fail release-heading'), findings
+        lines = [line for line in findings if line.startswith('plugins/b/CHANGELOG.md: ')]
+        assert len(lines) == 1 and '0.1.0' in lines[0], findings
+        assert not any(line.startswith('plugins/a/CHANGELOG.md: ') for line in findings)
 
 
 # --- contract surfaces -------------------------------------------------------------------------

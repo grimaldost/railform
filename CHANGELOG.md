@@ -26,7 +26,9 @@ All notable changes to this project are recorded here, in the
   charged with its resolution only. An added `## [X.Y.Z]` heading must match the version of
   record, read through `version.sites`, and move it forward (`release-heading`). A contract
   surface changed without `(consumer-affecting)` in a record is a `::warning::` by default and
-  fails with `changelog.consumer_affecting = "error"` (`consumer-affecting`).
+  fails with `changelog.consumer_affecting = "error"` (`consumer-affecting`). An edited released
+  heading (a new date, a trailing space, a CRLF conversion) is not a cut, versions read ASCII
+  digits only, and a records watch that covers no tracked path prints a `::warning::`.
 - The pilots' folds (development-rails spec, §13). Each of the three pilots, one per project
   type, needed a railform change; each change listed here, under Changed and under Fixed has a
   test that fails without it.
