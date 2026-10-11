@@ -519,45 +519,195 @@ def test_adopt_without_pin_keeps_the_workflow_pin_and_realigns_the_others(
     assert f'rev: {PIN}' in read(adopted.root, PRE_COMMIT)
 
 
-def test_tag_watch_caller_is_a_whole_file_judged_once_the_template_ships(
-    scratch_repo: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+# --- the tag-watch caller (§16) ----------------------------------------------------------------
+
+TAG_WATCH = adopt_module.TAG_WATCH_PATH
+TAG_WATCH_TEMPLATE = (
+    (Path(adopt_module.__file__).parent / 'templates' / adopt_module.TAG_WATCH_NAME)
+    .read_text(encoding='utf-8')
+    .replace('\r\n', '\n')
+)
+
+
+def tag_watch_caller(pin: str) -> str:
+    """The caller adopt writes at `pin`, rendered here from the shipped template's text."""
+    return TAG_WATCH_TEMPLATE.replace(
+        '__USES__', f'grimaldost/railform/.github/workflows/tag-watch.yml@{pin}'
+    ).replace('__RAILFORM_SHA__', pin)
+
+
+def test_adopt_writes_the_tag_watch_caller_at_the_pin(adopted: Fixture) -> None:
+    text = read(adopted.root, TAG_WATCH)
+    assert text == tag_watch_caller(PIN)
+    # The repository once, and the pin once per pin site (the uses: commit and the input).
+    assert (text.count('grimaldost/railform'), text.count(PIN)) == (1, 2)
+    caller = yaml.safe_load(text)
+    assert caller[True] == {
+        'push': {'tags': ['**']},
+        'schedule': [{'cron': '23 7 * * *'}],
+        'workflow_dispatch': None,
+    }
+    assert caller['permissions'] == {'contents': 'read'}
+    assert caller['jobs'] == {
+        'release-check': {
+            'uses': f'grimaldost/railform/.github/workflows/tag-watch.yml@{PIN}',
+            'permissions': {'contents': 'read', 'pull-requests': 'read'},
+            'with': {'railform-sha': PIN},
+        }
+    }
+
+
+def test_pin_moves_both_pin_sites_of_the_tag_watch_caller(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    template = (
-        'name: railform tag watch\non:\n  push:\n    tags: ["v*"]\npermissions:\n  contents: read\n'
-        'jobs:\n  tag-watch:\n'
-        '    uses: grimaldost/railform/.github/workflows/tag-watch.yml@__PIN__\n'
-    )
-    shipped = adopt_module._template_text
-
-    def with_tag_watch(name: str) -> str | None:
-        return template if name == adopt_module.TAG_WATCH_NAME else shipped(name)
-
-    build(scratch_repo, 'python-package')
-    path = adopt_module.TAG_WATCH_PATH
-    assert run_adopt(capsys, '--pin', PIN)[0] == 0
-    # This package carries no template yet: nothing is written, and nothing is judged.
-    assert not (scratch_repo / path).exists()
-    write(scratch_repo, path, 'name: the repository own file\n')
-    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
-    (scratch_repo / path).unlink()
-    monkeypatch.setattr(adopt_module, '_template_text', with_tag_watch)
-    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} fail drift'
-    assert run_adopt(capsys)[0] == 0
-    assert read(scratch_repo, path) == template.replace('__PIN__', PIN)
     assert run_adopt(capsys, '--pin', OTHER_PIN)[0] == 0
-    assert read(scratch_repo, path) == template.replace('__PIN__', OTHER_PIN)
+    assert read(adopted.root, TAG_WATCH) == tag_watch_caller(OTHER_PIN)
     assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
-    # The whole file is owned: an edit elsewhere is drift, and adopt never writes it over.
-    edited = read(scratch_repo, path).replace('tags: ["v*"]', 'tags: ["release-*"]')
-    write(scratch_repo, path, edited)
-    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} fail drift'
+
+
+def test_red_proof_an_edited_tag_watch_caller_is_drift_and_adopt_moves_only_its_pins(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    edited = read(adopted.root, TAG_WATCH).replace("tags: ['**']", "tags: ['v*']")
+    write(adopted.root, TAG_WATCH, edited)
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{TAG_WATCH}:' in out
+    assert 'delete the file and run railform adopt' in out
+    # An existing caller is never written over: only its two pin sites move.
     assert run_adopt(capsys)[0] == 0
-    assert read(scratch_repo, path) == edited
-    # Only its pin differing is pin-mismatch.
-    write(scratch_repo, path, template.replace('__PIN__', PIN))
+    assert read(adopted.root, TAG_WATCH) == edited
+    assert run_adopt(capsys, '--pin', OTHER_PIN)[0] == 0
+    assert read(adopted.root, TAG_WATCH) == edited.replace(PIN, OTHER_PIN)
+
+
+@pytest.mark.parametrize('site', ['uses', 'input'])
+def test_red_proof_a_tag_watch_pin_that_differs_is_pin_mismatch(
+    site: str, adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = read(adopted.root, TAG_WATCH)
+    old = f'tag-watch.yml@{PIN}' if site == 'uses' else f'railform-sha: {PIN}'
+    write(adopted.root, TAG_WATCH, text.replace(old, old.replace(PIN, OTHER_PIN)))
     code, line, out = run_adopt(capsys, '--check')
     assert (code, line) == (1, f'{VERDICT} fail pin-mismatch')
-    assert path in out
+    assert f'{TAG_WATCH}: the ' in out
+    # adopt realigns it with the workflow pin.
+    assert run_adopt(capsys)[0] == 0
+    assert read(adopted.root, TAG_WATCH) == tag_watch_caller(PIN)
+
+
+def test_re_pinning_a_crlf_tag_watch_caller_changes_only_its_two_shas(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    crlf = read(adopted.root, TAG_WATCH).replace('\n', '\r\n').encode('utf-8')
+    (adopted.root / TAG_WATCH).write_bytes(crlf)
+    assert run_adopt(capsys, '--pin', OTHER_PIN)[0] == 0
+    moved = (adopted.root / TAG_WATCH).read_bytes()
+    assert moved == crlf.replace(PIN.encode(), OTHER_PIN.encode())
+    assert moved.count(OTHER_PIN.encode()) == 2
+
+
+LOCAL_TAG_WATCH_CALLER = TAG_WATCH_TEMPLATE.replace(
+    '__USES__', './.github/workflows/tag-watch.yml'
+).replace('__RAILFORM_SHA__', '${{ github.sha }}')
+SELF_HOSTED_ROWS = (
+    '\n[ci]\nself_hosted = true\n\n[[exceptions]]\nkey = "ci.self_hosted"\nvalue = true\n'
+    'reason = "the repository calls the reusable workflow by local path"\n'
+)
+
+
+def _to_self_hosted(root: Path) -> None:
+    """Switch a pinned repository to self-hosting: the frame row and the local call."""
+    write(root, 'railform.toml', read(root, 'railform.toml') + SELF_HOSTED_ROWS)
+    ci = read(root, CI)
+    remote = f'uses: grimaldost/railform/.github/workflows/python-ci.yml@{PIN}'
+    assert remote in ci
+    write(root, CI, ci.replace(remote, 'uses: ./.github/workflows/python-ci.yml'))
+
+
+def _to_pinned(root: Path) -> None:
+    write(root, 'railform.toml', read(root, 'railform.toml').replace(SELF_HOSTED_ROWS, ''))
+
+
+def test_the_caller_follows_a_switch_from_pinned_to_self_hosted_and_back(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Contract (Wave C) 11.9: adopt writes both pin sites with the current mode's values.
+    build(scratch_repo, 'python-package')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    _to_self_hosted(scratch_repo)
+    assert run_adopt(capsys)[0] == 0
+    assert read(scratch_repo, TAG_WATCH) == LOCAL_TAG_WATCH_CALLER
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (0, f'{VERDICT} pass ok'), out
+    _to_pinned(scratch_repo)
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    assert read(scratch_repo, TAG_WATCH) == tag_watch_caller(PIN)
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (0, f'{VERDICT} pass ok'), out
+
+
+def test_an_edited_caller_keeps_its_edit_across_both_switches(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    edit = ("'23 7 * * *'", "'0 0 * * *'")
+    write(scratch_repo, TAG_WATCH, read(scratch_repo, TAG_WATCH).replace(*edit))
+    _to_self_hosted(scratch_repo)
+    assert run_adopt(capsys)[0] == 0
+    assert read(scratch_repo, TAG_WATCH) == LOCAL_TAG_WATCH_CALLER.replace(*edit)
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{TAG_WATCH}:' in out
+    _to_pinned(scratch_repo)
+    assert run_adopt(capsys, '--pin', OTHER_PIN)[0] == 0
+    assert read(scratch_repo, TAG_WATCH) == tag_watch_caller(OTHER_PIN).replace(*edit)
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{TAG_WATCH}:' in out
+
+
+def test_a_missing_tag_watch_caller_is_drift_until_adopt_writes_it(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (adopted.root / TAG_WATCH).unlink()
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{TAG_WATCH}: missing' in out
+    assert run_adopt(capsys)[0] == 0
+    assert read(adopted.root, TAG_WATCH) == tag_watch_caller(PIN)
+
+
+def test_adopt_writes_the_caller_even_when_the_release_check_is_off(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    write(
+        scratch_repo,
+        'railform.toml',
+        '[project]\ntype = "python-package"\n\n[release]\nenabled = false\n\n'
+        '[[exceptions]]\nkey = "release.enabled"\nvalue = false\n'
+        'reason = "this repository does not tag releases"\n',
+    )
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    assert read(scratch_repo, TAG_WATCH) == tag_watch_caller(PIN)
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+
+
+def test_the_repositorys_own_tag_watch_workflow_is_never_touched(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    own = (
+        'name: tag watch\non:\n  push:\n    tags: ["v*"]\npermissions:\n  contents: read\n'
+        'jobs:\n  watch:\n    runs-on: ubuntu-latest\n    steps:\n      - run: exit 0\n'
+    )
+    write(scratch_repo, '.github/workflows/tag-watch.yml', own)
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    assert run_adopt(capsys, '--pin', OTHER_PIN)[0] == 0
+    assert read(scratch_repo, '.github/workflows/tag-watch.yml') == own
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
 
 
 # --- arguments and refusals --------------------------------------------------------------------
@@ -1573,6 +1723,28 @@ def test_a_self_hosted_repository_keeps_its_local_call(
     assert (code, line) == (0, f'{VERDICT} pass ok')
     assert 'self-hosted' in out
     assert 'pin comparisons are skipped' in out
+
+
+def test_a_self_hosted_repository_gets_a_local_tag_watch_caller(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write(scratch_repo, 'pyproject.toml', '[project]\nname = "x"\nrequires-python = ">=3.11"\n')
+    write(scratch_repo, 'railform.toml', SELF_HOSTED_CONFIG)
+    write(scratch_repo, CI, _SELF_HOSTED_CI)
+    assert run_adopt(capsys)[0] == 0
+    text = read(scratch_repo, TAG_WATCH)
+    assert text == TAG_WATCH_TEMPLATE.replace(
+        '__USES__', './.github/workflows/tag-watch.yml'
+    ).replace('__RAILFORM_SHA__', '${{ github.sha }}')
+    assert 'grimaldost/railform' not in text
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+    # --pin rewrites nothing here either, and an edit is drift.
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    assert read(scratch_repo, TAG_WATCH) == text
+    write(scratch_repo, TAG_WATCH, text.replace("'23 7 * * *'", "'0 0 * * *'"))
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{TAG_WATCH}:' in out
 
 
 def test_a_self_hosted_check_still_finds_drift(

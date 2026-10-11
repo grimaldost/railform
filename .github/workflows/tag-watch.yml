@@ -1,0 +1,50 @@
+# The reusable tag watch of railform (the development-rails spec, §16).
+#
+# A repository calls it from the `railform-tag-watch.yml` that `railform adopt` writes, on every
+# tag push, every day and on demand, at a pinned commit of railform, and passes the same commit
+# as the required input `railform-sha`. `railform release-check` judges every release tag from
+# the frame's floor on, anew on every run, so a tag moved off its release merge commit fails the
+# next day.
+name: tag-watch
+on:
+  workflow_call:
+    inputs:
+      railform-sha:
+        description: The railform commit, 40 hexadecimal characters, whose commands the job runs.
+        required: true
+        type: string
+permissions:
+  contents: read
+  pull-requests: read
+env:
+  RAILFORM_SHA: ${{ inputs.railform-sha }}
+defaults:
+  run:
+    shell: bash
+jobs:
+  release-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check that railform-sha is a full commit
+        run: |
+          if [[ ! "$RAILFORM_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::railform-sha must be a railform commit of 40 hexadecimal characters"
+            exit 1
+          fi
+      # The whole history brings the tags. On a push, and on a dispatch from a tag, the default
+      # branch is checked out rather than the ref, so the checkout's handling of a tag ref cannot
+      # lay a lightweight tag over an annotated one.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ (github.event_name == 'push' || startsWith(github.ref, 'refs/tags/')) && github.event.repository.default_branch || '' }}
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.19'
+          enable-cache: false
+      - name: railform release-check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform release-check

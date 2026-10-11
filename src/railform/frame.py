@@ -196,6 +196,9 @@ _STRINGS = _List(_Str())
 # A version site's `authored` defaults to false: an authored site is checked, never rewritten
 # (the development-rails spec, §15).
 SITE_DEFAULTS = {'authored': False}
+# A tag row's `since` defaults to "": the row's floor is then `release.since` (the
+# development-rails spec, §16).
+TAG_DEFAULTS = {'since': ''}
 
 
 def _rows(**fields: _Node) -> _List:
@@ -261,7 +264,13 @@ SCHEMA = _Table(
             {
                 'metadata_paths': _STRINGS,
                 'since': _Str(),
-                'tag_prefix': _rows(prefix=_Str(), tag=_Str()),
+                'tag_prefix': _List(
+                    _Table(
+                        {'prefix': _Str(), 'tag': _Str(), 'since': _Str()},
+                        require=True,
+                        optional=tuple(TAG_DEFAULTS),
+                    )
+                ),
                 'enabled': _Bool(),
             }
         ),
@@ -383,14 +392,17 @@ def _unrendered(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _render(frame: dict[str, Any]) -> dict[str, Any]:
-    """Fill in what the effective frame derives: the wrapper's version and row defaults."""
+    """Fill in what the effective frame derives: the wrapper's version and the defaults of the
+    rows (a version site's `authored`, a tag row's `since`)."""
     hooks = frame['hooks']
     wrapper = hooks['wrapper'].replace(WRAPPER_VERSION_FIELD, hooks['pre_commit_version'])
     sites = [{**SITE_DEFAULTS, **row} for row in frame['version']['sites']]
+    tags = [{**TAG_DEFAULTS, **row} for row in frame['release']['tag_prefix']]
     return {
         **frame,
         'hooks': {**hooks, 'wrapper': wrapper},
         'version': {**frame['version'], 'sites': sites},
+        'release': {**frame['release'], 'tag_prefix': tags},
     }
 
 

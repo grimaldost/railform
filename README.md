@@ -48,7 +48,7 @@ railform-verdict: <verb> <pass|fail> <code>
 ```
 
 The exit status is 0 for a pass, 1 when the check found a violation, and 2 for a usage or
-configuration error (a bad argument, an unknown verb, a verb not written yet, or an unhandled crash, which reads `internal-error`). Findings come
+configuration error (a bad argument, an unknown verb, a verb not written yet, or an unhandled crash, which reads `internal-error`), and for `release-check` also when the GitHub API cannot be read (`api-error`). Findings come
 before the verdict line, one per line. When `$RAILFORM_LEDGER` names a file, the verdict line is
 also appended to it.
 
@@ -90,10 +90,12 @@ back in the list. `railform frame` and `railform frame --json` print the joined 
 Some keys hold rows rather than plain values:
 
 - `changelog.records` is an array of `{ prefix, file }` rows and `release.tag_prefix` an array of
-  `{ prefix, tag }` rows. A changed path or a tag belongs to the row with the longest matching
-  `prefix` (`""` matches everything). A repository's own array replaces the default whole, so a
-  repository whose only changelogs are per plugin lists those rows and has no root row. The
-  `python-package` preset's records row watches `src/` only; the other types watch every path.
+  `{ prefix, tag, since }` rows. A changed path or a tag belongs to the row with the longest
+  matching `prefix` (`""` matches everything). A repository's own array replaces the default
+  whole, so a repository whose only changelogs are per plugin lists those rows and has no root
+  row. A tag row's `since` is optional and defaults to `""`; `railform frame --json` shows it on
+  every row (see the release check below). The `python-package` preset's records row
+  watches `src/` only; the other types watch every path.
 - `version.sites` is an array of `{ path, pattern, authored }` rows: the pattern's first group is
   the version, and `authored` (default `false`) marks a site that is checked and never rewritten.
 - `release.metadata_paths` holds globs of the release metadata (the manifests). The release check
@@ -338,9 +340,17 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
   update. Adopt adds that update when there is none.
 - Whole files: the hook wrappers in `hooks.dir`, staged as their exact bytes and tracked as
   `100755` (so `core.autocrlf` and `core.safecrlf` never touch them), and
-  `.github/workflows/railform-tag-watch.yml` once the package carries its template. Adopt never
-  writes that file over an existing one and `--pin` moves its `uses:` commit; `--check` compares
-  the whole file with the template. Until a template ships there is nothing to judge.
+  `.github/workflows/railform-tag-watch.yml`, the caller of the reusable tag watch (see the
+  release check below). Adopt writes the caller when it is absent, whatever `release.enabled`
+  says; when it exists, adopt writes only its two pin sites, the whole `uses:` value and the
+  `railform-sha` value, with the current mode's values (the pinned call and the pin, or the call
+  by local path and `${{ github.sha }}` when self-hosted), and leaves the rest as it is, line
+  endings included. A switch between pinned and self-hosted in either direction therefore needs
+  only another `railform adopt`. `--check` renders the template at the file's own `uses:` commit
+  (or by local path, when self-hosted) and compares the whole file: a missing file or any other difference is `drift`, which
+  deleting the file and running `railform adopt` clears; a pin site that differs from the others
+  is `pin-mismatch`. A workflow of the
+  repository's own, such as a `tag-watch.yml` it already had, is never touched.
 - `railform.toml`, on the first run only, with the project type and `python.versions`. A `src/`
   layout is `python-package`, another `pyproject.toml` is `python-scripts`, and no
   `pyproject.toml` is `plugin-marketplace`; `--type` overrides the guess. The versions are the floor
@@ -409,9 +419,11 @@ nothing.
   have to rewrite as a mapping when that block holds comments.
 - railform itself calls its own workflow by local path. With `ci.self_hosted = true` (and an
   `exceptions` row), adopt writes the `railform` job as a call to
-  `./.github/workflows/python-ci.yml` with the commit under test as the input, the pre-commit entry
-  becomes `repo: local` running `uv run --frozen railform <verb>`, `--pin` rewrites nothing, and
-  `--check` skips the pin comparisons and says so. Without the key, a local-path call is `drift`.
+  `./.github/workflows/python-ci.yml` with the commit under test as the input, the tag-watch
+  caller as a call to `./.github/workflows/tag-watch.yml` with `${{ github.sha }}`, the pre-commit
+  entry becomes `repo: local` running `uv run --frozen railform <verb>`, `--pin` rewrites nothing,
+  and `--check` skips the pin comparisons and says so. Without the key, a local-path call is
+  `drift`.
 
 ## The reusable CI workflow
 
@@ -527,6 +539,71 @@ The `commit-lane` job of the reusable CI workflow closes both gaps on the server
 `railform branch-name` on the head branch of every pull request, so a misnamed branch is refused
 once it opens a pull request, however it was pushed. A fork's pull request from its `main` is
 refused there too.
+
+## The release check
+
+`railform release-check` judges the release tags of the repository it runs in. It takes no
+arguments and judges every tag anew on each run, so the daily run of the tag watch also stands
+for immutability: a tag moved off its release merge commit fails the next day, with no ledger to
+keep.
+
+- **Which tags.** A tag belongs to the `release.tag_prefix` row whose `tag` starts its name and
+  leaves exactly `X.Y.Z` after it (the longest such `tag` wins), so `v0.2.0` belongs to the
+  default row and `humblepowers--v0.19.0` to a row with the tag `humblepowers--v`. Other tags
+  (`freeze/x`, `v1.0.0-rc1`) are not judged. A row's floor is its own `since`, else
+  `release.since`; both are tag names of that row, compared by version, and the floor tag need
+  not exist. Only tags at or above their row's floor are judged, so the tags from before
+  adoption never fail. A floor that is not a tag of its row is a configuration error (exit 2),
+  so a repository with one row per plugin sets `since` per row.
+- **Configuration errors** (exit 2, `usage`): a floor as above, and the errors of the release
+  lines and version sites it reads with the version-site check: two `release.tag_prefix` or two
+  `changelog.records` rows with one prefix, and a `version.sites` path that is empty, absolute,
+  holds `..` or a backslash, a pattern with no group, or a site no tag row covers.
+- **The release pull request** of a tag of version V on a line named N (the last segment of the
+  row's `prefix`, none for the root row) is a merged pull request whose head branch starts with
+  `release/`, or whose title is a `release` subject (`release: …`, `release(scope): …`), and that
+  carries N as a whole token on a named line and V as its first version: the first `X.Y.Z` of the
+  head branch (or of the title), with no pre-release or build suffix after it.
+  `release/0.2.0`, `release/keel-0.2.0` and `release(humblepowers): 0.19.0` identify;
+  `docs/after-0.2.0`, `release/0.2.01`, `release/1.0.0-rc1` and `release: 1.1.0 (from 1.0.0)` do
+  not identify the versions they mention later or with a suffix.
+- **The rules,** each finding beginning `<tag>: `, the verdict naming the first in this order:
+  - `lightweight-tag`: the tag is not annotated; lay release tags with
+    `git tag -a vX.Y.Z <release merge commit> -m "..."`;
+  - `no-release-pr`: no merged pull request is the tag's release pull request;
+  - `tag-placement`: the tag's commit is not the merge commit of its release pull request. A tag
+    on that merge commit passes, also when the commit is the default branch's tip. A tag that
+    resolves to no commit, or a pull request with no merge commit, never passes;
+  - `release-commit`: a `release:` commit the tag's merge commit brings in (a squash commit
+    titled `release: …` included, a merge commit never) changes a path outside the release
+    metadata, which is `release.metadata_paths` (globs over the whole path, `*` within a segment,
+    `**` across segments) plus every `changelog.records` file and every `version.sites` path.
+- `release.enabled = false` (with an `exceptions` row) turns the check off: it passes at once.
+  With no tag to judge it passes without reading any pull request.
+- **Limits.**
+  - When two merged pull requests identify the same version, a tag on either merge commit passes.
+  - A release merged by rebase has no merge commit of its own: the tag sits on the last rebased
+    commit, and only that commit is judged by the release-commit rule.
+  - A repository's floor must sit past its last release whose pull request does not identify
+    (one released from a branch not under `release/` with a title that is not a `release`
+    subject); every judged tag needs an identifying pull request.
+
+The pull requests come from the GitHub REST API: `$GITHUB_REPOSITORY` (`owner/name`),
+`$GITHUB_API_URL` (default `https://api.github.com`), and `$GITHUB_TOKEN` when set, which is
+never printed. An API that cannot be read exits 2 with `api-error`, never a pass. To judge
+against a saved list of pull requests instead, with no network, point `$RAILFORM_PULLS_FILE` at a
+JSON array of entries in the API's shape (`number`, `title`, `head.ref`, `merged_at`,
+`merge_commit_sha`).
+
+**The tag watch.** The reusable `.github/workflows/tag-watch.yml` runs `release-check` from the
+commit its required input `railform-sha` names, with a read-only token (`contents: read`,
+`pull-requests: read`), which the client never sends to another host on a redirect. It checks
+out the whole history, which brings the tags, and on a push or a dispatch from a tag the default
+branch rather than the tag. Its caller is the
+`.github/workflows/railform-tag-watch.yml` that `railform adopt` writes, the same file for every
+repository: it runs on every tag push, every day at 07:23 UTC and on demand
+(`workflow_dispatch`), which also clears an alarm once the tag is fixed. railform's own caller
+calls the workflow by local path.
 
 ## Development
 

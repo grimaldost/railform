@@ -32,6 +32,21 @@ All notable changes to this project are recorded here, in the
   reads release lines and version sites through `railform.version_sites`, so the version-site
   check's configuration errors (a duplicated prefix, a site path that is empty, absolute, holds
   `..` or a backslash, a pattern with no group, a site no tag row covers) exit 2 here too.
+- `railform release-check` (development-rails spec, §16): every release tag from its row's floor
+  on is annotated (`lightweight-tag`, ported from keel's release-flow test), sits on the merge
+  commit of the pull request that released it, found by a `release/` head branch or a `release`
+  title carrying the version and the line's name (`no-release-pr`, `tag-placement`), and its
+  `release:` commits change only release metadata (`release-commit`). The pull requests come from
+  the GitHub API, or from the file `$RAILFORM_PULLS_FILE` names, with no network. An API that
+  cannot be read exits 2 with the new code `api-error`. It reads release lines and version sites
+  through `version-sites`' reading, so it exits 2 with `usage` on the same site configuration
+  errors, and on a floor that is not a tag of its row.
+- The reusable `.github/workflows/tag-watch.yml`, which runs `release-check` from the commit its
+  required input `railform-sha` names, and its caller `railform-tag-watch.yml`, which
+  `railform adopt` writes in every adopter: on every tag push, daily and on demand. railform
+  runs its own caller by local path.
+- An optional `since` on `release.tag_prefix` rows: the row's own floor, a tag name of that row,
+  in place of `release.since`. The effective frame fills in `""` on a row that omits it.
 - The pilots' folds (development-rails spec, §13). Each of the three pilots, one per project
   type, needed a railform change; each change listed here, under Changed and under Fixed has a
   test that fails without it.
@@ -236,6 +251,12 @@ All notable changes to this project are recorded here, in the
   instead of being skipped on every event.
 - The `python-package` preset's `changelog.records` watches `src/` only, so a change that moves
   only the lock or a workflow, such as a Dependabot pull request, is not charged.
+- `railform adopt` writes the tag-watch caller from its template, also in a self-hosted
+  repository. When it exists, adopt writes both of its pin sites (the whole `uses:` value and the
+  `railform-sha` value) with the current mode's values and keeps the rest, so a switch between
+  pinned and self-hosted needs only another adopt. `railform adopt --check` compares the whole file with the template rendered at
+  its own `uses:` commit: any other difference is `drift`, a pin site that differs
+  `pin-mismatch`.
 - The guard lists `session_loaded` and `private_refs.placeholders` are joined to the default
   (default first, each element once) instead of replacing it: a repository lists only what it
   adds, never drops a default element, and its list no longer goes stale when a pin adds one.

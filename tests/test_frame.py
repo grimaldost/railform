@@ -167,7 +167,7 @@ def test_the_schema_of_each_preset(preset: str) -> None:
     assert isinstance(effective['ci']['setup'], dict)
     for key, fields in (
         ('changelog.records', {'prefix', 'file'}),
-        ('release.tag_prefix', {'prefix', 'tag'}),
+        ('release.tag_prefix', {'prefix', 'tag', 'since'}),
     ):
         rows = _get(effective, key)
         assert isinstance(rows, list), key
@@ -607,6 +607,30 @@ def test_per_plugin_records_replace_the_root_row(
     assert [row['prefix'] for row in tags] == ['plugins/a/', 'plugins/b/']
     assert not any(row['prefix'] in ('', '.', './') for row in records + tags)
     assert _check(capsys) == (0, 'ok', [])
+
+
+def test_a_tag_row_may_set_since_which_defaults_to_empty(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The optional `since` of a tag row (development-rails spec, §16): the effective frame fills
+    # it in on every row, and `frame --check` judges its type only.
+    effective = _effective(
+        scratch_repo,
+        '[[release.tag_prefix]]\nprefix = "plugins/a/"\ntag = "a--v"\nsince = "a--v0.6.0"\n'
+        '[[release.tag_prefix]]\nprefix = "plugins/b/"\ntag = "b--v"\n',
+        capsys,
+    )
+    assert effective['release']['tag_prefix'] == [
+        {'prefix': 'plugins/a/', 'tag': 'a--v', 'since': 'a--v0.6.0'},
+        {'prefix': 'plugins/b/', 'tag': 'b--v', 'since': ''},
+    ]
+    assert _check(capsys) == (0, 'ok', [])
+    default = frame.effective_frame(None)['release']['tag_prefix']
+    assert default == [{'prefix': '', 'tag': 'v', 'since': ''}]
+    _write(scratch_repo, '[[release.tag_prefix]]\nprefix = ""\ntag = "v"\nsince = 1\n')
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'wrong-type')
+    assert any('release.tag_prefix[0].since' in line for line in findings), findings
 
 
 # --- unknown-key -------------------------------------------------------------------------------

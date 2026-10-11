@@ -14,10 +14,12 @@ OK_CODE = 'ok'
 USAGE_CODE = 'usage'
 NOT_IMPLEMENTED_CODE = 'not-implemented'
 INTERNAL_ERROR_CODE = 'internal-error'
+# `release-check` could not read the GitHub API: an outage, never a finding.
+API_ERROR_CODE = 'api-error'
 
-# A usage or configuration error exits 2 (an unimplemented verb and a crash included); any
-# other failure is a violation the check found and exits 1.
-_EXIT_2_CODES = frozenset({USAGE_CODE, NOT_IMPLEMENTED_CODE, INTERNAL_ERROR_CODE})
+# A usage or configuration error exits 2 (an unimplemented verb, a crash and an API that could
+# not be read included); any other failure is a violation the check found and exits 1.
+_EXIT_2_CODES = frozenset({USAGE_CODE, NOT_IMPLEMENTED_CODE, INTERNAL_ERROR_CODE, API_ERROR_CODE})
 _TOKEN = re.compile(r'[a-z0-9]+(-[a-z0-9]+)*')
 
 

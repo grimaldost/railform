@@ -11,8 +11,10 @@ Development-rails spec, §7, invented here; interface contract, section 9. Adopt
 - in `.github/dependabot.yml`, the ignore entry for railform in the `github-actions` update,
   between marker lines (and that update block, when there is none);
 - whole files: the hook wrappers in `hooks.dir` (staged as their exact bytes, 100755 in the git
-  index), `.github/workflows/railform-tag-watch.yml` (only once the package carries its template,
-  and never written over an existing file), and the first `railform.toml`.
+  index), `.github/workflows/railform-tag-watch.yml` (the caller of the reusable `tag-watch.yml`,
+  written from its template when absent; when it exists, only its two pin sites, the whole
+  `uses:` value and the `railform-sha` value, are written with the current mode's values), and
+  the first `railform.toml`.
 
 Everything outside those parts is kept byte for byte, line endings included: files are read and
 written as bytes, and lines adopt adds take the file's own line ending. A stub replaces each hook
@@ -27,8 +29,11 @@ the railform element of a github-actions `ignore:` list. Wrappers are judged by 
 entry: mode 100755 and the exact LF bytes. It fails with `pin-mismatch` when the pins differ
 from each other (or the only difference in an owned part is a pin), and with
 `extra-pr-workflow` when another workflow file runs on `pull_request` or `pull_request_target`,
-or cannot be parsed, and `ci.extra_workflows` does not list it. With `ci.self_hosted` true
-(railform itself), the `railform` job calls the workflow by local path, `--pin` rewrites
+or cannot be parsed, and `ci.extra_workflows` does not list it. The tag-watch caller is
+compared whole with its template rendered at the file's own `uses:` commit: any difference
+outside the two pin sites is `drift`, a pin site that differs from the others `pin-mismatch`.
+With `ci.self_hosted` true (railform itself), the `railform` job and the tag-watch caller call
+their workflows by local path with the commit under test as the input, `--pin` rewrites
 nothing, and `--check` skips the pin comparisons and says so.
 """
 
@@ -53,6 +58,7 @@ from railform.wrapper import WrapperError, hooks_dir, render
 
 if TYPE_CHECKING:
     import argparse
+    from collections.abc import Callable
     from pathlib import Path
 
 VERB = 'adopt'
@@ -75,8 +81,12 @@ TAG_WATCH_PATH = f'{WORKFLOWS_DIR}/{TAG_WATCH_NAME}'
 
 LOCAL_WORKFLOW = './.github/workflows/python-ci.yml'
 REMOTE_WORKFLOW = f'{REPOSITORY}/.github/workflows/python-ci.yml'
+LOCAL_TAG_WATCH = './.github/workflows/tag-watch.yml'
+REMOTE_TAG_WATCH = f'{REPOSITORY}/.github/workflows/tag-watch.yml'
 # In a self-hosted repository the input is the commit under test.
 SELF_HOSTED_SHA = '${{ github.event.pull_request.head.sha || github.sha }}'
+# The tag watch runs on tag pushes, schedules and dispatches, where the commit is `github.sha`.
+SELF_HOSTED_TAG_WATCH_SHA = '${{ github.sha }}'
 PR_TYPES = ('opened', 'synchronize', 'reopened', 'edited')
 OWNED_JOBS = ('railform', 'gate')
 # The commit message file pre-commit's commit-msg stage hands to its hooks.
@@ -96,6 +106,13 @@ _REV_LINE = re.compile(r'^\s*rev:\s*(\S+)')
 _TAG_WATCH_USES = re.compile(
     r'(uses:\s*' + re.escape(REPOSITORY) + r'/\.github/workflows/[\w.-]+@)(\S+)'
 )
+# The `railform-sha` input of the tag-watch caller: the value is the rest of the line, its
+# trailing blanks and a CR left out, so a CRLF file keeps its line endings.
+_TAG_WATCH_INPUT = re.compile(r'^([ \t]*railform-sha:[ \t]*)([^\r\n]*?)([ \t]*\r?)$', re.MULTILINE)
+# The caller's `uses:` value, the other pin site: the whole value, whatever mode wrote it.
+_TAG_WATCH_USES_LINE = re.compile(r'^([ \t]*uses:[ \t]*)([^\r\n]*?)([ \t]*\r?)$', re.MULTILINE)
+# How an edited caller is cleared: adopt never writes over it.
+_TAG_WATCH_RESTORE = '; to restore it, delete the file and run railform adopt'
 _TOKEN = re.compile(r'__([A-Z][A-Z_]*)__')
 _OTHER_BREAKS = re.compile('\r(?!\n)|[\x85\u2028\u2029]')
 _PLAIN_JOB_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_-]*')
@@ -749,19 +766,35 @@ def _dependabot_text(text: str | None) -> str:
 # --- railform-tag-watch.yml --------------------------------------------------------------------
 
 
-def _render_tag_watch(pin: str) -> str:
-    return '\n'.join(_fill(TAG_WATCH_NAME, PIN=pin)) + '\n'
+def _tag_watch_values(pin: str | None) -> dict[str, str]:
+    """The values of the caller's two pin sites: the pinned call and the pin, or, self-hosted
+    (`pin` None), the call by local path and the commit under test."""
+    if pin is None:
+        return {'USES': LOCAL_TAG_WATCH, 'RAILFORM_SHA': SELF_HOSTED_TAG_WATCH_SHA}
+    return {'USES': f'{REMOTE_TAG_WATCH}@{pin}', 'RAILFORM_SHA': pin}
 
 
-def _plan_tag_watch(text: str | None, pin: str) -> str | None:
-    """The tag-watch caller, a whole file adopt owns once the package carries its template (§16):
-    written new from the template, never written over an existing file, whose `uses:` commit
-    alone moves with the pin. None when there is nothing to write."""
-    if _template_text(TAG_WATCH_NAME) is None:
-        return None
+def _render_tag_watch(pin: str | None) -> str:
+    """The tag-watch caller at `pin`, or the self-hosted caller when `pin` is None."""
+    return '\n'.join(_fill(TAG_WATCH_NAME, **_tag_watch_values(pin))) + '\n'
+
+
+def _plan_tag_watch(text: str | None, pin: str | None) -> str:
+    """The tag-watch caller (development-rails spec, §16), a whole file adopt owns: written from
+    the template when absent, pinned or self-hosted (`pin` None). When it exists, adopt writes
+    its two pin sites, the whole `uses:` value and the `railform-sha` value, with the current
+    mode's values and keeps everything else, line endings included, so a switch between pinned
+    and self-hosted in either direction leaves a file `--check` passes (interface contract, Wave
+    C, section 11.9)."""
     if text is None:
         return _render_tag_watch(pin)
-    return _TAG_WATCH_USES.sub(lambda match: match.group(1) + pin, text)
+    values = _tag_watch_values(pin)
+
+    def site(value: str) -> Callable[[re.Match[str]], str]:
+        return lambda match: match.group(1) + value + match.group(3)
+
+    moved = _TAG_WATCH_USES_LINE.sub(site(values['USES']), text)
+    return _TAG_WATCH_INPUT.sub(site(values['RAILFORM_SHA']), moved)
 
 
 # --- the repository ----------------------------------------------------------------------------
@@ -1158,6 +1191,7 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
             )
         planned.append((CI_PATH, ci_text, _plan_ci(ci, LOCAL_WORKFLOW, SELF_HOSTED_SHA)))
         planned.append((PRE_COMMIT_PATH, pre_text, _plan_pre_commit(pre, None, directory)))
+        planned.append((TAG_WATCH_PATH, tag_watch_text, _plan_tag_watch(tag_watch_text, None)))
     else:
         pin = pin or next(
             (
@@ -1327,21 +1361,30 @@ def _check(root: Path) -> Verdict:
         except AdoptError as exc:
             drift(str(exc))
 
-    # The tag-watch caller is judged whole once the package carries its template (§16); until
-    # then there is nothing to judge.
-    if not self_hosted and _template_text(TAG_WATCH_NAME) is not None:
-        tag_watch_text = _read(root, TAG_WATCH_PATH)
-        shas = [m.group(2) for m in _TAG_WATCH_USES.finditer(tag_watch_text or '')]
-        if tag_watch_text is None:
-            drift(f'{TAG_WATCH_PATH}: missing; run railform adopt')
-        elif not shas:
+    # The tag-watch caller is judged whole (§16): rendered at the file's own `uses:` commit, any
+    # difference outside its two pin sites is drift; a pin site that differs is a pin mismatch.
+    tag_watch_text = _read(root, TAG_WATCH_PATH)
+    if tag_watch_text is None:
+        drift(f'{TAG_WATCH_PATH}: missing; run railform adopt')
+    elif self_hosted:
+        actual = tag_watch_text.replace('\r\n', '\n').split('\n')
+        expected_lines = _render_tag_watch(None).split('\n')
+        for message in _first_difference(TAG_WATCH_PATH, actual, expected_lines):
+            drift(message + _TAG_WATCH_RESTORE)
+    else:
+        shas = [m.group(2) for m in _TAG_WATCH_USES.finditer(tag_watch_text)]
+        if not shas:
             drift(f'{TAG_WATCH_PATH}: calls no railform workflow at a pin')
         else:
-            actual = tag_watch_text.replace('\r\n', '\n').split('\n')
+            text = tag_watch_text.replace('\r\n', '\n')
+            inputs = [m.group(2) for m in _TAG_WATCH_INPUT.finditer(text)]
+            # The input's value is a pin site: judged with the pins below, never as drift.
+            aligned = _TAG_WATCH_INPUT.sub(lambda m: m.group(1) + shas[0] + m.group(3), text)
             expected_lines = _render_tag_watch(shas[0]).split('\n')
-            for message in _first_difference(TAG_WATCH_PATH, actual, expected_lines):
-                drift(message)
+            for message in _first_difference(TAG_WATCH_PATH, aligned.split('\n'), expected_lines):
+                drift(message + _TAG_WATCH_RESTORE)
             pins += [(f'{TAG_WATCH_PATH}: the uses: SHA', sha) for sha in shas]
+            pins += [(f'{TAG_WATCH_PATH}: the railform-sha input', value) for value in inputs]
 
     for path, text in wrappers.items():
         current = _read_bytes_text(root, path)
@@ -1409,7 +1452,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.description = (
         'Write the parts of this repository that railform owns (the railform and gate jobs in '
         'ci.yml, the railform and hygiene entries in .pre-commit-config.yaml, the Dependabot '
-        'ignore entry, the hook wrappers and the first railform.toml), or check them.'
+        'ignore entry, the hook wrappers, the tag-watch caller railform-tag-watch.yml and the '
+        'first railform.toml), or check them.'
     )
     parser.add_argument(
         '--type',
