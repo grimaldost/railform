@@ -5,6 +5,10 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+### Changed
+
+- The reusable workflows pin `astral-sh/setup-uv` at v10.3.0 (`1c37ad07a6a961277cf70c0d37d6f313000f5884`), up from v10.2.0.
+
 ## [0.1.0] - 2026-10-11
 
 The first release of railform: the shared CI workflow, the commit hooks and the repository checks
