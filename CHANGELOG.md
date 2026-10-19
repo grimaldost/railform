@@ -5,6 +5,14 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+### Added
+
+- `docs/adopting.md`, an ordered guide to adopting a repository: the inventory, `railform adopt
+  --pin`, departures as `exceptions` rows, the frame and adoption checks, pull request workflows
+  beside `ci.yml`, `railform arm`, the `gate` ruleset, type detection, a python-package example
+  and the move to a newer pin. `tests/test_adopting_guide.py` fails when the guide names a verb or
+  a flag the command does not have.
+
 ### Changed
 
 - The reusable workflows pin `astral-sh/setup-uv` at v10.3.0 (`1c37ad07a6a961277cf70c0d37d6f313000f5884`), up from v10.2.0.
