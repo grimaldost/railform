@@ -5,6 +5,14 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+### Added
+
+- `docs/adopting.md`, an ordered guide to adopting a repository: the inventory, `railform adopt
+  --pin`, departures as `exceptions` rows, the frame and adoption checks, pull request workflows
+  beside `ci.yml`, `railform arm`, the `gate` ruleset, type detection, a python-package example
+  and the move to a newer pin. `tests/test_adopting_guide.py` fails when the guide names a verb or
+  a flag the command does not have.
+
 ## [0.1.0] - 2026-10-11
 
 The first release of railform: the shared CI workflow, the commit hooks and the repository checks

@@ -320,6 +320,9 @@ The reusable workflow runs it in the `checks` job on every leg, right after `pri
 
 ## Adopting
 
+For the steps in order, from the inventory to the branch ruleset, see
+[Adopting a repository](docs/adopting.md). This section is the reference for what adopt owns.
+
 `railform adopt` writes the parts of a repository that railform owns, and `railform adopt --check`
 fails when any of them differs from what adopt would write. Adopt owns only these:
 
