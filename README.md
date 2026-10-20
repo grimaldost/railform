@@ -174,10 +174,13 @@ The attribution rule applies to every message, merges and the pull request's tit
 included: no line may match a pattern of `commit.attribution_patterns` (Python regular
 expressions, matched case-insensitively per line). The default set is keel's. It rejects a trailer
 that names Claude, GPT, Anthropic or Copilot as author, co-author, signer or assistant, and a
-"generated with" stamp that names Claude, GPT or Anthropic anywhere later on the line (keel's stamp
+"generated with" stamp that names one of them anywhere later on the line (keel's stamp
 arm named Claude only, directly after the words; the wider reach comes from the mantis-research
-script and craft-collection's check). Dependabot bodies quote upstream release notes, and a line
-that opens "Generated with" and names one of the three words later could, rarely, trip the stamp
+script and craft-collection's check). Each name is a whole word: ChatGPT and GitHub Copilot
+match, an address at `gptools.example` does not, and neither does the file `CLAUDE.md`, so
+"Generated with the sync script from CLAUDE.md" passes while "Generated with Claude" does not.
+Dependabot bodies quote upstream release notes, and a line
+that opens "Generated with" and names one of the products later could, rarely, trip the stamp
 pattern.
 
 When both rules fail, the verdict code is `subject`; a failure of the attribution rule alone is

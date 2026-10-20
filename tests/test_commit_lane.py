@@ -96,12 +96,25 @@ REJECTED = (
     'Generated-by: Copilot',
     'Generated with [Claude Code](https://claude.com/claude-code)',
     'Generated with Claude',
+    'Generated with ChatGPT',
+    'Generated with [ChatGPT](https://chatgpt.com)',
+    'Generated with GitHub Copilot',
+    'Generated with Copilot',
+    'Generated with GPT-5',
+    'Co-authored-by: GitHub Copilot <copilot@github.com>',
+    'Co-authored-by: ChatGPT <noreply@openai.com>',
+    'Assisted-by: Anthropic',
 )
 ORDINARY = (
     'fix(release): hold the tag to its section',
     'The fold follows ADR-0018; co-authored the spec with the operator.',
     'Generated fixtures with the staging script.',
     'Signed-off-by: Alice Example',
+    'Generated with the sync script from CLAUDE.md.',
+    'Generated with scripts/render.py; the rules live in claude.md',
+    'Signed-off-by: Alice Example (reviewed CLAUDE.md)',
+    'Co-authored-by: Bob Example <bob@gptools.example>',
+    'Generated with gptools',
 )
 
 

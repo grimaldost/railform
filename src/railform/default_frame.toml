@@ -64,10 +64,13 @@ types = [
 # keel's no-ai-attribution set at c3313fd (https://github.com/grimaldost/keel,
 # .pre-commit-config.yaml), its one grep alternation split into its two branches; the stamp
 # branch also names GPT and Anthropic anywhere later on the line (development-rails spec, §13,
-# the craft-collection pilot).
+# the craft-collection pilot). Both branches name the same products, each as a whole word:
+# Claude (but not the file CLAUDE.md), GPT and ChatGPT, Anthropic, and Copilot (GitHub Copilot
+# included). A name inside a longer word, such as an address at gptools.example, is no
+# attribution.
 attribution_patterns = [
-    '^(Co-Authored-By|Signed-off-by|Assisted-by|Generated-by):.*(Claude|GPT|Anthropic|Copilot)',
-    'Generated with\b.*\b(Claude|GPT|Anthropic)\b',
+    '^(Co-Authored-By|Signed-off-by|Assisted-by|Generated-by):.*\b(Claude\b(?!\.md\b)|(Chat)?GPT(?![A-Za-z])|Anthropic\b|Copilot\b)',
+    '\bGenerated with\b.*\b(Claude\b(?!\.md\b)|(Chat)?GPT(?![A-Za-z])|Anthropic\b|Copilot\b)',
 ]
 
 [changelog]
