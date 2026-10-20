@@ -420,8 +420,10 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
 - Whole files: the hook wrappers in `hooks.dir`, staged as their exact bytes and tracked as
   `100755` (so `core.autocrlf` and `core.safecrlf` never touch them), and
   `.github/workflows/railform-tag-watch.yml`, the caller of the reusable tag watch (see the
-  release check below). Adopt writes the caller when it is absent, whatever `release.enabled`
-  says; when it exists, adopt writes only its two pin sites, the whole `uses:` value and the
+  release check below). Adopt writes the caller when it is absent and `release.enabled` is
+  true; with the release check off (`release.enabled = false`) it writes none, and `--check`
+  does not ask for one. A caller that exists is kept either way: when it exists, adopt writes
+  only its two pin sites, the whole `uses:` value and the
   `railform-sha` value, with the current mode's values (the pinned call and the pin, or the call
   by local path and `${{ github.sha }}` when self-hosted), and leaves the rest as it is, line
   endings included. A switch between pinned and self-hosted in either direction therefore needs
@@ -433,7 +435,12 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
 - `railform.toml`, on the first run only, with the project type and `python.versions`. A `src/`
   layout is `python-package`, another `pyproject.toml` is `python-scripts`, and no
   `pyproject.toml` is `plugin-marketplace`; `--type` overrides the guess. The versions are the floor
-  of `requires-python` and `python.newest`. After the first run the file is the repository's.
+  of `requires-python` and `python.newest`. A repository that already has release tags (`v` and
+  three integers, the default row of `release.tag_prefix`) also gets `release.since` set to the
+  tag just past the newest of them: the newest is `v0.4.2`, so `since = "v0.4.3"`. The release
+  check judges the floor tag itself, so the tags from before adoption are never judged and the
+  first daily run of the tag watch stays green; a repository with other tag prefixes sets
+  `since` itself. After the first run the file is the repository's.
 
 Each owned part of the three shared files sits between two marker lines:
 
@@ -675,7 +682,9 @@ keep.
     metadata, which is `release.metadata_paths` (globs over the whole path, `*` within a segment,
     `**` across segments) plus every `changelog.records` file and every `version.sites` path.
 - `release.enabled = false` (with an `exceptions` row) turns the check off: it passes at once.
-  With no tag to judge it passes without reading any pull request.
+  `railform adopt` then writes no tag-watch caller (one that exists stays and is judged), and
+  `adopt --check` does not ask for one; turning the check on again makes the missing caller
+  `drift`. With no tag to judge it passes without reading any pull request.
 - **Limits.**
   - When two merged pull requests identify the same version, a tag on either merge commit passes.
   - A release merged by rebase has no merge commit of its own: the tag sits on the last rebased
@@ -696,8 +705,8 @@ commit its required input `railform-sha` names, with a read-only token (`content
 `pull-requests: read`), which the client never sends to another host on a redirect. It checks
 out the whole history, which brings the tags, and on a push or a dispatch from a tag the default
 branch rather than the tag. Its caller is the
-`.github/workflows/railform-tag-watch.yml` that `railform adopt` writes, the same file for every
-repository: it runs on every tag push, every day at 07:23 UTC and on demand
+`.github/workflows/railform-tag-watch.yml` that `railform adopt` writes while the release check
+is on, the same file for every repository: it runs on every tag push, every day at 07:23 UTC and on demand
 (`workflow_dispatch`), which also clears an alarm once the tag is fixed. railform's own caller
 calls the workflow by local path.
 

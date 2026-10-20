@@ -12,9 +12,11 @@ Development-rails spec, §7, invented here; interface contract, section 9. Adopt
   between marker lines (and that update block, when there is none);
 - whole files: the hook wrappers in `hooks.dir` (staged as their exact bytes, 100755 in the git
   index), `.github/workflows/railform-tag-watch.yml` (the caller of the reusable `tag-watch.yml`,
-  written from its template when absent; when it exists, only its two pin sites, the whole
+  written from its template when absent and `release.enabled` is true, never when the release
+  check is off; when it exists, only its two pin sites, the whole
   `uses:` value and the `railform-sha` value, are written with the current mode's values), and
-  the first `railform.toml`.
+  the first `railform.toml` (with `release.since` set just past the newest `v` release tag the
+  repository already has, so the tags from before adoption are never judged).
 
 Everything outside those parts is kept byte for byte, line endings included: files are read and
 written as bytes, and lines adopt adds take the file's own line ending. A stub replaces each hook
@@ -23,7 +25,8 @@ a tracked file there that is not 100755 is reported and left alone. Adopt refuse
 write, a target path with a symlink or junction on the way and a hooks directory inside `.git`.
 
 `railform adopt --check` writes nothing. It fails with `drift` when an owned part differs from
-what adopt would write (a missing pin site included), or when a region does not hold its parts
+what adopt would write (a missing pin site included, and a missing tag-watch caller while
+`release.enabled` is true), or when a region does not hold its parts
 structurally: the jobs `railform` and `gate` under `jobs:`, exactly the two entries of `repos:`,
 the railform element of a github-actions `ignore:` list. Wrappers are judged by their index
 entry: mode 100755 and the exact LF bytes. It fails with `pin-mismatch` when the pins differ
@@ -1111,8 +1114,29 @@ def _floor(requires: object) -> str | None:
     return f'{major}.{minor}'
 
 
+def _floor_tag(root: Path, tag: str) -> str | None:
+    """The tag name just past the newest `<tag>X.Y.Z` tag of the repository, or None when it has
+    none: the lowest floor that leaves every tag from before adoption unjudged (the release check
+    judges the floor tag itself). Tags that are not `<tag>` and exactly three integers are not
+    judged by the check, so they are not looked at."""
+    done = git(root, 'tag', '--list')
+    if done.returncode != 0:
+        return None
+    pattern = re.compile(re.escape(tag) + r'([0-9]+)\.([0-9]+)\.([0-9]+)', re.ASCII)
+    versions = [
+        tuple(int(part) for part in match.groups())
+        for name in done.stdout.decode('utf-8', 'replace').splitlines()
+        if (match := pattern.fullmatch(name.strip()))
+    ]
+    if not versions:
+        return None
+    major, minor, patch = max(versions)
+    return f'{tag}{major}.{minor}.{patch + 1}'
+
+
 def _seed(root: Path, requested: str | None) -> str:
-    """The text of the first `railform.toml`: the project type and the Python versions."""
+    """The text of the first `railform.toml`: the project type and the Python versions, and
+    `release.since` just past the newest release tag the repository already has."""
     pyproject = root / 'pyproject.toml'
     if not pyproject.is_file():
         project_type = requested or 'plugin-marketplace'
@@ -1135,11 +1159,26 @@ def _seed(root: Path, requested: str | None) -> str:
         'project': {'type': project_type},
         'python': {'versions': sorted(versions, key=_version_key)},
     }
+    root_row = next(
+        row
+        for row in frame_module.preset_frame(project_type)['release']['tag_prefix']
+        if row['prefix'] == ''
+    )
+    since = _floor_tag(root, root_row['tag'])
+    if since is not None:
+        seed['release'] = {'since': since}
     header = (
         "# This repository's frame for railform: `railform frame` prints the effective frame and\n"
         '# `railform frame --check` judges this file.\n'
     )
-    return header + frame_module.dumps_toml(seed)
+    text = header + frame_module.dumps_toml(seed)
+    if since is not None:
+        note = (
+            f'# The release check judges the tags from {since} on; the tags before it are from '
+            'before adoption.\n'
+        )
+        text = text.replace('[release]\n', note + '[release]\n', 1)
+    return text
 
 
 # --- the two modes -----------------------------------------------------------------------------
@@ -1181,6 +1220,9 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
     _refuse_global_filters(pre, list(wrappers))
     dependabot_text = _read(root, DEPENDABOT_PATH)
     tag_watch_text = _read(root, TAG_WATCH_PATH)
+    # The caller runs the release check, so a repository that turned it off gets no new one; a
+    # caller that exists stays owned and is kept at the pin.
+    has_caller = frame['release']['enabled'] or tag_watch_text is not None
     planned: list[tuple[str, str | None, str | None]] = []
     notes: list[str] = _pull_request_filters(ci)
     if frame['ci']['self_hosted']:
@@ -1191,7 +1233,8 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
             )
         planned.append((CI_PATH, ci_text, _plan_ci(ci, LOCAL_WORKFLOW, SELF_HOSTED_SHA)))
         planned.append((PRE_COMMIT_PATH, pre_text, _plan_pre_commit(pre, None, directory)))
-        planned.append((TAG_WATCH_PATH, tag_watch_text, _plan_tag_watch(tag_watch_text, None)))
+        if has_caller:
+            planned.append((TAG_WATCH_PATH, tag_watch_text, _plan_tag_watch(tag_watch_text, None)))
     else:
         pin = pin or next(
             (
@@ -1205,7 +1248,8 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
             raise AdoptError('no pin to adopt at: pass --pin with a 40-hex commit of railform')
         planned.append((CI_PATH, ci_text, _plan_ci(ci, f'{REMOTE_WORKFLOW}@{pin}', pin)))
         planned.append((PRE_COMMIT_PATH, pre_text, _plan_pre_commit(pre, pin, directory)))
-        planned.append((TAG_WATCH_PATH, tag_watch_text, _plan_tag_watch(tag_watch_text, pin)))
+        if has_caller:
+            planned.append((TAG_WATCH_PATH, tag_watch_text, _plan_tag_watch(tag_watch_text, pin)))
     planned.append((DEPENDABOT_PATH, dependabot_text, _plan_dependabot(dependabot_text)))
     entries = _index_entries(root)
     _refuse_case_variants(entries, list(wrappers))
@@ -1365,7 +1409,10 @@ def _check(root: Path) -> Verdict:
     # difference outside its two pin sites is drift; a pin site that differs is a pin mismatch.
     tag_watch_text = _read(root, TAG_WATCH_PATH)
     if tag_watch_text is None:
-        drift(f'{TAG_WATCH_PATH}: missing; run railform adopt')
+        if frame['release']['enabled']:
+            drift(f'{TAG_WATCH_PATH}: missing; run railform adopt')
+        else:
+            notes.append(f'{TAG_WATCH_PATH}: not required, release.enabled is false')
     elif self_hosted:
         actual = tag_watch_text.replace('\r\n', '\n').split('\n')
         expected_lines = _render_tag_watch(None).split('\n')

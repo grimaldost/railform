@@ -679,20 +679,125 @@ def test_a_missing_tag_watch_caller_is_drift_until_adopt_writes_it(
     assert read(adopted.root, TAG_WATCH) == tag_watch_caller(PIN)
 
 
-def test_adopt_writes_the_caller_even_when_the_release_check_is_off(
+RELEASE_OFF = (
+    '[project]\ntype = "python-package"\n\n[release]\nenabled = false\n\n'
+    '[[exceptions]]\nkey = "release.enabled"\nvalue = false\n'
+    'reason = "this repository does not tag releases"\n'
+)
+
+
+def test_adopt_writes_no_caller_when_the_release_check_is_off(
     scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     build(scratch_repo, 'python-package')
-    write(
-        scratch_repo,
-        'railform.toml',
-        '[project]\ntype = "python-package"\n\n[release]\nenabled = false\n\n'
-        '[[exceptions]]\nkey = "release.enabled"\nvalue = false\n'
-        'reason = "this repository does not tag releases"\n',
-    )
+    write(scratch_repo, 'railform.toml', RELEASE_OFF)
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0
+    assert not (scratch_repo / TAG_WATCH).exists()
+    assert f'{TAG_WATCH}: written' not in out
+    code, line, _ = run_adopt(capsys, '--check')
+    assert (code, line) == (0, f'{VERDICT} pass ok')
+
+
+def test_a_caller_that_exists_is_still_moved_and_judged_when_the_release_check_is_off(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    write(scratch_repo, 'railform.toml', RELEASE_OFF)
+    write(scratch_repo, TAG_WATCH, tag_watch_caller(PIN))
+    assert run_adopt(capsys, '--pin', OTHER_PIN)[0] == 0
+    assert read(scratch_repo, TAG_WATCH) == tag_watch_caller(OTHER_PIN)
+    edited = read(scratch_repo, TAG_WATCH).replace("tags: ['**']", "tags: ['v*']")
+    write(scratch_repo, TAG_WATCH, edited)
+    code, line, _ = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+
+
+def test_turning_the_release_check_on_again_makes_the_missing_caller_drift(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    write(scratch_repo, 'railform.toml', RELEASE_OFF)
     assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    write(scratch_repo, 'railform.toml', '[project]\ntype = "python-package"\n')
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{TAG_WATCH}: missing' in out
+    assert run_adopt(capsys)[0] == 0
     assert read(scratch_repo, TAG_WATCH) == tag_watch_caller(PIN)
-    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+
+
+def _tag(root: Path, *names: str, annotated: bool = False) -> None:
+    """Tag an empty commit of `root` with each of `names`."""
+    identity = ('-c', 'user.name=Alice Example', '-c', 'user.email=alice@example.com')
+    git(root, *identity, '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'x')
+    for name in names:
+        if annotated:
+            git(root, *identity, '-c', 'tag.gpgsign=false', 'tag', '-a', name, '-m', name)
+        else:
+            git(root, 'tag', name)
+
+
+def test_the_first_run_seeds_release_since_past_the_newest_existing_tag(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    # 0.10.0 is newer than 0.9.3 by version, though not by name; the other tags are not judged.
+    _tag(scratch_repo, 'v0.1.0', 'v0.9.3', 'v1.0.0-rc1', 'freeze/x', 'v0.10.0')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    config = frame.read_config(scratch_repo)
+    assert config is not None
+    assert config['release'] == {'since': 'v0.10.1'}
+    # The seeded floor is a tag name of the default row, so the frame is valid.
+    code, line, _ = run_adopt(capsys, '--check')
+    assert (code, line) == (0, f'{VERDICT} pass ok')
+    assert main(['frame', '--check']) == 0
+
+
+def test_annotated_tags_seed_the_floor_too(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-scripts')
+    _tag(scratch_repo, 'v2.3.4', annotated=True)
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    config = frame.read_config(scratch_repo)
+    assert config is not None
+    assert config['release'] == {'since': 'v2.3.5'}
+
+
+@pytest.mark.parametrize('tags', [(), ('freeze/x', 'v1.0.0-rc1', '1.2.3', 'plugin--v0.3.0')])
+def test_no_tag_of_the_default_row_seeds_no_floor(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str], tags: tuple[str, ...]
+) -> None:
+    build(scratch_repo, 'python-package')
+    if tags:
+        _tag(scratch_repo, *tags)
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    config = frame.read_config(scratch_repo)
+    assert config is not None
+    assert 'release' not in config
+
+
+def test_a_later_run_never_moves_release_since(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    _tag(scratch_repo, 'v0.1.0')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    seeded = read(scratch_repo, 'railform.toml')
+    _tag(scratch_repo, 'v0.2.0')
+    assert run_adopt(capsys, '--pin', OTHER_PIN)[0] == 0
+    assert read(scratch_repo, 'railform.toml') == seeded
+
+
+def test_an_existing_railform_toml_is_not_given_a_floor(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    write(scratch_repo, 'railform.toml', '[project]\ntype = "python-package"\n')
+    _tag(scratch_repo, 'v0.1.0')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    assert read(scratch_repo, 'railform.toml') == '[project]\ntype = "python-package"\n'
 
 
 def test_the_repositorys_own_tag_watch_workflow_is_never_touched(
