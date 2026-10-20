@@ -25,7 +25,10 @@ The red proofs of §9 that run here, each named in its test:
 - a home path in a commit message or in the pull request's body turns `gate` red through the
   commit lane's `private-refs`
   (`test_red_proof_a_home_path_in_a_commit_message_turns_gate_red_on_a_pull_request`,
-  `test_red_proof_a_home_path_in_the_pull_request_body_turns_gate_red`).
+  `test_red_proof_a_home_path_in_the_pull_request_body_turns_gate_red`);
+- a pull request that drops the version site that disagrees from its own frame still turns `gate`
+  red, through the changelog job's `version-sites --base`
+  (`test_red_proof_a_pull_request_cannot_drop_the_version_site_that_disagrees`).
 
 The audit job runs zizmor, which needs the network, so it is given as passed; a test that is not
 about a job may give it too, and says so. The live proofs are the red-proof branches of the pull
@@ -354,6 +357,51 @@ def test_red_proof_a_home_path_in_the_pull_request_body_turns_gate_red(
     assert 'railform-verdict: private-refs fail home-path' in run.text()
     assert STRANGER not in run.text()
     assert results['gate'] == 'failure', run.text()
+
+
+# --- the version sites a pull request is judged by ----------------------------------------------
+
+PYPROJECT_SITE = (
+    '[[version.sites]]\npath = "pyproject.toml"\npattern = \'(?m)^version = "([^"]+)"\'\n'
+)
+VERSION_SITE = '\n[[version.sites]]\npath = "VERSION"\npattern = \'([0-9.]+)\'\n'
+
+
+def test_red_proof_a_pull_request_cannot_drop_the_version_site_that_disagrees(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The checks job reads version.sites from the frame the pull request writes; the changelog
+    # job reads them again from the frame of the merge base.
+    root = _adopted(scratch_repo, 'python-package', capsys)
+    _write_frame(root, PYPROJECT_SITE + VERSION_SITE)
+    (root / 'VERSION').write_text('0.1.0\n', encoding='utf-8')
+    git(root, *IDENT, 'add', '-A')
+    git(root, *IDENT, 'commit', '-q', '-m', 'chore: the base')
+    git(root, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+    # The pull request lets VERSION fall behind and drops its site from the frame.
+    (root / 'VERSION').write_text('0.0.9\n', encoding='utf-8')
+    _write_frame(root, PYPROJECT_SITE)
+    git(root, *IDENT, 'add', '-A')
+    git(root, *IDENT, 'commit', '-q', '-m', 'chore: drop a version site')
+    assert main(['version-sites']) == 0
+    capsys.readouterr()
+    payload = {'pull_request': {'title': 'chore: drop a version site', 'body': 'A site.'}}
+    given = {**AUDIT, 'checks': 'success', 'hooks': 'success'}
+    run = _run(root, tmp_path, 'pull_request', given, payload, head_ref='chore/drop-a-site')
+    results = run.results()
+    assert results['railform/changelog'] == 'failure', run.text()
+    assert 'railform-verdict: changelog-gate pass ok' in run.text()
+    assert 'VERSION: reads 0.0.9, not 0.1.0' in run.text()
+    assert 'railform-verdict: version-sites fail mismatch' in run.text()
+    assert results['gate'] == 'failure', run.text()
+    # With VERSION kept in step, the same pull request passes.
+    (root / 'VERSION').write_text('0.1.0\n', encoding='utf-8')
+    git(root, *IDENT, 'add', '-A')
+    git(root, *IDENT, 'commit', '-q', '-m', 'chore: keep VERSION in step')
+    run = _run(root, tmp_path, 'pull_request', given, payload, head_ref='chore/drop-a-site')
+    assert 'railform-verdict: version-sites pass ok' in run.text()
+    assert run.results()['railform/changelog'] == 'success', run.text()
+    assert run.results()['gate'] == 'success', run.text()
 
 
 # --- the pipeline, run for real ----------------------------------------------------------------

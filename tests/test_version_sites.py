@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import tomllib
 from typing import TYPE_CHECKING, Any
 
@@ -712,6 +713,108 @@ def test_checking_writes_nothing(scratch_repo: Path, capsys: pytest.CaptureFixtu
     }
     _run(capsys)
     assert before == {p: p.read_bytes() for p in before}
+
+
+# --- --base: the frame of the merge base --------------------------------------------------------
+
+_IDENTITY = ('-c', 'user.name=someone', '-c', 'user.email=someone@example.com')
+
+
+def _git(root: Path, *args: str) -> str:
+    done = subprocess.run(
+        ['git', *_IDENTITY, *args], cwd=root, capture_output=True, text=True, check=True
+    )
+    return done.stdout.strip()
+
+
+def _commit_all(root: Path, message: str) -> str:
+    _git(root, 'add', '-A')
+    _git(root, 'commit', '-q', '-m', message)
+    return _git(root, 'rev-parse', 'HEAD')
+
+
+def test_red_proof_a_change_cannot_drop_the_site_that_disagrees(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _standard_tree(scratch_repo, '0.2.0', '0.2.0', '0.2.0')
+    _commit_all(scratch_repo, 'chore: the base')
+    _git(scratch_repo, 'branch', 'base')
+    # The change lets the module fall behind and drops its site from the frame.
+    _write(scratch_repo, 'src/pkg/__init__.py', "__version__ = '0.1.0'\n")
+    _configure(scratch_repo, (PYPROJECT, HEADING))
+    _commit_all(scratch_repo, 'chore: drop a site')
+    assert _run(capsys)[:2] == (0, 'pass ok')
+    code, verdict, findings, _ = _run(capsys, '--base', 'base')
+    assert (code, verdict) == (1, 'fail mismatch')
+    assert any(line.startswith('src/pkg/__init__.py: reads 0.1.0') for line in findings), findings
+    base = _git(scratch_repo, 'rev-parse', 'base')
+    assert f'version.sites: read from railform.toml at the merge base {base[:12]}' in findings
+
+
+def test_base_reads_the_frame_of_the_merge_base_not_of_the_base_tip(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The base branch moves on after the change branched; the change is judged by the frame it
+    # branched from.
+    _standard_tree(scratch_repo, '0.2.0', '0.2.0', '0.2.0')
+    _configure(scratch_repo, (PYPROJECT, HEADING))
+    _commit_all(scratch_repo, 'chore: the base')
+    _git(scratch_repo, 'branch', 'change')
+    _configure(scratch_repo, STANDARD)
+    _write(scratch_repo, 'src/pkg/__init__.py', "__version__ = '0.0.1'\n")
+    tip = _commit_all(scratch_repo, 'chore: a site on the base')
+    _git(scratch_repo, 'checkout', '-q', 'change')
+    _write(scratch_repo, 'src/pkg/__init__.py', "__version__ = '0.1.0'\n")
+    _commit_all(scratch_repo, 'docs: a change')
+    assert _run(capsys, '--base', tip)[:2] == (0, 'pass ok')
+
+
+def test_base_with_no_railform_toml_at_the_merge_base_reads_the_working_tree(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The adoption pull request writes the first railform.toml: there is no older frame.
+    _write(scratch_repo, 'README.md', 'a readme\n')
+    _commit_all(scratch_repo, 'docs: a readme')
+    _git(scratch_repo, 'branch', 'base')
+    _standard_tree(scratch_repo, '0.2.0', '0.1.0', '0.2.0')
+    _commit_all(scratch_repo, 'chore: adopt')
+    code, verdict, findings, _ = _run(capsys, '--base', 'base')
+    assert (code, verdict) == (1, 'fail mismatch')
+    assert (
+        'version.sites: the merge base has no railform.toml; read from the working tree' in findings
+    )
+
+
+def test_base_with_bump_is_a_usage_error(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _standard_tree(scratch_repo, '0.2.0', '0.2.0', '0.2.0')
+    _commit_all(scratch_repo, 'chore: the base')
+    code, verdict, _, err = _run(capsys, '--base', 'HEAD', '--bump', '0.3.0')
+    assert (code, verdict) == (2, 'fail usage')
+    assert '--base' in err
+
+
+def test_base_that_names_no_commit_is_a_usage_error(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _standard_tree(scratch_repo, '0.2.0', '0.2.0', '0.2.0')
+    _commit_all(scratch_repo, 'chore: the base')
+    assert _run(capsys, '--base', 'no-such-branch')[:2] == (2, 'fail usage')
+
+
+def test_base_whose_frame_breaks_the_schema_is_a_usage_error(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _standard_tree(scratch_repo, '0.2.0', '0.2.0', '0.2.0')
+    _write(scratch_repo, 'railform.toml', '[version]\nsites = 1\n')
+    _commit_all(scratch_repo, 'chore: a broken frame')
+    _git(scratch_repo, 'branch', 'base')
+    _configure(scratch_repo, STANDARD)
+    _commit_all(scratch_repo, 'chore: a mended frame')
+    code, verdict, _, err = _run(capsys, '--base', 'base')
+    assert (code, verdict) == (2, 'fail usage')
+    assert 'railform.toml' in err
 
 
 # --- the shared reading, for the changelog gate and the release check ----------------------------

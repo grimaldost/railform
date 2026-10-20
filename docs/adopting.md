@@ -278,6 +278,27 @@ railform-verdict: adopt pass ok
 The ruleset then requires `gate` and drops `test` and `lint` (step 6), `pre-commit` is added to the
 dev dependencies, and each contributor runs `railform arm` in their clone (step 7).
 
+## Changing the frame after adoption
+
+On a pull request, the changelog gate and the `changelog` job's `version-sites --base` read the
+`railform.toml` of the merge base, not the one the pull request writes. A pull request that
+edits `changelog.records`, `version.sites`, `release.tag_prefix` or `changelog.enabled` is judged
+by the frame it replaces, and its own frame holds from the next pull request on. The adoption pull
+request is the exception: its merge base has no `railform.toml`, so the frame it writes judges it.
+
+Most edits still land in one pull request, because the old frame passes them: a new records row,
+a new version site whose file already agrees, a prefix that watches more. An edit that the old
+frame would fail takes two:
+
+1. Add the new rows beside the old ones (a version site for the new file, say, with the old site
+   kept and the old file still in step) and merge.
+2. Remove the old rows and the old files, now judged by the frame of step 1.
+
+There is no `exceptions` row for these keys: they are parameter keys, which never depart, and a row
+written by the pull request it excuses would be the self-judgement the merge base's frame removes.
+The changelog gate also fails, with `watches-nothing`, a pull request whose own frame watches no
+tracked path, since every pull request after it would pass unread.
+
 ## Moving to a newer pin
 
 A new release is adopted by running that release's own `adopt`, because the templates ship in the

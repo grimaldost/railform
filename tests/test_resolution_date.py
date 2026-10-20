@@ -26,7 +26,7 @@ from workflow_model import WORKFLOWS, load
 
 FILES = ('python-ci.yml', 'tag-watch.yml')
 # The `uvx` steps of each file, counted so that a rule that finds none cannot pass.
-UVX_STEPS = {'python-ci.yml': 13, 'tag-watch.yml': 1}
+UVX_STEPS = {'python-ci.yml': 14, 'tag-watch.yml': 1}
 CONSTANT = 'RAILFORM_EXCLUDE_NEWER'
 VARIABLE = 'UV_EXCLUDE_NEWER'
 MAPPING = '${{ env.RAILFORM_EXCLUDE_NEWER }}'

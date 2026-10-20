@@ -201,7 +201,7 @@ def test_every_railform_command_is_installed_from_the_input(workflow: dict[Any, 
             installed = run.count(f'{INSTALL} {verb}')
             assert invoked == installed, (verb, run)
             commands += invoked
-    assert commands == 11
+    assert commands == 12
 
 
 def test_no_run_text_interpolates_an_expression(workflow: dict[Any, Any]) -> None:
@@ -458,11 +458,26 @@ def test_the_changelog_job_runs_the_gate_on_pull_requests_only(workflow: dict[An
         context = {'github': github_context(event)}
         assert holds(job['if'], context, Status()) is runs, event
     assert job['needs'] == 'frame'
-    assert _runs(job) == [f'{INSTALL} changelog-gate "origin/${{BASE_REF}}...HEAD"']
+    assert _runs(job) == [
+        f'{INSTALL} changelog-gate "origin/${{BASE_REF}}...HEAD"',
+        f'{INSTALL} version-sites --base "origin/${{BASE_REF}}"',
+    ]
     step = _step(job, 'changelog-gate')
     assert step['name'] == 'railform changelog-gate'
     assert step['env'] == {'BASE_REF': '${{ github.base_ref }}', 'UV_EXCLUDE_NEWER': DATE}
     assert 'if' not in step  # it runs under the job's condition, nothing narrower
+
+
+def test_red_proof_the_version_sites_of_a_pull_request_come_from_its_base(
+    workflow: dict[Any, Any],
+) -> None:
+    # The checks job reads version.sites from the frame the pull request writes, so a pull
+    # request could drop the site that disagrees. The changelog job, which has the history,
+    # checks the sites again with the frame of the merge base.
+    step = _step(_job(workflow, 'changelog'), 'version-sites --base')
+    assert step['name'] == 'railform version-sites --base (the frame of the merge base)'
+    assert step['env'] == {'BASE_REF': '${{ github.base_ref }}', 'UV_EXCLUDE_NEWER': DATE}
+    assert 'if' not in step
 
 
 def _hygiene_ids() -> list[str]:

@@ -20,7 +20,10 @@ The red proofs of §14's acceptance criterion, each named in its test:
 - a craft-collection-shaped repository is judged correctly (`TestCraftCollectionShape`);
 - with `consumer_affecting = "error"`, a contract surface changed without the marker fails
   (`test_red_proof_an_unmarked_surface_fails_when_consumer_affecting_is_an_error`);
-- `Changelog: none ()` declares nothing (`test_red_proof_an_empty_reason_declares_nothing`).
+- `Changelog: none ()` declares nothing (`test_red_proof_an_empty_reason_declares_nothing`);
+- a pull request cannot loosen the frame that judges it: narrowed records, a gate turned off and
+  emptied version sites in its own `railform.toml` change nothing (`TestTheMergeBaseFrameJudges`),
+  and a watch that covers nothing at HEAD fails (`TestAWatchThatCoversNothing`).
 
 Through the caller: `test_red_proof_an_unrecorded_change_turns_gate_red_on_a_pull_request` in
 `tests/test_python_ci_runs.py`.
@@ -83,6 +86,10 @@ def _commit(repo: Path, message: str, edits: dict[str, str | bytes] | None = Non
         _git(repo, 'add', '--', *edits)
     _git(repo, 'commit', '-q', '--allow-empty', '-m', message)
     return _git(repo, 'rev-parse', 'HEAD').strip()
+
+
+def _read(repo: Path, path: str) -> str:
+    return (repo / path).read_text(encoding='utf-8')
 
 
 def _frame(repo: Path, text: str) -> None:
@@ -824,11 +831,16 @@ class TestAsciiDigits:
 
 
 class TestAWatchThatCoversNothing:
-    """Wave C contract, 11.2."""
+    """Wave C contract, 11.2, made a failure: a watch that covers nothing passed every run with
+    only a warning, so a pull request could switch the gate off by pointing changelog.records at
+    nothing. The watch judged is the one at HEAD, the frame the next pull requests inherit."""
 
-    WARNING = '::warning::changelog.records: watches no tracked path'
+    FINDING = 'changelog.records: watches no tracked path'
 
-    def test_red_proof_a_flat_python_package_is_told_its_watch_is_empty(
+    def _found(self, findings: list[str]) -> list[str]:
+        return [line for line in findings if line.startswith(self.FINDING)]
+
+    def test_red_proof_a_flat_python_package_fails_with_an_empty_watch(
         self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # A flat-layout package inherits the preset's `src/` and would watch nothing in silence.
@@ -838,10 +850,11 @@ class TestAWatchThatCoversNothing:
         _git(repo, 'branch', '-f', 'base', 'main')
         _commit(repo, 'fix: change a', {'pkg/a.py': 'x = 2\n'})
         code, verdict, findings = _gate(capsys)
-        assert (code, verdict) == (0, 'pass ok'), findings
-        assert self.WARNING in findings, findings
+        assert (code, verdict) == (1, 'fail watches-nothing'), findings
+        assert len(self._found(findings)) == 1, findings
+        assert not any(line.startswith('::warning::') for line in findings), findings
 
-    def test_the_warning_keeps_a_failing_verdict(
+    def test_the_first_failing_rule_names_the_verdict_and_both_are_listed(
         self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         repo = _start(scratch_repo, records='')
@@ -855,7 +868,7 @@ class TestAWatchThatCoversNothing:
         _commit(repo, 'feat: api', {'pkg/api.py': 'x = 2\n'})
         code, verdict, findings = _gate(capsys)
         assert (code, verdict) == (1, 'fail consumer-affecting'), findings
-        assert self.WARNING in findings, findings
+        assert len(self._found(findings)) == 1, findings
 
     def test_a_watch_that_covers_a_path_says_nothing(
         self, repo: Path, capsys: pytest.CaptureFixture[str]
@@ -863,7 +876,127 @@ class TestAWatchThatCoversNothing:
         _commit(repo, 'docs: tidy', {'docs/x.md': 'docs, tidied\n'})
         code, verdict, findings = _gate(capsys)
         assert (code, verdict) == (0, 'pass ok'), findings
-        assert self.WARNING not in findings, findings
+        assert self._found(findings) == [], findings
+
+    def test_red_proof_a_pull_request_cannot_point_the_watch_at_nothing(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The merge base's frame still watches src/, so the change itself is judged; the frame
+        # it leaves behind would watch nothing for every pull request after it.
+        _frame_on_base(repo)
+        nothing = '[project]\ntype = "python-package"\n\n' + SRC_RECORDS.replace('src/', 'gone/')
+        _commit(repo, 'docs: tidy', {'railform.toml': nothing, 'docs/x.md': 'docs, tidied\n'})
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (1, 'fail watches-nothing'), findings
+        assert len(self._found(findings)) == 1, findings
+
+    def test_a_pull_request_that_mends_an_empty_watch_passes(
+        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The merge base watches nothing at HEAD; the watch judged is HEAD's, so the pull request
+        # that mends it can merge.
+        repo = _start(scratch_repo, records='')
+        _git(repo, 'rm', '-rq', 'src')
+        _commit(repo, 'refactor: flat layout', {'pkg/a.py': 'x = 1\n'})
+        _frame_on_base(repo)
+        mended = '[project]\ntype = "python-package"\n\n' + SRC_RECORDS.replace('src/', 'pkg/')
+        _commit(repo, 'ci: watch pkg/', {'railform.toml': mended})
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (0, 'pass ok'), findings
+        assert self._found(findings) == [], findings
+
+
+# --- the frame is the merge base's -------------------------------------------------------------
+
+
+def _frame_on_base(repo: Path, text: str | None = None) -> str:
+    """Commit `text` (else the working tree's frame) as `railform.toml` on main, and point
+    `base` at it; returns the commit."""
+    frame_text = text if text is not None else _read(repo, 'railform.toml')
+    sha = _commit(repo, 'chore: the frame', {'railform.toml': frame_text})
+    _git(repo, 'branch', '-f', 'base', 'main')
+    return sha
+
+
+class TestTheMergeBaseFrameJudges:
+    """A pull request cannot loosen the gate that judges it: the gate's frame is the
+    `railform.toml` of the merge base, and the working tree's only when the merge base has none
+    (the adoption pull request)."""
+
+    def test_red_proof_records_narrowed_by_the_change_do_not_unwatch_it(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _frame_on_base(repo)
+        narrowed = '[project]\ntype = "python-package"\n\n' + SRC_RECORDS.replace('src/', 'docs/')
+        sha = _commit(repo, 'fix: change a', {'railform.toml': narrowed, 'src/pkg/a.py': 'x = 2\n'})
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (1, 'fail unrecorded'), findings
+        assert any(sha in line and 'src/pkg/a.py' in line for line in findings), findings
+
+    def test_red_proof_a_change_that_turns_the_gate_off_is_still_judged(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _frame_on_base(repo)
+        off = (
+            '[project]\ntype = "python-package"\n\n[changelog]\nenabled = false\n\n'
+            '[[exceptions]]\nkey = "changelog.enabled"\nvalue = false\nreason = "no more"\n'
+        )
+        _commit(repo, 'fix: change a', {'railform.toml': off, 'src/pkg/a.py': 'x = 2\n'})
+        assert _gate(capsys)[:2] == (1, 'fail unrecorded')
+
+    def test_red_proof_emptied_version_sites_do_not_skip_the_release_heading(
+        self, package: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _frame_on_base(package)
+        no_sites = '[project]\ntype = "python-package"\n\n' + SRC_RECORDS
+        _commit(
+            package, 'release: 0.3.0', {'railform.toml': no_sites, 'CHANGELOG.md': _cut('0.3.0')}
+        )
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (1, 'fail release-heading'), findings
+
+    def test_the_change_to_the_frame_holds_from_the_next_pull_request(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _frame_on_base(repo)
+        moved = '[project]\ntype = "python-package"\n\n' + SRC_RECORDS.replace('src/', 'docs/')
+        _commit(repo, 'ci: watch docs/', {'railform.toml': moved})
+        assert _gate(capsys)[:2] == (0, 'pass ok')
+        _git(repo, 'branch', '-f', 'base', 'main')
+        _commit(repo, 'fix: change a', {'src/pkg/a.py': 'x = 2\n'})
+        assert _gate(capsys)[:2] == (0, 'pass ok')
+        _commit(repo, 'docs: tidy', {'docs/x.md': 'docs, tidied\n'})
+        assert _gate(capsys)[:2] == (1, 'fail unrecorded')
+
+    def test_the_verdict_says_which_frame_judged(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _commit(repo, 'docs: tidy', {'docs/x.md': 'docs, tidied\n'})
+        findings = _gate(capsys)[2]
+        assert 'the frame: the working tree (the merge base has no railform.toml)' in findings
+        sha = _frame_on_base(repo)
+        _commit(repo, 'docs: tidy again', {'docs/x.md': 'docs, tidied again\n'})
+        findings = _gate(capsys)[2]
+        assert f'the frame: railform.toml at the merge base {sha[:12]}' in findings
+
+    def test_a_merge_base_frame_that_breaks_the_schema_is_usage(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _frame_on_base(repo, '[changelog]\nrecords = 1\n')
+        mended = '[project]\ntype = "python-package"\n'
+        _commit(repo, 'chore: mend the frame', {'railform.toml': mended})
+        outcome = _gate(capsys)
+        assert outcome[:2] == (2, 'fail usage')
+        assert ':railform.toml' in outcome.stderr, outcome.stderr
+
+    def test_a_merge_base_that_turns_the_gate_off_passes_at_once(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _frame_on_base(repo, '[project]\ntype = "python-package"\n\n[changelog]\nenabled = false\n')
+        _commit(repo, 'fix: change a', {'src/pkg/a.py': 'x = 2\n'})
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (0, 'pass ok'), findings
+        assert len(findings) == 1, findings
 
 
 # --- an older git says why ---------------------------------------------------------------------
@@ -1120,12 +1253,19 @@ class TestTheFrameChangesTheVerdict:
         assert (code, verdict) == (0, 'pass ok')
         assert len(findings) == 1
 
-    def test_off_reads_no_history(
-        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+    def test_off_judges_no_commit(
+        self, repo: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # No commit at all: the range resolves to nothing, and the gate never asks.
-        _frame(scratch_repo, '[changelog]\nenabled = false\n')
-        assert _gate(capsys, 'main...HEAD')[:2] == (0, 'pass ok')
+        # The switch is read from the merge base's frame, so the range is resolved first; no
+        # commit is then read or charged.
+        _whitespace_only(repo)
+        _frame(repo, '[changelog]\nenabled = false\n')
+
+        def unread(*args: object) -> None:
+            raise AssertionError('the gate read the commits of the range')
+
+        monkeypatch.setattr(changelog_gate._Git, 'commits', unread)
+        assert _gate(capsys)[:2] == (0, 'pass ok')
 
     def test_the_trailer_spelling_is_the_frames(
         self, repo: Path, capsys: pytest.CaptureFixture[str]

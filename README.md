@@ -210,11 +210,33 @@ merge base to HEAD. In CI the `changelog` job runs it on pull requests as
   `::warning::<path>: consumer-affecting (advisory): ...` line and the verdict stays a pass;
   `"error"`, declared with an `exceptions` row, makes it fail.
 
+- **The watch covers something** (`watches-nothing`). When no tracked path at HEAD other than the
+  record files falls under a `changelog.records` row of the frame at HEAD (a flat-layout package
+  on the `python-package` preset's `src/`, for example), the gate fails with
+  `changelog.records: watches no tracked path ...`: such a watch would pass every later pull
+  request unread. The watch judged is HEAD's, so the pull request that mends an empty watch
+  passes.
+
 When several rules fail, the verdict names the first in the order above and every finding is
-printed. When no tracked path at HEAD other than the record files falls under any
-`changelog.records` row (a flat-layout package on the `python-package` preset's `src/`, for
-example), the gate prints `::warning::changelog.records: watches no tracked path` and keeps its
-verdict. `changelog.enabled = false` (with its `exceptions` row) passes at once.
+printed. `changelog.enabled = false` (with its `exceptions` row) in the frame that judges passes
+at once and judges no commit.
+
+**Which frame judges.** The rules read the `railform.toml` committed at the merge base of BASE and
+HEAD, not the one the pull request writes, so a pull request cannot switch off or narrow the gate
+that judges it by editing `changelog.records`, `version.sites`, `release.tag_prefix`,
+`changelog.enabled` or any other key. A merge base with no `railform.toml` (the adoption pull
+request) leaves the working tree's frame in force. The verdict's findings name the frame read
+(`the frame: railform.toml at the merge base <sha>`). The `railform.toml` of the merge base must
+pass the schema of the railform that runs; when it does not, the gate exits 2 and names it.
+
+A pull request that changes these keys is therefore judged by the frame it replaces, and the new
+frame holds from the next pull request on. Most such changes pass in one pull request: one that
+adds a records row, or watches a new prefix, is judged by the old rows and passes when it records
+or declares its commits. A change that the old frame would fail lands in two pull requests: the
+first adds the new rows beside the old ones (a second version site, a second records row), the
+second removes the old rows and files. There is no `exceptions` row for this: the keys are
+parameter keys, which never depart, and a row the pull request wrote would be the same
+self-judgement the merge base's frame removes. The two steps add a pull request and no mechanism.
 
 These exit 2: an empty `changelog.records`, a records row with no file, a trailer template
 without exactly one `<reason>`, a range not of the form `BASE...HEAD`, a revision git cannot
@@ -286,7 +308,7 @@ number in the names file.
 
 ## The version-site check
 
-`railform version-sites [--bump X.Y.Z [--prefix PREFIX]]` checks that every place a release
+`railform version-sites [--bump X.Y.Z [--prefix PREFIX]] [--base REF]` checks that every place a release
 version is written agrees, and with `--bump` writes the version first. The places are the rows of
 `version.sites`: `{ path, pattern, authored }`, where `path` is a repository-relative file with
 `/` separators, `pattern` is a Python regular expression searched over the whole file text (with
@@ -315,15 +337,24 @@ there only, and has a bump drop that line's `\r`.
   non-authored site, `--prefix` is required and must be a `release.tag_prefix` row's `prefix`
   exactly (`--prefix plugins/humblepowers/`, or `--prefix ""` for the root row). Regenerate a
   lockfile that records the version (`uv lock`) by hand after a bump.
+- **`--base REF`** reads `version.sites` and `release.tag_prefix` from the `railform.toml`
+  committed at the merge base of REF and HEAD instead of the working tree's, so a pull request
+  cannot drop or loosen the sites it is judged by; the files themselves are still read in the
+  working tree. A merge base with no `railform.toml` leaves the working tree's frame in force.
+  A finding line names the frame read. It does not combine with `--bump`.
 - **Configuration errors** (exit 2): a path that is empty, absolute, drive-qualified, or that holds
   `..` or a backslash, a pattern that does not compile or has no group, a site that no
   `release.tag_prefix` row covers, two rows with one prefix in `release.tag_prefix` or
   `changelog.records`, a `--bump` value that is not three integers, `--prefix` without `--bump`,
   a `--prefix` that is no row's prefix, a missing `--prefix` when more than one line has a writable
-  site, and a site file that cannot be written (the message names it and the sites already
-  written).
+  site, a site file that cannot be written (the message names it and the sites already
+  written), `--base` with `--bump`, a `--base` that is no commit or shares no history with HEAD,
+  and a `railform.toml` at the merge base that cannot be read or breaks the schema.
 
-The reusable workflow runs it in the `checks` job on every leg, right after `private-refs`.
+The reusable workflow runs it in the `checks` job on every leg, right after `private-refs`, with
+the working tree's frame; on pull requests the `changelog` job, which has the history, runs it
+again as `version-sites --base "origin/${BASE_REF}"`. A pull request that changes `version.sites`
+lands as the changelog gate describes: one that the old sites would fail takes two pull requests.
 
 ## Adopting
 
@@ -458,7 +489,7 @@ checks that the input is 40 hexadecimal characters before anything is installed.
 | `frame` | `railform frame --check`, then `railform frame --github-output` | every run |
 | `checks` | `railform private-refs`, `railform version-sites`, then the type's pipeline, on every leg of `ci.os` by `python.versions` | every run |
 | `commit-lane` | `railform commit-range`, `railform pr-text`, `railform branch-name` on the head branch, and `railform private-refs` over the range (its commit messages included) and the pull request's title and body | pull requests |
-| `changelog` | `railform changelog-gate "origin/${BASE_REF}...HEAD"` (see the changelog gate above) | pull requests |
+| `changelog` | `railform changelog-gate "origin/${BASE_REF}...HEAD"` (see the changelog gate above), then `railform version-sites --base "origin/${BASE_REF}"` | pull requests |
 | `hooks` | `railform hooks-check`, `railform adopt --check`, and the hygiene hooks over the changed files, with pre-commit on the newest of `python.versions`, else `python.newest` (the `hooks_python` output of `frame --github-output`), so a `default_language_version` naming that Python resolves | every run; the hygiene hooks on pull requests |
 | `audit` | zizmor 1.30.0 at high severity over the caller's workflows | every run |
 

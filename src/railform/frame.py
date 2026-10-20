@@ -448,6 +448,59 @@ def load(root: Path) -> dict[str, Any]:
     return effective_frame(read_config(root))
 
 
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    try:
+        return subprocess.run(['git', *args], cwd=root, capture_output=True, check=False)
+    except OSError as exc:
+        raise FrameError(f'cannot run git: {exc}') from exc
+
+
+def merge_base(root: Path, base: str, head: str = 'HEAD') -> str:
+    """The merge base of two revisions; FrameError when either is no commit or they share no
+    history."""
+    for revision in (base, head):
+        done = _git(
+            root, 'rev-parse', '--verify', '--quiet', '--end-of-options', f'{revision}^{{commit}}'
+        )
+        if done.returncode != 0:
+            raise FrameError(f'git cannot resolve the revision {revision!r} to a commit')
+    done = _git(root, 'merge-base', '--end-of-options', base, head)
+    sha = done.stdout.decode('utf-8', errors='replace').strip()
+    if done.returncode != 0 or not sha:
+        raise FrameError(f'{base} and {head} share no history: there is no merge base')
+    return sha
+
+
+def config_at(root: Path, commit: str) -> dict[str, Any] | None:
+    """The parsed `railform.toml` committed at `commit`, or None when that commit has none.
+
+    A gate that judges a change reads its frame here, from the merge base, so the change cannot
+    loosen the gate by editing `railform.toml`. FrameError when the file cannot be read or is not
+    TOML; the source in the message is `<commit>:railform.toml`.
+    """
+    spec = f'{commit}:{CONFIG_NAME}'
+    if _git(root, 'cat-file', '-e', spec).returncode != 0:
+        return None
+    done = _git(root, 'cat-file', 'blob', spec)
+    if done.returncode != 0:
+        said = done.stderr.decode('utf-8', errors='replace').strip()
+        raise FrameError(f'cannot read {spec}: {said}')
+    return parse_config(done.stdout, spec)
+
+
+def effective_frame_at(root: Path, commit: str) -> dict[str, Any] | None:
+    """The effective frame of the `railform.toml` committed at `commit`, or None when that
+    commit has none. FrameError or FrameSchemaError, naming `<commit>:railform.toml`, when it
+    cannot be read or breaks the schema."""
+    config = config_at(root, commit)
+    if config is None:
+        return None
+    try:
+        return effective_frame(config)
+    except FrameSchemaError as exc:
+        raise FrameError(f'{commit}:{CONFIG_NAME}: {exc}') from exc
+
+
 def repository_root() -> Path:
     """The top level of the git repository that contains the current directory."""
     try:

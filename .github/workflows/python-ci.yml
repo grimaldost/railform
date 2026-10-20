@@ -163,6 +163,14 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform changelog-gate "origin/${BASE_REF}...HEAD"
+      # The checks job reads version.sites from the frame the pull request writes; here, with
+      # the history, they come from the frame of the merge base, which the pull request cannot
+      # edit.
+      - name: railform version-sites --base (the frame of the merge base)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform version-sites --base "origin/${BASE_REF}"
 
   hooks:
     needs: frame

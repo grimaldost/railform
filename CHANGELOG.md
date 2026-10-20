@@ -27,6 +27,19 @@ All notable changes to this project are recorded here, in the
 
 ### Changed
 
+- `railform changelog-gate` reads its frame from the `railform.toml` committed at the merge base
+  of the range, and from the working tree only when the merge base has none (the adoption pull
+  request). A pull request that edits `changelog.records`, `version.sites`,
+  `release.tag_prefix`, `changelog.enabled` or another key is judged by the frame it replaces, and
+  its frame holds from the next pull request on; an edit the old frame would fail lands in two
+  pull requests (README, "The changelog gate", and `docs/adopting.md`, "Changing the frame after
+  adoption"). The gate now resolves the range before it reads `changelog.enabled`, and a
+  finding line names the frame read. A `railform.toml` at the merge base that breaks the schema
+  exits 2.
+- A `changelog.records` watch that covers no tracked path at HEAD fails the changelog gate with
+  `watches-nothing`, instead of printing `::warning::changelog.records: watches no tracked path`
+  and passing. The watch judged is the frame at HEAD, so the pull request that mends an empty
+  watch passes.
 - The reusable workflows pin `astral-sh/setup-uv` at v10.3.0 (`1c37ad07a6a961277cf70c0d37d6f313000f5884`), up from v10.2.0.
 
 ## [0.1.0] - 2026-10-11
