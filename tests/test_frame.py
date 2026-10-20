@@ -54,6 +54,7 @@ SPEC_KEYS = (
     'exceptions',
 )
 CONTRACT_KEYS = (
+    'changelog.unwatched',
     'ci.extra_workflows',
     'python.newest',
     'hooks.pre_commit_version',
@@ -145,6 +146,7 @@ def test_the_schema_of_each_preset(preset: str) -> None:
         'commit.types',
         'commit.attribution_patterns',
         'changelog.contract_surfaces',
+        'changelog.unwatched',
         'hooks.names',
         'branch.allow',
         'session_loaded',
@@ -485,6 +487,30 @@ def test_a_departure_is_judged_against_the_repositorys_own_preset(
         f'[project]\ntype = "python-scripts"\n[python]\ntype_check = "{package_type_check}"\n',
     )
     assert _check(capsys)[:2] == (1, 'unlisted-departure')
+
+
+# --- the lock and the workflows are unwatched by default ----------------------------------------
+
+
+@pytest.mark.parametrize('preset', PRESETS)
+def test_every_type_leaves_the_lock_and_the_workflows_out_of_the_changelog_watch(
+    preset: str,
+) -> None:
+    effective = frame.effective_frame({'project': {'type': preset}})
+    assert effective['changelog']['unwatched'] == ['uv.lock', '.github/']
+
+
+def test_changing_the_unwatched_paths_is_a_departure(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, '[changelog]\nunwatched = []\n')
+    assert _check(capsys)[:2] == (1, 'unlisted-departure')
+    _write(
+        scratch_repo,
+        '[changelog]\nunwatched = []\n\n[[exceptions]]\nkey = "changelog.unwatched"\n'
+        'value = []\nreason = "the lock is a shipped file here"\n',
+    )
+    assert _check(capsys) == (0, 'ok', [])
 
 
 # --- parameter keys and the guard lists ---------------------------------------------------------

@@ -66,8 +66,8 @@ file before writing any, and writes these:
 | `.pre-commit-config.yaml` | Two entries between marker lines: railform's hooks at the pin, and the hygiene hooks of `pre-commit/pre-commit-hooks` |
 | `.github/dependabot.yml` | An ignore entry for `grimaldost/railform` in the `github-actions` update, so Dependabot leaves the pin to `railform adopt --pin` |
 | `.githooks/pre-commit`, `commit-msg`, `pre-push` | The hook wrappers, tracked as `100755` in the git index |
-| `.github/workflows/railform-tag-watch.yml` | The caller of the release-tag watch, pinned |
-| `railform.toml` | On the first run only: the project type and `python.versions`. After that the file is the repository's |
+| `.github/workflows/railform-tag-watch.yml` | The caller of the release-tag watch, pinned. Not written when `release.enabled` is false |
+| `railform.toml` | On the first run only: the project type, `python.versions`, and `release.since` when the repository has release tags. After that the file is the repository's |
 
 Everything outside the marker lines is kept byte for byte, and a second run changes nothing. If the
 hooks lived in another directory, adopt leaves a stub for each hook there, which prints the
@@ -86,9 +86,13 @@ Adopt does not decide what to do with the repository's own jobs and hooks. Do th
 - In the two uv types the wrappers run `uv run --frozen python -m pre_commit`, so `pre-commit` must
   be in the project's locked dependencies (railform keeps it in its `dev` group). Add it and run
   `uv lock`.
-- A repository with release tags from before adoption sets `release.since` in `railform.toml` to
-  the first tag name railform should judge (`release.since = "v0.4.0"`, say), so the daily tag
-  watch does not fail on older ones.
+- A repository with release tags from before adoption needs no step: the first run of adopt sets
+  `release.since` in `railform.toml` to the tag just past the newest `v` tag (`v0.4.3` when the
+  newest is `v0.4.2`), so the daily tag watch judges only the tags laid after adoption. Tags
+  with another prefix (`humblepowers--v0.19.0`) are not seen: add a `release.tag_prefix` row for
+  each prefix and set `since` on it (`release.since = "v0.4.0"` is the same floor for the
+  default row, written by hand). A repository that does not tag releases sets
+  `release.enabled = false` with an `exceptions` row, and adopt then writes no tag-watch caller.
 
 ## 3. Write departures as `exceptions` rows
 

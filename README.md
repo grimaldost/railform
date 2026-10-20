@@ -96,7 +96,18 @@ Some keys hold rows rather than plain values:
   whole, so a repository whose only changelogs are per plugin lists those rows and has no root
   row. A tag row's `since` is optional and defaults to `""`; `railform frame --json` shows it on
   every row (see the release check below). The `python-package` preset's records row
-  watches `src/` only; the other types watch every path.
+  watches `src/` only; the other types watch every path, `uv.lock` and `.github/`
+  excepted (`changelog.unwatched`, below).
+- `changelog.unwatched` is a list of path prefixes (plain, case-sensitive prefixes of a
+  repository-relative path, as in `changelog.records`) that no record is charged for,
+  whichever row would own them. It defaults to `["uv.lock", ".github/"]` in every type: a
+  Dependabot pull request that moves only the lock or a workflow cannot add a trailer, and a
+  change to either ships nothing a changelog reader looks for. The more specific line wins: a
+  records row whose prefix is at least as long as the entry (a row with the prefix `.github/`,
+  say) watches the path again, and an entry longer than the row's prefix takes it out. Unlike
+  the records, the list is not a parameter key: another list is a departure and needs an
+  `exceptions` row. A lock in a subdirectory (`plugins/a/uv.lock`) is not matched by `uv.lock`;
+  list it.
 - `version.sites` is an array of `{ path, pattern, authored }` rows: the pattern's first group is
   the version, and `authored` (default `false`) marks a site that is checked and never rewritten.
 - `release.metadata_paths` holds globs of the release metadata (the manifests). The release check
@@ -163,10 +174,13 @@ The attribution rule applies to every message, merges and the pull request's tit
 included: no line may match a pattern of `commit.attribution_patterns` (Python regular
 expressions, matched case-insensitively per line). The default set is keel's. It rejects a trailer
 that names Claude, GPT, Anthropic or Copilot as author, co-author, signer or assistant, and a
-"generated with" stamp that names Claude, GPT or Anthropic anywhere later on the line (keel's stamp
+"generated with" stamp that names one of them anywhere later on the line (keel's stamp
 arm named Claude only, directly after the words; the wider reach comes from the mantis-research
-script and craft-collection's check). Dependabot bodies quote upstream release notes, and a line
-that opens "Generated with" and names one of the three words later could, rarely, trip the stamp
+script and craft-collection's check). Each name is a whole word: ChatGPT and GitHub Copilot
+match, an address at `gptools.example` does not, and neither does the file `CLAUDE.md`, so
+"Generated with the sync script from CLAUDE.md" passes while "Generated with Claude" does not.
+Dependabot bodies quote upstream release notes, and a line
+that opens "Generated with" and names one of the products later could, rarely, trip the stamp
 pattern.
 
 When both rules fail, the verdict code is `subject`; a failure of the attribution rule alone is
@@ -184,7 +198,9 @@ merge base to HEAD. In CI the `changelog` job runs it on pull requests as
   `changelog.records` row with the longest matching prefix, and so to that row's file; a path no
   row matches is not watched, and a record file is never charged to itself. The `python-package`
   preset watches `src/` (`CHANGELOG.md`), the other types every path, and a repository with
-  per-plugin changelogs lists one row per plugin. For each commit and each record file it is
+  per-plugin changelogs lists one row per plugin. A path under `changelog.unwatched` (by
+  default `uv.lock` and `.github/`, in every type) is not watched either, so a Dependabot
+  pull request that moves only the lock or a workflow passes unrecorded. For each commit and each record file it is
   charged to, the range must add a line to that file, or the commit must carry the trailer
   `changelog.trailer` spells, by default `Changelog: none (<reason>)` with a reason that is not
   blank (`changelog: None (a rename)` counts; `Changelog: none ()` does not). A trailer declares
@@ -211,8 +227,9 @@ merge base to HEAD. In CI the `changelog` job runs it on pull requests as
   `"error"`, declared with an `exceptions` row, makes it fail.
 
 - **The watch covers something** (`watches-nothing`). When no tracked path at HEAD other than the
-  record files falls under a `changelog.records` row of the frame at HEAD (a flat-layout package
-  on the `python-package` preset's `src/`, for example), the gate fails with
+  record files falls under a `changelog.records` row of the frame at HEAD and outside
+  `changelog.unwatched` (a flat-layout package on the `python-package` preset's `src/`, for
+  example), the gate fails with
   `changelog.records: watches no tracked path ...`: such a watch would pass every later pull
   request unread. The watch judged is HEAD's, so the pull request that mends an empty watch
   passes.
@@ -332,7 +349,18 @@ there only, and has a bump drop that line's `\r`.
 - **Release lines.** Sites are grouped by the `release.tag_prefix` row their path falls under (the
   longest matching `prefix`), so two plugins at different versions both pass. Within a line the
   expected version is the one most sites read, and the earliest of them in `version.sites` order
-  on a tie. Authored sites take part. Versions compare as exact strings.
+  on a tie. Authored sites take part. Versions compare as exact strings, with the two
+  exceptions below.
+- **Between releases.** Two states are not failures. A line whose writable site reads a
+  development version `X.Y.Z.devN` (or `X.Y.Z.dev`) is on its way to `X.Y.Z`: an authored
+  site on that line (the newest changelog heading) that reads `X.Y.Z` or a lower release
+  passes and takes no part in the count, since the heading of the release being prepared is
+  written when it is cut. The writable sites still have to read one value, the dev version
+  included, and an authored site past `X.Y.Z` still fails. And an authored site whose file
+  has level-2 headings that are all `## [Unreleased]` has no release heading yet: it is
+  skipped, with the finding `<path>: holds no release heading yet, only ## [Unreleased]`.
+  A file with another heading the pattern misses (`## 0.1.0`), and a site that is not
+  authored, still fails with `unreadable`.
 - **Failures.** A site that reads another version fails with `mismatch`
   (`<path>: reads <value>, not <expected>`, with `(authored: write it by hand)` for an authored
   site). A site whose file is missing or is not UTF-8, or whose pattern matches nothing, fails with
@@ -392,8 +420,10 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
 - Whole files: the hook wrappers in `hooks.dir`, staged as their exact bytes and tracked as
   `100755` (so `core.autocrlf` and `core.safecrlf` never touch them), and
   `.github/workflows/railform-tag-watch.yml`, the caller of the reusable tag watch (see the
-  release check below). Adopt writes the caller when it is absent, whatever `release.enabled`
-  says; when it exists, adopt writes only its two pin sites, the whole `uses:` value and the
+  release check below). Adopt writes the caller when it is absent and `release.enabled` is
+  true; with the release check off (`release.enabled = false`) it writes none, and `--check`
+  does not ask for one. A caller that exists is kept either way: when it exists, adopt writes
+  only its two pin sites, the whole `uses:` value and the
   `railform-sha` value, with the current mode's values (the pinned call and the pin, or the call
   by local path and `${{ github.sha }}` when self-hosted), and leaves the rest as it is, line
   endings included. A switch between pinned and self-hosted in either direction therefore needs
@@ -405,7 +435,12 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
 - `railform.toml`, on the first run only, with the project type and `python.versions`. A `src/`
   layout is `python-package`, another `pyproject.toml` is `python-scripts`, and no
   `pyproject.toml` is `plugin-marketplace`; `--type` overrides the guess. The versions are the floor
-  of `requires-python` and `python.newest`. After the first run the file is the repository's.
+  of `requires-python` and `python.newest`. A repository that already has release tags (`v` and
+  three integers, the default row of `release.tag_prefix`) also gets `release.since` set to the
+  tag just past the newest of them: the newest is `v0.4.2`, so `since = "v0.4.3"`. The release
+  check judges the floor tag itself, so the tags from before adoption are never judged and the
+  first daily run of the tag watch stays green; a repository with other tag prefixes sets
+  `since` itself. After the first run the file is the repository's.
 
 Each owned part of the three shared files sits between two marker lines:
 
@@ -647,7 +682,9 @@ keep.
     metadata, which is `release.metadata_paths` (globs over the whole path, `*` within a segment,
     `**` across segments) plus every `changelog.records` file and every `version.sites` path.
 - `release.enabled = false` (with an `exceptions` row) turns the check off: it passes at once.
-  With no tag to judge it passes without reading any pull request.
+  `railform adopt` then writes no tag-watch caller (one that exists stays and is judged), and
+  `adopt --check` does not ask for one; turning the check on again makes the missing caller
+  `drift`. With no tag to judge it passes without reading any pull request.
 - **Limits.**
   - When two merged pull requests identify the same version, a tag on either merge commit passes.
   - A release merged by rebase has no merge commit of its own: the tag sits on the last rebased
@@ -668,8 +705,8 @@ commit its required input `railform-sha` names, with a read-only token (`content
 `pull-requests: read`), which the client never sends to another host on a redirect. It checks
 out the whole history, which brings the tags, and on a push or a dispatch from a tag the default
 branch rather than the tag. Its caller is the
-`.github/workflows/railform-tag-watch.yml` that `railform adopt` writes, the same file for every
-repository: it runs on every tag push, every day at 07:23 UTC and on demand
+`.github/workflows/railform-tag-watch.yml` that `railform adopt` writes while the release check
+is on, the same file for every repository: it runs on every tag push, every day at 07:23 UTC and on demand
 (`workflow_dispatch`), which also clears an alarm once the tag is fixed. railform's own caller
 calls the workflow by local path.
 

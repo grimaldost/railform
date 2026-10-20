@@ -26,6 +26,13 @@ All notable changes to this project are recorded here, in the
   has none) and names the frame it read; it does not combine with `--bump`. The `changelog` job
   of the reusable workflow runs `version-sites --base "origin/${BASE_REF}"` on pull requests, so
   a pull request can no longer drop the version site that disagrees from its own frame.
+- `changelog.unwatched`, a list of path prefixes that no changelog record is charged for, by
+  default `["uv.lock", ".github/"]` in every type. The `python-scripts` and `plugin-marketplace`
+  presets watch every path, so a Dependabot pull request that moved only `uv.lock` or a workflow
+  failed `changelog-gate` as unrecorded, and it cannot add a trailer. A records row whose prefix
+  is at least as long as an entry watches the path again; the list is not a parameter key, so
+  another list needs an `exceptions` row. A repository whose only tracked paths are the record
+  files, the lock and the workflows fails `watches-nothing`.
 
 ### Changed
 
@@ -43,6 +50,23 @@ All notable changes to this project are recorded here, in the
   and passing. The watch judged is the frame at HEAD, so the pull request that mends an empty
   watch passes.
 - The reusable workflows pin `astral-sh/setup-uv` at v10.3.0 (`1c37ad07a6a961277cf70c0d37d6f313000f5884`), up from v10.2.0.
+- `railform adopt` writes the tag-watch caller only while `release.enabled` is true: with the
+  release check off it writes none, and `--check` does not ask for one (a missing caller is
+  `drift` again once the check is on). A caller that exists is kept at the pin and judged either
+  way. On the first run it also seeds `release.since` in the new `railform.toml` with the tag
+  just past the newest `v` tag of the repository (`v0.4.3` when the newest is `v0.4.2`), since
+  the release check judges its floor tag itself; before, an adopter with older tags got a red
+  daily run of the tag watch until it set `since` by hand. A repository with no `v` tag gets no
+  `release` table.
+- `railform version-sites` accepts two states between releases. An authored site (the newest
+  changelog heading) that reads `X.Y.Z` or a lower release passes beside a writable site that
+  reads `X.Y.Z.devN`, and takes no part in the count; an authored site whose file holds only
+  `## [Unreleased]` is skipped with a finding instead of failing `unreadable`. Writable sites
+  still have to agree, dev versions included.
+- The default `commit.attribution_patterns` name each product as a whole word and cover more of
+  them: the stamp arm now catches "Generated with ChatGPT" and "Generated with GitHub Copilot",
+  and neither arm refuses an ordinary line that names `CLAUDE.md` (or an address such as
+  `bob@gptools.example`).
 
 ## [0.1.0] - 2026-10-11
 

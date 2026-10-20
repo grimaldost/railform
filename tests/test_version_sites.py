@@ -140,6 +140,122 @@ def test_red_proof_a_bump_leaves_the_authored_heading_untouched(
     assert _run(capsys, '--bump', '0.2.0')[:3] == (0, 'pass ok', [])
 
 
+# --- between releases: a dev version, and a changelog with no release heading yet ---------------
+
+
+@pytest.mark.parametrize('heading', ['0.1.0', '0.2.0'])
+def test_red_proof_a_dev_version_passes_beside_the_heading_of_the_last_release_or_its_own(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str], heading: str
+) -> None:
+    # The package is on its way to 0.2.0; the newest heading is 0.1.0 (the last release) or
+    # 0.2.0 (the release being prepared). Both are an authored heading at or below the dev base.
+    _standard_tree(scratch_repo, '0.2.0.dev0', '0.2.0.dev0', heading)
+    assert _run(capsys)[:3] == (0, 'pass ok', [])
+
+
+def test_a_heading_past_the_dev_base_still_fails(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _standard_tree(scratch_repo, '0.2.0.dev0', '0.2.0.dev0', '0.3.0')
+    code, verdict, findings, _ = _run(capsys)
+    assert (code, verdict) == (1, 'fail mismatch')
+    assert findings == ['CHANGELOG.md: reads 0.3.0, not 0.2.0.dev0 (authored: write it by hand)']
+
+
+@pytest.mark.parametrize('order', [(PYPROJECT, INIT, HEADING), (HEADING, INIT, PYPROJECT)])
+def test_a_writable_site_that_disagrees_with_the_dev_version_still_fails(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str], order: tuple[tuple[str, str, bool], ...]
+) -> None:
+    _standard_tree(scratch_repo, '0.2.0.dev0', '0.1.0', '0.1.0')
+    _configure(scratch_repo, order)
+    code, verdict, findings, _ = _run(capsys)
+    assert (code, verdict) == (1, 'fail mismatch')
+    # A tie between the two writable sites goes to the earliest, as everywhere else.
+    assert len(findings) == 1
+    assert findings[0].startswith(('src/pkg/__init__.py: reads 0.1.0', 'pyproject.toml: reads'))
+
+
+def test_two_dev_versions_must_still_agree(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _standard_tree(scratch_repo, '0.2.0.dev0', '0.2.0.dev1', '0.1.0')
+    code, verdict, findings, _ = _run(capsys)
+    assert (code, verdict) == (1, 'fail mismatch')
+    assert findings == ['src/pkg/__init__.py: reads 0.2.0.dev1, not 0.2.0.dev0']
+
+
+def test_a_dev_version_excuses_only_an_authored_site(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for name, value in (('a', '0.2.0.dev0'), ('b', '0.1.0')):
+        _write(scratch_repo, f'{name}.txt', f'v {value}\n')
+    pattern = r'v (\S+)'
+    _configure(scratch_repo, tuple((f'{n}.txt', pattern, False) for n in 'ab'))
+    assert _run(capsys)[:2] == (1, 'fail mismatch')
+    _configure(scratch_repo, (('a.txt', pattern, False), ('b.txt', pattern, True)))
+    assert _run(capsys)[:3] == (0, 'pass ok', [])
+
+
+UNRELEASED_ONLY = '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- a change\n'
+
+
+def test_red_proof_a_changelog_with_only_unreleased_passes_and_says_so(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _standard_tree(scratch_repo, '0.1.0', '0.1.0', '0.1.0')
+    _write(scratch_repo, 'CHANGELOG.md', UNRELEASED_ONLY)
+    code, verdict, findings, _ = _run(capsys)
+    assert (code, verdict) == (0, 'pass ok')
+    assert findings == ['CHANGELOG.md: holds no release heading yet, only ## [Unreleased]']
+
+
+def test_unreleased_beside_a_dev_version_passes(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _standard_tree(scratch_repo, '0.1.0.dev0', '0.1.0.dev0', '0.1.0')
+    _write(scratch_repo, 'CHANGELOG.md', UNRELEASED_ONLY)
+    assert _run(capsys)[:2] == (0, 'pass ok')
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        '# Changelog\n\n- a change\n',
+        '# Changelog\n\n## [Unreleased]\n\n## 0.1.0 - 2026-10-11\n',
+        '# Changelog\n\n## [Unreleased]\n\n## [v0.1.0] - 2026-10-11\n',
+        '',
+    ],
+    ids=['no heading', 'a release heading the pattern misses', 'a v-prefixed heading', 'empty'],
+)
+def test_a_changelog_the_pattern_misreads_is_still_unreadable(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str], text: str
+) -> None:
+    _standard_tree(scratch_repo, '0.1.0', '0.1.0', '0.1.0')
+    _write(scratch_repo, 'CHANGELOG.md', text)
+    code, verdict, findings, _ = _run(capsys)
+    assert (code, verdict) == (1, 'fail unreadable')
+    assert findings[0].startswith('CHANGELOG.md: no version (the pattern matches nothing')
+
+
+def test_only_an_authored_site_may_hold_unreleased(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _standard_tree(scratch_repo, '0.1.0', '0.1.0', '0.1.0')
+    _write(scratch_repo, 'CHANGELOG.md', UNRELEASED_ONLY)
+    _configure(scratch_repo, (PYPROJECT, INIT, ('CHANGELOG.md', HEADING[1], False)))
+    assert _run(capsys)[:2] == (1, 'fail unreadable')
+
+
+def test_a_bump_over_a_changelog_with_only_unreleased_passes(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _standard_tree(scratch_repo, '0.1.0', '0.1.0', '0.1.0')
+    _write(scratch_repo, 'CHANGELOG.md', UNRELEASED_ONLY)
+    code, verdict, findings, _ = _run(capsys, '--bump', '0.2.0')
+    assert (code, verdict) == (0, 'pass ok')
+    assert findings[:2] == ['pyproject.toml: 0.1.0 -> 0.2.0', 'src/pkg/__init__.py: 0.1.0 -> 0.2.0']
+
+
 # --- keel's registry, ported ---------------------------------------------------------------------
 
 _V = r'([0-9]+\.[0-9]+\.[0-9]+)'

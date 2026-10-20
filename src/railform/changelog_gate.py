@@ -9,9 +9,11 @@ the record diff is taken from the merge base of BASE and HEAD to HEAD. Three rul
 
 - **Record or declare** (`unrecorded`). Each path a commit changes is charged to the record file
   of the `changelog.records` row with the longest matching prefix; a path no row matches is not
-  watched, and a records file is never charged to itself. For each commit and each record file it
-  is charged to, the range must record something in that file, or the commit must declare itself
-  with the trailer `changelog.trailer` spells (`Changelog: none (<reason>)` by default, the reason
+  watched, a path under a `changelog.unwatched` entry longer than that prefix (by default `uv.lock`
+  and `.github/`) is not watched either, and a records file is never charged to itself. For each
+  commit and each record file it is charged to, the range must record something in that file, or
+  the commit must declare itself with the trailer `changelog.trailer` spells (`Changelog: none
+  (<reason>)` by default, the reason
   holding a character other than whitespace). A record is an added line that is not blank once
   its whitespace runs are collapsed and that the same diff does not also remove in collapsed
   form, so a whitespace-only edit, a re-indent, a reordering of existing lines and a CRLF
@@ -115,6 +117,7 @@ class Settings:
     """What the gate reads from the effective frame."""
 
     records: tuple[tuple[str, str], ...]
+    unwatched: tuple[str, ...]
     trailer: re.Pattern[str]
     template: str
     surfaces: tuple[str, ...]
@@ -166,6 +169,7 @@ def settings(effective: dict[str, Any]) -> Settings:
     template = changelog['trailer']
     return Settings(
         records=records,
+        unwatched=tuple(changelog['unwatched']),
         trailer=trailer_pattern(template),
         template=template,
         surfaces=tuple(changelog['contract_surfaces']),
@@ -175,13 +179,20 @@ def settings(effective: dict[str, Any]) -> Settings:
     )
 
 
-def owner(path: str, prefixes: Sequence[str]) -> int | None:
+def owner(path: str, prefixes: Sequence[str], unwatched: Sequence[str] = ()) -> int | None:
     """The index of the `changelog.records` row whose prefix is the longest that `path` starts
-    with, or None. (Release lines are `version_sites.line_of`'s.)"""
+    with, or None. (Release lines are `version_sites.line_of`'s.)
+
+    A path that starts with an entry of `unwatched` longer than that prefix has no owner: the more
+    specific line wins, and a row as specific as the entry keeps the path."""
     best: int | None = None
     for index, prefix in enumerate(prefixes):
         if path.startswith(prefix) and (best is None or len(prefix) > len(prefixes[best])):
             best = index
+    if best is not None and any(
+        path.startswith(entry) and len(entry) > len(prefixes[best]) for entry in unwatched
+    ):
+        return None
     return best
 
 
@@ -198,11 +209,14 @@ def declares(message: str, trailer: re.Pattern[str]) -> bool:
     return False
 
 
-def charged(paths: Iterable[str], records: Sequence[tuple[str, str]]) -> dict[str, list[str]]:
+def charged(
+    paths: Iterable[str], records: Sequence[tuple[str, str]], unwatched: Sequence[str] = ()
+) -> dict[str, list[str]]:
     """The record files a commit's paths are charged to, each with its paths in order.
 
-    A path belongs to the row with the longest matching prefix; a path no row matches is not
-    watched, and a path that is one of the record files is the record, never charged.
+    A path belongs to the row with the longest matching prefix; a path no row matches, or that an
+    `unwatched` entry more specific than the row takes out, is not watched, and a path that is one
+    of the record files is the record, never charged.
     """
     files = {file for _, file in records}
     prefixes = [prefix for prefix, _ in records]
@@ -211,7 +225,7 @@ def charged(paths: Iterable[str], records: Sequence[tuple[str, str]]) -> dict[st
         path = raw.replace('\\', '/')
         if not path or path in files:
             continue
-        index = owner(path, prefixes)
+        index = owner(path, prefixes, unwatched)
         if index is not None:
             found.setdefault(records[index][1], []).append(path)
     return found
@@ -296,7 +310,7 @@ def unrecorded(
     for commit in commits:
         if declares(commit.message, settings.trailer):
             continue
-        for file, paths in charged(commit.paths, settings.records).items():
+        for file, paths in charged(commit.paths, settings.records, settings.unwatched).items():
             if file in done:
                 continue
             listed = ', '.join(paths[:LISTED_PATHS]) + (' ...' if len(paths) > LISTED_PATHS else '')
@@ -488,7 +502,7 @@ class _Git:
         files = set(settings.files)
         prefixes = [prefix for prefix, _ in settings.records]
         return any(
-            path not in files and owner(path, prefixes) is not None
+            path not in files and owner(path, prefixes, settings.unwatched) is not None
             for path in self.names('ls-tree', '-r', '--name-only', '-z', head)
         )
 

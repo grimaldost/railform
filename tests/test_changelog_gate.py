@@ -271,6 +271,95 @@ class TestCharged:
         }
 
 
+class TestUnwatchedPaths:
+    """`changelog.unwatched`: a path that starts with one of its entries is not charged, unless a
+    records row names a prefix at least as long as the entry (the more specific line wins, and a
+    tie goes to the record). The default holds the lock and the workflows, which a Dependabot
+    pull request moves alone and cannot declare."""
+
+    WHOLE = (('', 'CHANGELOG.md'),)
+    UNWATCHED = ('uv.lock', '.github/')
+
+    def test_the_lock_and_the_workflows_are_not_charged_to_a_whole_repository_row(self) -> None:
+        paths = ['uv.lock', '.github/workflows/ci.yml', '.github/dependabot.yml', 'README.md']
+        assert charged(paths, self.WHOLE, self.UNWATCHED) == {'CHANGELOG.md': ['README.md']}
+
+    def test_without_the_entries_they_are_charged(self) -> None:
+        found = charged(['uv.lock', '.github/workflows/ci.yml'], self.WHOLE)
+        assert found == {'CHANGELOG.md': ['uv.lock', '.github/workflows/ci.yml']}
+
+    def test_a_records_row_as_specific_as_the_entry_watches_the_path_again(self) -> None:
+        rows = (('', 'CHANGELOG.md'), ('.github/', 'CHANGELOG.md'))
+        found = charged(['.github/workflows/ci.yml', 'uv.lock'], rows, self.UNWATCHED)
+        assert found == {'CHANGELOG.md': ['.github/workflows/ci.yml']}
+
+    def test_a_longer_unwatched_entry_beats_a_shorter_row(self) -> None:
+        rows = (('docs/', 'CHANGELOG.md'),)
+        found = charged(['docs/a.md', 'docs/generated/b.md'], rows, ('docs/generated/',))
+        assert found == {'CHANGELOG.md': ['docs/a.md']}
+
+    @pytest.mark.parametrize('project_type', ['python-scripts', 'plugin-marketplace'])
+    def test_red_proof_a_change_that_moves_only_the_lock_or_a_workflow_passes(
+        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str], project_type: str
+    ) -> None:
+        repo = _start(scratch_repo, records='', project_type=project_type)
+        _commit(repo, 'chore: lock', {'uv.lock': 'version = 1\n'})
+        _commit(repo, 'ci: bump', {'.github/workflows/ci.yml': 'name: ci\n'})
+        _git(repo, 'branch', '-f', 'base', 'main')
+        _commit(repo, 'build(deps): bump a dependency', {'uv.lock': 'version = 2\n'})
+        _commit(repo, 'ci(deps): bump an action', {'.github/workflows/ci.yml': 'name: ci2\n'})
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (0, 'pass ok'), findings
+
+    @pytest.mark.parametrize('project_type', ['python-scripts', 'plugin-marketplace'])
+    def test_any_other_path_is_still_charged_and_named_without_the_lock(
+        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str], project_type: str
+    ) -> None:
+        repo = _start(scratch_repo, records='', project_type=project_type)
+        _commit(repo, 'chore: lock', {'uv.lock': 'version = 1\n'})
+        _git(repo, 'branch', '-f', 'base', 'main')
+        _commit(
+            repo,
+            'fix: change a script',
+            {'uv.lock': 'version = 2\n', 'tool.py': 'x = 1\n', 'docs/x.md': 'docs 2\n'},
+        )
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (1, 'fail unrecorded'), findings
+        lines = _unrecorded_lines(findings)
+        assert len(lines) == 1, findings
+        assert 'tool.py' in lines[0]
+        assert 'uv.lock' not in lines[0]
+
+    def test_a_repository_that_lists_nothing_unwatched_charges_the_lock_again(
+        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _start(
+            scratch_repo,
+            records='[changelog]\nunwatched = []\n',
+            project_type='python-scripts',
+        )
+        _commit(repo, 'chore: lock', {'uv.lock': 'version = 1\n'})
+        _git(repo, 'branch', '-f', 'base', 'main')
+        _commit(repo, 'build(deps): bump a dependency', {'uv.lock': 'version = 2\n'})
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (1, 'fail unrecorded'), findings
+
+    def test_red_proof_a_watch_that_covers_only_the_lock_and_workflows_watches_nothing(
+        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _start(scratch_repo, records='', project_type='python-scripts')
+        _git(repo, 'rm', '-rq', 'src', 'docs')
+        _commit(
+            repo,
+            'chore: only a lock and a workflow',
+            {'uv.lock': 'version = 1\n', '.github/workflows/ci.yml': 'name: ci\n'},
+        )
+        _git(repo, 'branch', '-f', 'base', 'main')
+        _commit(repo, 'build(deps): bump a dependency', {'uv.lock': 'version = 2\n'})
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (1, 'fail watches-nothing'), findings
+
+
 # --- reading git merge-tree --------------------------------------------------------------------
 
 
@@ -1323,7 +1412,7 @@ class TestTheFrameChangesTheVerdict:
         scripts = frame.effective_frame({'project': {'type': 'python-scripts'}})
         assert package['changelog']['records'] == [{'prefix': 'src/', 'file': 'CHANGELOG.md'}]
         assert scripts['changelog']['records'] == [{'prefix': '', 'file': 'CHANGELOG.md'}]
-        _commit(repo, 'chore: lock', {'uv.lock': 'version = 1\n'})
+        _commit(repo, 'docs: tidy', {'docs/x.md': 'docs, tidied\n'})
         _frame(repo, '[project]\ntype = "python-package"\n')
         assert _gate(capsys)[:2] == (0, 'pass ok')
         _frame(repo, '[project]\ntype = "python-scripts"\n')
