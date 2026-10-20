@@ -672,6 +672,7 @@ def test_a_tag_row_may_set_since_which_defaults_to_empty(
 # --- rows by key, and only for a departure that loosens a check ---------------------------------
 
 LONG_COMMAND = 'uv run --frozen python -m pytest -q -p no:cacheprovider --durations=20 tests'
+TYPES = frame.effective_frame(None)['commit']['types']
 
 # Departures that loosen a check: each needs a row, which names the key and a reason.
 LOOSENING = [
@@ -704,6 +705,26 @@ LOOSENING = [
         'release.metadata_paths',
         id='more-metadata',
     ),
+    pytest.param(
+        f'[commit]\ntypes = {json.dumps([*TYPES, "wip"])}\n', 'commit.types', id='more-types'
+    ),
+    pytest.param(
+        '[private_refs]\nnames_file_env = "UNSET_VARIABLE"\n',
+        'private_refs.names_file_env',
+        id='names-variable',
+    ),
+    pytest.param('[release]\npr_branch_prefix = ""\n', 'release.pr_branch_prefix', id='rel-branch'),
+    pytest.param(
+        '[release]\npr_branch_prefix = "rel/"\n', 'release.pr_branch_prefix', id='rel-branch-other'
+    ),
+    pytest.param(
+        "[release]\npr_title_pattern = '.*'\n", 'release.pr_title_pattern', id='rel-title'
+    ),
+    pytest.param(
+        "[release]\npr_title_pattern = '^chore\\(release\\): '\n",
+        'release.pr_title_pattern',
+        id='rel-title-other',
+    ),
 ]
 
 STAMP = frame.effective_frame(None)['commit']['attribution_patterns']
@@ -724,8 +745,7 @@ NOT_LOOSENING = [
     pytest.param('[python]\nsync_args = ["--all-extras"]\n', id='sync-args'),
     pytest.param('[python]\nlint_paths = [".", "extra"]\n', id='more-lint-paths'),
     pytest.param('[release]\nmetadata_paths = ["pyproject.toml"]\n', id='less-metadata'),
-    pytest.param('[release]\npr_branch_prefix = "rel/"\n', id='release-branch'),
-    pytest.param("[release]\npr_title_pattern = '^chore\\(release\\): '\n", id='release-title'),
+    pytest.param('[commit]\ntypes = ["feat", "fix", "docs"]\n', id='fewer-types'),
     pytest.param('[branch]\nallow = []\n', id='no-bot-branches'),
     pytest.param(
         '[project]\ntype = "python-scripts"\n[python]\ntype_check = "src"\n', id='add-type-check'
@@ -864,6 +884,29 @@ def test_a_bad_drop_row_fails_and_drops_nothing(
     assert any(message in finding for finding in findings), findings
     default = _get(frame.effective_frame(None), key)
     assert _get(frame.load(scratch_repo), key) == default
+
+
+@pytest.mark.parametrize('key', GUARD_KEYS)
+def test_a_drop_row_with_one_bad_element_drops_none_of_its_elements(
+    key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    default = _get(frame.effective_frame(None), key)
+    _write(scratch_repo, _drop_row(key, [default[1], 'not-a-default']))
+    assert _check(capsys)[:2] == (1, 'bad-exception')
+    assert _get(frame.load(scratch_repo), key) == default
+
+
+@pytest.mark.parametrize('key', GUARD_KEYS)
+def test_a_duplicate_drop_row_fails_and_drops_nothing(
+    key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    default = _get(frame.effective_frame(None), key)
+    _write(scratch_repo, _drop_row(key, [default[1]]) + _drop_row(key, [default[2]]))
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'bad-exception')
+    assert any('exceptions[1]' in finding and 'duplicates' in finding for finding in findings)
+    # The first row, which frame --check accepts, still drops; the duplicate drops nothing.
+    assert _get(frame.load(scratch_repo), key) == [item for item in default if item != default[1]]
 
 
 @pytest.mark.parametrize('key', GUARD_KEYS)

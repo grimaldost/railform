@@ -54,7 +54,9 @@ EXTENDABLE_KEYS = ('session_loaded', 'private_refs.placeholders')
 
 # How a departure of a key loosens a check, and so needs an `exceptions` row. A departure of a
 # key not listed here, or in the other direction, is stricter or neutral and needs none.
-REPLACED = 'replaced'  # a string the preset sets (non-empty) is changed: railform cannot judge it
+# A string the preset sets (non-empty) is changed: railform cannot judge a command, a pattern or
+# the name of a variable, so any change, stricter or not, needs a row.
+REPLACED = 'replaced'
 TURNED_OFF = 'turned off'  # a boolean the preset has true is false
 TURNED_ON = 'turned on'  # a boolean the preset has false is true
 DROPS = 'drops an element'  # a list leaves out an element the preset has
@@ -68,6 +70,10 @@ LOOSENING = {
     'release.enabled': TURNED_OFF,
     'release.metadata_paths': ADDS,
     'ci.extra_workflows': ADDS,
+    'commit.types': ADDS,
+    'private_refs.names_file_env': REPLACED,
+    'release.pr_branch_prefix': REPLACED,
+    'release.pr_title_pattern': REPLACED,
     'ci.self_hosted': TURNED_ON,
     'ci.os': DROPS,
     'commit.attribution_patterns': DROPS,
@@ -411,16 +417,15 @@ def _union(default: list[Any], own: list[Any]) -> list[Any]:
 
 def _drops(config: dict[str, Any], key: str, default: list[Any]) -> list[Any]:
     """The default elements of the guard list `key` that the `exceptions` rows of a schema-valid
-    `config` drop: a row for `key` with a non-blank reason, no value and a `drop` list. An element
-    the default lacks drops nothing; `frame --check` fails the row that names it."""
-    dropped: list[Any] = []
+    `config` drop: those of the first row for `key` that `frame --check` accepts (a non-blank
+    reason, no value, and a `drop` that is not empty and names only default elements). A row
+    that check fails, and a later row for the same key (a duplicate), drop nothing."""
     for row in config.get('exceptions', []):
-        if row.get('key') != key or 'value' in row or 'drop' not in row:
+        if row.get('key') != key or not str(row.get('reason', '')).strip():
             continue
-        if not str(row.get('reason', '')).strip():
-            continue
-        dropped += [item for item in row['drop'] if any(_same(item, d) for d in default)]
-    return dropped
+        if not _drop_problem(row, key, default):
+            return list(row['drop'])
+    return []
 
 
 def _unrendered(config: dict[str, Any]) -> dict[str, Any]:

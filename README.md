@@ -103,16 +103,16 @@ These departures loosen a check (`LOOSENING` in `src/railform/frame.py`):
 
 | Key | Loosens when |
 |---|---|
-| `python.test_command`, `python.type_check`, `branch.pattern`, `hooks.wrapper` | the preset sets it and the repository changes it: railform cannot judge a command or a pattern, and a blank or `true` runs nothing |
+| `python.test_command`, `python.type_check`, `branch.pattern`, `hooks.wrapper`, `release.pr_branch_prefix`, `release.pr_title_pattern`, `private_refs.names_file_env` | the preset sets it and the repository changes it: railform cannot judge a command, a pattern or a variable name, a blank or `true` command runs nothing, a broad release convention lets any pull request carrying the version count as the release, and a variable CI does not set turns off the private-name half of `railform private-refs` |
 | `changelog.enabled`, `release.enabled` | it is `false` |
 | `ci.self_hosted` | it is `true` |
-| `ci.extra_workflows`, `changelog.unwatched`, `branch.allow`, `release.metadata_paths` | the list has an element the preset lacks |
+| `ci.extra_workflows`, `changelog.unwatched`, `branch.allow`, `release.metadata_paths`, `commit.types` | the list has an element the preset lacks |
 | `ci.os`, `commit.attribution_patterns`, `hooks.names`, `python.lint_paths` | the list leaves out an element the preset has |
 
 Any other departure, and these in the other direction, needs no row: a `ci.setup.fetch_depth`, a
 longer `ci.os`, an empty `changelog.unwatched`, `changelog.consumer_affecting = "error"`, or a
-release pull request convention of the repository's own (`release.pr_branch_prefix`,
-`release.pr_title_pattern`).
+shorter `commit.types`. A key of the first row needs a row for any change, a stricter one
+included.
 
 The keys in `meta.parameter_keys` (the project type and layout, the Python versions and package,
 the version sites, the changelog records and contract surfaces, and the release start and tag
@@ -136,8 +136,9 @@ reason = "no machine here has a shared profile, so a path under it is a real acc
 ```
 
 `drop` names default elements of that list and is not empty, and the row gives no `value`; a row
-that breaks this is `bad-exception` and drops nothing. Dropping a placeholder makes the
-private-reference check stricter. Dropping a `session_loaded` glob narrows the guard, so
+that breaks this is `bad-exception` and drops nothing, not even its default elements. One row per
+list: a second row for the same list is `bad-exception` too and drops nothing. Dropping a
+placeholder makes the private-reference check stricter. Dropping a `session_loaded` glob narrows the guard, so
 `railform session-paths` fails the pull request that adds the row with `guard-narrowed` (see the
 session-paths check below).
 
@@ -726,8 +727,8 @@ keep.
   matches at its start (default a `release` subject: `release: …`, `release(scope): …`), and that
   carries N as a whole token on a named line and V as its first version: the first `X.Y.Z` of the
   head branch (or of the title), with no pre-release or build suffix after it. A repository with
-  another convention sets the two keys, with no `exceptions` row; an empty one identifies nothing
-  by its side.
+  another convention sets the two keys, each with an `exceptions` row, since a broader convention
+  weakens this check; an empty one identifies nothing by its side.
   `release/0.2.0`, `release/keel-0.2.0` and `release(humblepowers): 0.19.0` identify;
   `docs/after-0.2.0`, `release/0.2.01`, `release/1.0.0-rc1` and `release: 1.1.0 (from 1.0.0)` do
   not identify the versions they mention later or with a suffix.
