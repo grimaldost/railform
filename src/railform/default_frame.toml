@@ -10,7 +10,8 @@
 # type ("", [] or {}); the presets fill in the keys that differ by type.
 
 # Globs of the paths a Claude Code session loads (the D1 guard of `railform session-paths`).
-# A repository lists only the globs it adds; these stay whatever its list says.
+# A repository lists only the globs it adds; these stay whatever its list says, unless an
+# `exceptions` row drops one with a reason.
 session_loaded = [
     "**/skills/**",
     "**/agents/**",
@@ -24,7 +25,10 @@ session_loaded = [
     ".mcp.json",
 ]
 
-# Departures from the preset that a repository declares: rows of key, value and reason.
+# Departures from the preset that a repository declares: rows of a key and a reason, with an
+# optional value that must then equal the departed value. A departure that loosens a check needs
+# one (frame.py, LOOSENING); a row for a guard list names the default elements it leaves out in
+# `drop` instead of a value.
 exceptions = []
 
 [meta]
@@ -154,6 +158,12 @@ since = ""
 # release.since: per-plugin changelogs start tagging at their own versions.
 tag_prefix = [{ prefix = "", tag = "v" }]
 enabled = true
+# The release pull request of a tag: one whose head branch starts with `pr_branch_prefix`, or
+# whose title `pr_title_pattern` (a Python `re` pattern, matched at the start of the title)
+# matches, and that carries the tag's version. An empty value identifies nothing by that side.
+# The title default is the `release` type of the commit rules, any scope, with or without `!`.
+pr_branch_prefix = "release/"
+pr_title_pattern = '^release(\([^)]*\))?!?: '
 
 # --- presets -----------------------------------------------------------------------------------
 
