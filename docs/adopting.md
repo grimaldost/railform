@@ -10,7 +10,7 @@ At the end, the repository has:
   job is the single status a branch ruleset requires;
 - tracked hook wrappers in `.githooks`, run by every clone after `railform arm`;
 - a `railform.toml` that holds the repository's frame, with every departure from the project
-  type's defaults written down with a reason.
+  type's defaults that loosens a check written down with a reason.
 
 The two pull requests that adopted railform first are worked examples, with their inventory tables
 written out: [keel #56](https://github.com/grimaldost/keel/pull/56) (a Python package) and
@@ -29,7 +29,7 @@ it to see what stops running and what keeps running.
 | Pull request triggers | the `on:` block of each workflow | A workflow that runs on `pull_request` beside `ci.yml` is judged by `railform adopt --check` (step 5) |
 | Hooks | `.pre-commit-config.yaml`, the hook directory, `git config core.hooksPath` | Adopt writes the wrappers into `hooks.dir` (`.githooks`) and leaves a stub in the directory they came from |
 | Changelog and version scripts | `CHANGELOG.md`, release or bump scripts | Their paths become `changelog.records` and `version.sites` rows in `railform.toml` |
-| Python floor and commands | `requires-python`, the test and lint commands CI runs | The floor seeds `python.versions`; a command that differs from the type's preset is a departure (step 3) |
+| Python floor and commands | `requires-python`, the test and lint commands CI runs | The floor seeds `python.versions`; a test command that differs from the type's preset needs an `exceptions` row (step 3) |
 | Required status checks | the branch ruleset, or branch protection | These move to the single status `gate` (step 6) |
 
 The required checks are readable with the GitHub CLI: `gh api repos/<owner>/<repo>/rulesets` lists
@@ -94,27 +94,40 @@ Adopt does not decide what to do with the repository's own jobs and hooks. Do th
   default row, written by hand). A repository that does not tag releases sets
   `release.enabled = false` with an `exceptions` row, and adopt then writes no tag-watch caller.
 
-## 3. Write departures as `exceptions` rows
+## 3. Write an `exceptions` row for each departure that loosens a check
 
 The effective frame is the default frame, then the preset of the project type, then
 `railform.toml`. `railform frame` prints it and `railform frame --json` prints it as JSON. A value
-in `railform.toml` that differs from the preset is a departure, and a departure is legal only when
-an `exceptions` row names the same key and value and gives a reason:
+in `railform.toml` that differs from the preset is a departure. A departure that loosens a check
+(a changed test command, a check turned off, another pull request workflow beside `ci.yml`, a
+shorter `ci.os`; the README's section on the frame has the whole table) is legal only when an
+`exceptions` row names its key and gives a reason:
 
 ```toml
-[ci.setup]
-fetch_depth = 0
+[python]
+test_command = "uv run --frozen python -m pytest -q tests/unit"
 
 [[exceptions]]
-key = "ci.setup.fetch_depth"
-value = 0
-reason = "the suite diffs against the merge base with origin/main"
+key = "python.test_command"
+reason = "the integration suite needs a database and runs in its own workflow"
 ```
 
-keel's pull request declares one row, this one (its tests need history and tags); craft-collection's
-declares three, for its test command, its ruff version and the same checkout depth. Keys that are per repository by nature
-(`python.versions`, `python.package`, `version.sites`, `changelog.records`, `release.since`,
-`release.tag_prefix` and the others in `meta.parameter_keys`) never need a row.
+The row names the key, not the value, so a long command is written once. A row may also carry
+`value`, which must then equal the departed value. A stricter or neutral departure needs no row: a
+full checkout (`ci.setup.fetch_depth = 0`), another `ci.os`, `changelog.consumer_affecting =
+"error"`. Keys that are per repository by nature (`python.versions`, `python.package`,
+`version.sites`, `changelog.records`, `release.since`, `release.tag_prefix` and the others in
+`meta.parameter_keys`) never depart and never need a row.
+
+The first two adopters wrote their rows at 0.1.0, when every departure needed one with its value:
+keel's pull request declares one, for its checkout depth (its tests need history and tags), and
+craft-collection's three, for its test command, its ruff version and the same depth. Under these
+rules only the test command needs a row, and the other rows still pass.
+
+The two guard lists, `session_loaded` and `private_refs.placeholders`, take the repository's
+additions and keep every default element. An `exceptions` row that names a default element in
+`drop`, with a reason, leaves it out (the README's section on the frame); for `session_loaded`,
+the pull request that adds such a row fails `railform session-paths` with `guard-narrowed`.
 
 ## 4. Check the frame and the adoption
 
@@ -123,8 +136,9 @@ railform frame --check
 railform adopt --check
 ```
 
-`frame --check` fails with `unknown-key`, `wrong-type`, `bad-exception` (an empty reason, or a row
-that matches no departure) or `unlisted-departure`. `adopt --check` writes nothing and fails with
+`frame --check` fails with `unknown-key`, `wrong-type`, `bad-exception` (a row with no key, an
+empty reason, one that matches no departure, or a bad `drop`) or `unlisted-departure` (a
+departure that loosens a check and that no row lists). `adopt --check` writes nothing and fails with
 `drift` when an owned part differs from what adopt would write, `pin-mismatch` when the pin sites
 disagree, and `extra-pr-workflow` (step 5). The `frame` job of the shared workflow runs
 `frame --check` and the `hooks` job runs `adopt --check`, on every pull request, so a hand edit
@@ -163,7 +177,6 @@ extra_workflows = ["lint.yml"]
 
 [[exceptions]]
 key = "ci.extra_workflows"
-value = ["lint.yml"]
 reason = "lint.yml is a required status of its own"
 ```
 
@@ -269,8 +282,8 @@ $ railform adopt
 railform-verdict: adopt pass ok
 ```
 
-The suite needs history, so `railform.toml` gets the `ci.setup.fetch_depth` departure and its
-`exceptions` row from step 3, and the checks pass:
+The suite needs history, so `railform.toml` gets `ci.setup.fetch_depth = 0`, a departure that
+loosens nothing and needs no row (step 3), and the checks pass:
 
 ```
 $ railform frame --check
@@ -321,7 +334,8 @@ uvx --from git+https://github.com/grimaldost/railform@<new 40-hex sha> railform 
 `--pin` moves every reference at once: the `uses:` commit, the `railform-sha` input, the
 pre-commit `rev` and the tag-watch caller. Then run `railform frame --check` and
 `railform adopt --check`. A new default or preset can change what counts as a departure: an
-`exceptions` row whose value the preset now has fails as `bad-exception` and is deleted, and a
-repository setting that the new frame rejects fails as `unknown-key` or `wrong-type`. Commit the
+`exceptions` row for a key that no longer departs fails as `bad-exception` and is deleted, and a
+repository setting that the new frame rejects fails as `unknown-key` or `wrong-type`. A pin from
+before rows matched by key keeps its rows: each one that names its value still passes. Commit the
 result as one pull request that touches only the pin sites and, if needed, `railform.toml`.
 A stub left in a former hooks directory is deleted once every clone has run `railform arm`.
