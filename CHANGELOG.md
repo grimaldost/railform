@@ -37,10 +37,10 @@ All notable changes to this project are recorded here, in the
   `session_loaded` or `private_refs.placeholders` names the elements in `drop`, with a reason,
   and gives no `value`. A row whose `drop` is empty or names an element the default lacks, and a
   second row for the same list, is `bad-exception` and drops nothing. A repository can now
-  tighten the placeholder floor (`user`, `default`, `public`, `shared` and the rest). `railform session-paths` fails the pull request
-  that adds a `session_loaded` drop with `guard-narrowed`, so the change is seen; once the drop is
-  in the frame at `--frame-from`, the glob no longer guards. Before, a guard list could not
-  shrink at all.
+  tighten the placeholder floor (`user`, `default`, `public`, `shared` and the rest).
+  `railform session-paths` fails the pull request that adds a `session_loaded` drop with
+  `guard-narrowed`, so the change is seen; once the drop is in the frame at `--frame-from`, the
+  glob no longer guards. Before, a guard list could not shrink at all.
 - `release.pr_branch_prefix` (default `release/`) and `release.pr_title_pattern` (default
   `^release(\([^)]*\))?!?: `, matched at the start of the title) set the release pull request
   convention that `railform release-check` looks for; they were fixed in the code. An empty one
@@ -57,7 +57,8 @@ All notable changes to this project are recorded here, in the
   departed value, so every row written before still passes and a long `python.test_command` is
   written once. The departures that need a row (`LOOSENING` in `src/railform/frame.py`, a table
   in the README's section on the frame): a changed `python.test_command`, `python.type_check`,
-  `branch.pattern`, `hooks.wrapper`, `release.pr_branch_prefix`, `release.pr_title_pattern` or
+  `branch.pattern`, `hooks.wrapper`, `changelog.trailer` (a template of `<reason>` alone
+  declares every commit), `release.pr_branch_prefix`, `release.pr_title_pattern` or
   `private_refs.names_file_env`; `changelog.enabled` or `release.enabled` off;
   `ci.self_hosted` on; an element added to `ci.extra_workflows`, `changelog.unwatched`,
   `branch.allow`, `release.metadata_paths` or `commit.types`; an element left out of `ci.os`,

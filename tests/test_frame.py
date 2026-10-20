@@ -713,6 +713,11 @@ LOOSENING = [
         'private_refs.names_file_env',
         id='names-variable',
     ),
+    # A bare `<reason>` template matches every commit message, which turns changelog-gate off.
+    pytest.param('[changelog]\ntrailer = "<reason>"\n', 'changelog.trailer', id='trailer-bare'),
+    pytest.param(
+        '[changelog]\ntrailer = "No-changelog: <reason>"\n', 'changelog.trailer', id='trailer'
+    ),
     pytest.param('[release]\npr_branch_prefix = ""\n', 'release.pr_branch_prefix', id='rel-branch'),
     pytest.param(
         '[release]\npr_branch_prefix = "rel/"\n', 'release.pr_branch_prefix', id='rel-branch-other'
@@ -740,7 +745,6 @@ NOT_LOOSENING = [
     ),
     pytest.param('[changelog]\nunwatched = []\n', id='watch-everything'),
     pytest.param('[changelog]\nconsumer_affecting = "error"\n', id='consumer-error'),
-    pytest.param('[changelog]\ntrailer = "No-changelog: <reason>"\n', id='trailer'),
     pytest.param('[hooks]\ndir = ".hooks"\n', id='hooks-dir'),
     pytest.param('[python]\nsync_args = ["--all-extras"]\n', id='sync-args'),
     pytest.param('[python]\nlint_paths = [".", "extra"]\n', id='more-lint-paths'),

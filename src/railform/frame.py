@@ -67,6 +67,7 @@ LOOSENING = {
     'python.lint_paths': DROPS,
     'changelog.enabled': TURNED_OFF,
     'changelog.unwatched': ADDS,
+    'changelog.trailer': REPLACED,
     'release.enabled': TURNED_OFF,
     'release.metadata_paths': ADDS,
     'ci.extra_workflows': ADDS,

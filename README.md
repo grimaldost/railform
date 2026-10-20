@@ -103,7 +103,7 @@ These departures loosen a check (`LOOSENING` in `src/railform/frame.py`):
 
 | Key | Loosens when |
 |---|---|
-| `python.test_command`, `python.type_check`, `branch.pattern`, `hooks.wrapper`, `release.pr_branch_prefix`, `release.pr_title_pattern`, `private_refs.names_file_env` | the preset sets it and the repository changes it: railform cannot judge a command, a pattern or a variable name, a blank or `true` command runs nothing, a broad release convention lets any pull request carrying the version count as the release, and a variable CI does not set turns off the private-name half of `railform private-refs` |
+| `python.test_command`, `python.type_check`, `branch.pattern`, `hooks.wrapper`, `changelog.trailer`, `release.pr_branch_prefix`, `release.pr_title_pattern`, `private_refs.names_file_env` | the preset sets it and the repository changes it: railform cannot judge a command, a pattern or a variable name, a blank or `true` command runs nothing, a trailer of `<reason>` alone declares every commit and so turns `changelog-gate` off, a broad release convention lets any pull request carrying the version count as the release, and a variable CI does not set turns off the private-name half of `railform private-refs` |
 | `changelog.enabled`, `release.enabled` | it is `false` |
 | `ci.self_hosted` | it is `true` |
 | `ci.extra_workflows`, `changelog.unwatched`, `branch.allow`, `release.metadata_paths`, `commit.types` | the list has an element the preset lacks |
@@ -138,9 +138,9 @@ reason = "no machine here has a shared profile, so a path under it is a real acc
 `drop` names default elements of that list and is not empty, and the row gives no `value`; a row
 that breaks this is `bad-exception` and drops nothing, not even its default elements. One row per
 list: a second row for the same list is `bad-exception` too and drops nothing. Dropping a
-placeholder makes the private-reference check stricter. Dropping a `session_loaded` glob narrows the guard, so
-`railform session-paths` fails the pull request that adds the row with `guard-narrowed` (see the
-session-paths check below).
+placeholder makes the private-reference check stricter. Dropping a `session_loaded` glob narrows
+the guard, so `railform session-paths` fails the pull request that adds the row with
+`guard-narrowed` (see the session-paths check below).
 
 Some keys hold rows rather than plain values:
 
