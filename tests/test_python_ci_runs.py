@@ -21,7 +21,14 @@ The red proofs of §9 that run here, each named in its test:
   (`test_red_proof_a_pull_request_from_foo_turns_gate_red`);
 - §14 through its caller: a pull request whose branch commits an unrecorded change under `src/`
   turns `gate` red, and a push run of the same fixture skips `changelog` and stays green
-  (`test_red_proof_an_unrecorded_change_turns_gate_red_on_a_pull_request`).
+  (`test_red_proof_an_unrecorded_change_turns_gate_red_on_a_pull_request`);
+- a home path in a commit message or in the pull request's body turns `gate` red through the
+  commit lane's `private-refs`
+  (`test_red_proof_a_home_path_in_a_commit_message_turns_gate_red_on_a_pull_request`,
+  `test_red_proof_a_home_path_in_the_pull_request_body_turns_gate_red`);
+- a pull request that drops the version site that disagrees from its own frame still turns `gate`
+  red, through the changelog job's `version-sites --base`
+  (`test_red_proof_a_pull_request_cannot_drop_the_version_site_that_disagrees`).
 
 The audit job runs zizmor, which needs the network, so it is given as passed; a test that is not
 about a job may give it too, and says so. The live proofs are the red-proof branches of the pull
@@ -297,6 +304,104 @@ def test_a_branch_name_that_looks_like_a_command_is_only_a_name(
     run = _run(root, tmp_path, 'pull_request', given, payload, head_ref=branch)
     assert run.results()['railform/commit-lane'] == 'failure', run.text()
     assert not marker.exists()
+
+
+# --- private references in the text a pull request carries --------------------------------------
+
+# Not a default placeholder, and nobody's name.
+STRANGER = 'mallory'
+
+
+def _home() -> str:
+    """A home path, built at run time so that no file of this repository carries one."""
+    return '/'.join(['', 'home', STRANGER, 'work'])
+
+
+def test_red_proof_a_home_path_in_a_commit_message_turns_gate_red_on_a_pull_request(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The checks job scans the tracked files, which carry no home path here; only the commit
+    # lane reads the messages.
+    root = _adopted(scratch_repo, 'python-package', capsys)
+    payload = _pull_request(root)
+    given = {**AUDIT, 'checks': 'success', 'hooks': 'success'}
+    run = _run(root, tmp_path, 'pull_request', given, payload, head_ref='docs/add-a-note')
+    assert run.results()['railform/commit-lane'] == 'success', run.text()
+    assert 'railform-verdict: private-refs pass ok' in run.text()
+    (root / 'NOTES.txt').write_text('a change, again\n', encoding='utf-8')
+    git(root, *IDENT, 'add', '-A')
+    git(root, *IDENT, 'commit', '-q', '-m', f'docs: copy the note from {_home()}')
+    assert main(['private-refs']) == 0
+    capsys.readouterr()
+    run = _run(root, tmp_path, 'pull_request', given, payload, head_ref='docs/add-a-note')
+    results = run.results()
+    assert results['railform/commit-lane'] == 'failure', run.text()
+    assert 'railform-verdict: commit-range pass ok' in run.text()
+    assert 'railform-verdict: private-refs fail home-path' in run.text()
+    assert STRANGER not in run.text()
+    assert results['gate'] == 'failure', run.text()
+
+
+def test_red_proof_a_home_path_in_the_pull_request_body_turns_gate_red(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = _adopted(scratch_repo, 'python-package', capsys)
+    payload = _pull_request(root)
+    payload['pull_request']['body'] = f'A note.\n\nWritten in {_home()}.\n'
+    given = {**AUDIT, 'checks': 'success', 'hooks': 'success'}
+    run = _run(root, tmp_path, 'pull_request', given, payload, head_ref='docs/add-a-note')
+    results = run.results()
+    assert results['railform/commit-lane'] == 'failure', run.text()
+    assert 'railform-verdict: pr-text pass ok' in run.text()
+    assert 'pull request body:3: home path /home/<name>' in run.text()
+    assert 'railform-verdict: private-refs fail home-path' in run.text()
+    assert STRANGER not in run.text()
+    assert results['gate'] == 'failure', run.text()
+
+
+# --- the version sites a pull request is judged by ----------------------------------------------
+
+PYPROJECT_SITE = (
+    '[[version.sites]]\npath = "pyproject.toml"\npattern = \'(?m)^version = "([^"]+)"\'\n'
+)
+VERSION_SITE = '\n[[version.sites]]\npath = "VERSION"\npattern = \'([0-9.]+)\'\n'
+
+
+def test_red_proof_a_pull_request_cannot_drop_the_version_site_that_disagrees(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The checks job reads version.sites from the frame the pull request writes; the changelog
+    # job reads them again from the frame of the merge base.
+    root = _adopted(scratch_repo, 'python-package', capsys)
+    _write_frame(root, PYPROJECT_SITE + VERSION_SITE)
+    (root / 'VERSION').write_text('0.1.0\n', encoding='utf-8')
+    git(root, *IDENT, 'add', '-A')
+    git(root, *IDENT, 'commit', '-q', '-m', 'chore: the base')
+    git(root, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+    # The pull request lets VERSION fall behind and drops its site from the frame.
+    (root / 'VERSION').write_text('0.0.9\n', encoding='utf-8')
+    _write_frame(root, PYPROJECT_SITE)
+    git(root, *IDENT, 'add', '-A')
+    git(root, *IDENT, 'commit', '-q', '-m', 'chore: drop a version site')
+    assert main(['version-sites']) == 0
+    capsys.readouterr()
+    payload = {'pull_request': {'title': 'chore: drop a version site', 'body': 'A site.'}}
+    given = {**AUDIT, 'checks': 'success', 'hooks': 'success'}
+    run = _run(root, tmp_path, 'pull_request', given, payload, head_ref='chore/drop-a-site')
+    results = run.results()
+    assert results['railform/changelog'] == 'failure', run.text()
+    assert 'railform-verdict: changelog-gate pass ok' in run.text()
+    assert 'VERSION: reads 0.0.9, not 0.1.0' in run.text()
+    assert 'railform-verdict: version-sites fail mismatch' in run.text()
+    assert results['gate'] == 'failure', run.text()
+    # With VERSION kept in step, the same pull request passes.
+    (root / 'VERSION').write_text('0.1.0\n', encoding='utf-8')
+    git(root, *IDENT, 'add', '-A')
+    git(root, *IDENT, 'commit', '-q', '-m', 'chore: keep VERSION in step')
+    run = _run(root, tmp_path, 'pull_request', given, payload, head_ref='chore/drop-a-site')
+    assert 'railform-verdict: version-sites pass ok' in run.text()
+    assert run.results()['railform/changelog'] == 'success', run.text()
+    assert run.results()['gate'] == 'success', run.text()
 
 
 # --- the pipeline, run for real ----------------------------------------------------------------

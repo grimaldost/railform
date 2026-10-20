@@ -12,9 +12,36 @@ All notable changes to this project are recorded here, in the
   beside `ci.yml`, `railform arm`, the `gate` ruleset, type detection, a python-package example
   and the move to a newer pin. `tests/test_adopting_guide.py` fails when the guide names a verb or
   a flag the command does not have.
+- `railform private-refs --event PATH` adds the title and body of the pull request in a GitHub
+  event payload to the scan, reported as `pull request title` and `pull request body`. The
+  `commit-lane` job of the reusable workflow runs
+  `private-refs --diff "origin/${BASE_REF}...HEAD" --event "$GITHUB_EVENT_PATH"`, so a home path
+  (or, with a names file, a private name) in a commit message or in the pull request's text now
+  fails CI; before, the `checks` job scanned the tracked files only and `pr-text` checked
+  attribution only. A Dependabot pull request whose body quotes upstream release notes can fail
+  with `home-path` for a path it did not write: edit the body to drop the path, or add that user
+  segment to `private_refs.placeholders`.
+- `railform version-sites --base REF` reads `version.sites` and `release.tag_prefix` from the
+  `railform.toml` committed at the merge base of REF and HEAD (the working tree's when that commit
+  has none) and names the frame it read; it does not combine with `--bump`. The `changelog` job
+  of the reusable workflow runs `version-sites --base "origin/${BASE_REF}"` on pull requests, so
+  a pull request can no longer drop the version site that disagrees from its own frame.
 
 ### Changed
 
+- `railform changelog-gate` reads its frame from the `railform.toml` committed at the merge base
+  of the range, and from the working tree only when the merge base has none (the adoption pull
+  request). A pull request that edits `changelog.records`, `version.sites`,
+  `release.tag_prefix`, `changelog.enabled` or another key is judged by the frame it replaces, and
+  its frame holds from the next pull request on; an edit the old frame would fail, such as
+  moving a version site to another file, lands in three pull requests (README, "The changelog
+  gate", and `docs/adopting.md`, "Changing the frame after adoption"). The gate now resolves the range before it reads `changelog.enabled`, and a
+  finding line names the frame read. A `railform.toml` at the merge base that breaks the schema
+  exits 2.
+- A `changelog.records` watch that covers no tracked path at HEAD fails the changelog gate with
+  `watches-nothing`, instead of printing `::warning::changelog.records: watches no tracked path`
+  and passing. The watch judged is the frame at HEAD, so the pull request that mends an empty
+  watch passes.
 - The reusable workflows pin `astral-sh/setup-uv` at v10.3.0 (`1c37ad07a6a961277cf70c0d37d6f313000f5884`), up from v10.2.0.
 
 ## [0.1.0] - 2026-10-11

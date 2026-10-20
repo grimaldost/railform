@@ -34,9 +34,16 @@ the record diff is taken from the merge base of BASE and HEAD to HEAD. Three rul
   firing is a `::warning::` finding with the fixed text `consumer-affecting (advisory)` and the
   verdict stays a pass; with `"error"` it fails.
 
-When no tracked path at HEAD other than the record files falls under any `changelog.records` row,
-the gate prints `::warning::changelog.records: watches no tracked path` and keeps its verdict: a
-watch that covers nothing would otherwise pass every run in silence.
+- **The watch covers something** (`watches-nothing`). When no tracked path at HEAD other than the
+  record files falls under a `changelog.records` row of the frame at HEAD, the gate fails: a watch
+  that covers nothing would pass every later pull request unread. The watch judged is HEAD's,
+  not the merge base's, so a pull request that mends an empty watch can merge.
+
+**Which frame.** The rules read the `railform.toml` committed at the merge base, so a pull
+request cannot loosen the gate that judges it by editing `changelog.records`, `version.sites`,
+`release.tag_prefix`, `changelog.enabled` or any other key: a change to the frame holds from the
+next pull request on. A merge base with no `railform.toml` (the adoption pull request) leaves the
+working tree's frame in force. The verdict names the frame it read.
 
 What the port changes from its source: the record files and their prefixes come from
 `changelog.records` instead of one `CHANGELOG.md` over `src/`; the version comes from
@@ -47,7 +54,8 @@ spec does not name it and adopters use other section headings.
 
 Release lines and version sites are read through `railform.version_sites`, the one reading the
 gates share, so a site configuration that `railform version-sites` refuses is a configuration
-error here too (exit 2). `changelog.enabled = false` passes at once and reads no history.
+error here too (exit 2). `changelog.enabled = false` in the frame that judges passes at once and
+judges no commit.
 """
 
 from __future__ import annotations
@@ -70,12 +78,13 @@ VERB = 'changelog-gate'
 UNRECORDED = 'unrecorded'
 RELEASE_HEADING = 'release-heading'
 CONSUMER_AFFECTING = 'consumer-affecting'
+WATCHES_NOTHING_CODE = 'watches-nothing'
 # When several rules fail, the verdict names the first in this order.
-CODE_ORDER = (UNRECORDED, RELEASE_HEADING, CONSUMER_AFFECTING)
+CODE_ORDER = (UNRECORDED, RELEASE_HEADING, CONSUMER_AFFECTING, WATCHES_NOTHING_CODE)
 
 MARKER = '(consumer-affecting)'
 ADVISORY = 'consumer-affecting (advisory)'
-# A records watch that covers no tracked path passes every run in silence, so it is announced.
+# A records watch that covers no tracked path would pass every later run in silence: it fails.
 WATCHES_NOTHING = 'watches no tracked path'
 REASON_FIELD = '<reason>'
 LISTED_PATHS = 5
@@ -510,11 +519,21 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('range', metavar='BASE...HEAD', help='for example origin/main...HEAD')
 
 
-def _judge(git: _Git, spec: str, settings: Settings) -> Verdict:
-    base_rev, head_rev = commit_lane.split_range(spec)
-    base, head = git.commit(base_rev), git.commit(head_rev)
-    merge_base = git.merge_base(base, head)
+@dataclass(frozen=True)
+class _Range:
+    """The resolved range: BASE, HEAD and their merge base, as commits."""
 
+    base: str
+    head: str
+    merge_base: str
+
+
+def _judge(
+    git: _Git, span: _Range, settings: Settings, watch: Settings | None, source: str
+) -> Verdict:
+    """Judge the range by `settings` (the merge base's frame); `watch`, the settings at HEAD, is
+    the watch that must cover a tracked path (None when the frame at HEAD turns the gate off)."""
+    base, head, merge_base = span.base, span.head, span.merge_base
     commits = [
         CommitChange(sha, message, tuple(git.own_paths(sha, parents)))
         for sha, parents, message in git.commits(base, head)
@@ -528,11 +547,15 @@ def _judge(git: _Git, spec: str, settings: Settings) -> Verdict:
     ]
 
     found: dict[str, list[str]] = {code: [] for code in CODE_ORDER}
-    notes: list[str] = []
+    notes: list[str] = [f'the frame: {source}']
     found[UNRECORDED] = unrecorded(commits, recorded, settings)
 
-    if not git.watches_something(head, settings):
-        notes.append(f'::warning::changelog.records: {WATCHES_NOTHING}')
+    if watch is not None and not git.watches_something(head, watch):
+        found[WATCHES_NOTHING_CODE].append(
+            f'changelog.records: {WATCHES_NOTHING} at HEAD other than the record files, so the '
+            'gate would pass every later pull request unread; give a row a prefix that covers '
+            'the code, or turn the gate off with changelog.enabled = false and an exceptions row'
+        )
 
     for file, (added, removed) in sides.items():
         cut = cut_version(added, removed)
@@ -573,17 +596,32 @@ def _judge(git: _Git, spec: str, settings: Settings) -> Verdict:
     return Verdict.ok(VERB, (*notes, summary))
 
 
+def _frames(root: Path, merge_base: str) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """The frame that judges the range (the merge base's, else the working tree's), the frame
+    at HEAD (the working tree's), and a phrase naming the first."""
+    at_head = frame.load(root)
+    at_base = frame.effective_frame_at(root, merge_base)
+    if at_base is None:
+        return at_head, at_head, 'the working tree (the merge base has no railform.toml)'
+    return at_base, at_head, f'railform.toml at the merge base {merge_base[:12]}'
+
+
 def run(args: argparse.Namespace) -> Verdict:
     try:
         root = frame.repository_root()
-        effective = frame.load(root)
+        git = _Git(root)
+        base_rev, head_rev = commit_lane.split_range(args.range)
+        base, head = git.commit(base_rev), git.commit(head_rev)
+        span = _Range(base, head, git.merge_base(base, head))
+        judging, at_head, source = _frames(root, span.merge_base)
+        if not judging['changelog']['enabled']:
+            return Verdict.ok(
+                VERB,
+                (f'the frame ({source}) turns the changelog gate off (changelog.enabled = false)',),
+            )
+        watch = settings(at_head) if at_head['changelog']['enabled'] else None
+        return _judge(git, span, settings(judging), watch, source)
     except (frame.FrameError, frame.FrameSchemaError) as exc:
         return Verdict.usage(VERB, f'{VERB}: {exc}')
-    if not effective['changelog']['enabled']:
-        return Verdict.ok(
-            VERB, ('the frame turns the changelog gate off (changelog.enabled = false)',)
-        )
-    try:
-        return _judge(_Git(root), args.range, settings(effective))
     except (GateError, commit_lane.LaneError) as exc:
         return Verdict.usage(VERB, f'{VERB}: {exc}')

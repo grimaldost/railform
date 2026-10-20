@@ -201,7 +201,7 @@ def test_every_railform_command_is_installed_from_the_input(workflow: dict[Any, 
             installed = run.count(f'{INSTALL} {verb}')
             assert invoked == installed, (verb, run)
             commands += invoked
-    assert commands == 10
+    assert commands == 12
 
 
 def test_no_run_text_interpolates_an_expression(workflow: dict[Any, Any]) -> None:
@@ -408,11 +408,26 @@ def test_the_commit_lane_checks_the_range_the_text_and_the_branch(
         f'{INSTALL} commit-range "origin/${{BASE_REF}}...HEAD"',
         f'{INSTALL} pr-text',
         f'{INSTALL} branch-name -- "$HEAD_REF"',
+        f'{INSTALL} private-refs --diff "origin/${{BASE_REF}}...HEAD" --event "$GITHUB_EVENT_PATH"',
     ]
     assert _step(job, 'commit-range')['env'] == {
         'BASE_REF': '${{ github.base_ref }}',
         'UV_EXCLUDE_NEWER': DATE,
     }
+
+
+def test_red_proof_the_commit_lane_scans_the_messages_and_the_pull_request_text(
+    workflow: dict[Any, Any],
+) -> None:
+    # The checks job runs private-refs over the tracked files only, so a home path or a private
+    # name in a commit message or in the pull request's title or body reached the base branch
+    # unseen. The commit lane scans the range, its messages included, and the event's text.
+    job = _job(workflow, 'commit-lane')
+    step = _step(job, 'private-refs')
+    assert step['name'] == 'railform private-refs (the range, its messages and the pull request)'
+    assert step['env'] == {'BASE_REF': '${{ github.base_ref }}', 'UV_EXCLUDE_NEWER': DATE}
+    assert 'if' not in step  # it runs under the job's condition, nothing narrower
+    assert job['if'] == PR_CONDITION
 
 
 def test_red_proof_the_branch_name_step_takes_the_head_branch_through_the_environment(
@@ -443,11 +458,26 @@ def test_the_changelog_job_runs_the_gate_on_pull_requests_only(workflow: dict[An
         context = {'github': github_context(event)}
         assert holds(job['if'], context, Status()) is runs, event
     assert job['needs'] == 'frame'
-    assert _runs(job) == [f'{INSTALL} changelog-gate "origin/${{BASE_REF}}...HEAD"']
+    assert _runs(job) == [
+        f'{INSTALL} changelog-gate "origin/${{BASE_REF}}...HEAD"',
+        f'{INSTALL} version-sites --base "origin/${{BASE_REF}}"',
+    ]
     step = _step(job, 'changelog-gate')
     assert step['name'] == 'railform changelog-gate'
     assert step['env'] == {'BASE_REF': '${{ github.base_ref }}', 'UV_EXCLUDE_NEWER': DATE}
     assert 'if' not in step  # it runs under the job's condition, nothing narrower
+
+
+def test_red_proof_the_version_sites_of_a_pull_request_come_from_its_base(
+    workflow: dict[Any, Any],
+) -> None:
+    # The checks job reads version.sites from the frame the pull request writes, so a pull
+    # request could drop the site that disagrees. The changelog job, which has the history,
+    # checks the sites again with the frame of the merge base.
+    step = _step(_job(workflow, 'changelog'), 'version-sites --base')
+    assert step['name'] == 'railform version-sites --base (the frame of the merge base)'
+    assert step['env'] == {'BASE_REF': '${{ github.base_ref }}', 'UV_EXCLUDE_NEWER': DATE}
+    assert 'if' not in step
 
 
 def _hygiene_ids() -> list[str]:

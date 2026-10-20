@@ -26,6 +26,12 @@ The names half reads a private list of terms from the one file that the variable
 variable or the file it is silent, which is why it is silent in CI; `--require-names` makes a
 missing file a failure. No list of names is part of this package.
 
+`--event PATH` adds the title and body of the pull request in a GitHub event payload, read as
+`railform pr-text` reads them (a `null` or absent value is empty text) and labelled
+`pull request title` and `pull request body`. The `commit-lane` job of the reusable workflow runs
+it with `--diff` over the pull request's range, so the commit messages and the pull request text
+are checked as well as the tracked files.
+
 No output contains a matched name or the user segment of a matched home path. A finding shows the
 shape with the segment replaced by `<name>`, and a term only by its line number in the names file.
 """
@@ -39,7 +45,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from railform import frame
+from railform import commit_lane, frame, pr_text
 from railform.verdict import Verdict
 
 if TYPE_CHECKING:
@@ -330,6 +336,17 @@ def sources_for_diff(root: Path, spec: str) -> list[Source]:
     return found
 
 
+def sources_for_event(path: str | None) -> list[Source]:
+    """The title and body of the pull request in the event payload at `path`, if one is given."""
+    if path is None:
+        return []
+    try:
+        title, body = pr_text.read_pull_request(path)
+    except commit_lane.LaneError as exc:
+        raise UsageError(f'--event: {exc}') from exc
+    return [Source('pull request title', title), Source('pull request body', body)]
+
+
 def sources_for_text(files: list[str]) -> list[Source]:
     found: list[Source] = []
     for given in files:
@@ -366,7 +383,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.description = (
         'Fail when text carries a home-directory path (unless its user segment is a '
         'placeholder) or a term from the private names file. Scope: the given paths; else '
-        'the files and commit messages of --diff; else every tracked file.'
+        'the files and commit messages of --diff; else every tracked file. --text and --event '
+        'add to any scope.'
     )
     parser.add_argument('paths', nargs='*', metavar='PATH', help='files to check (staged names)')
     parser.add_argument(
@@ -378,6 +396,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         action='append',
         default=[],
         help='also check this file, such as a pull request title or body (repeatable)',
+    )
+    parser.add_argument(
+        '--event',
+        metavar='PATH',
+        help='also check the pull request title and body in this GitHub event payload',
     )
     parser.add_argument(
         '--require-names',
@@ -410,6 +433,7 @@ def run(args: argparse.Namespace) -> Verdict:
         else:
             sources = _tracked_sources(root)
         sources += sources_for_text(list(args.text))
+        sources += sources_for_event(args.event)
     except UsageError as exc:
         # A message may carry a path the user gave: it is redacted like a finding's label.
         return Verdict.usage(VERB, f'{VERB}: {checker.label(str(exc))}')

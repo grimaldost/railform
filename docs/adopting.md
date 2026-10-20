@@ -130,9 +130,13 @@ run the checks that CI will run on it:
 ```
 railform hooks-check
 railform private-refs
+railform private-refs --diff origin/main...HEAD
 railform commit-range origin/main...HEAD
 railform branch-name
 ```
+
+The second `private-refs` reads the branch's commit messages as well as the files it changes; in
+CI the `commit-lane` job also passes the pull request's title and body (`--event`).
 
 A repository with files a coding-assistant session loads (`session_loaded` in the frame) also runs
 `railform session-paths --diff origin/main...HEAD --frame-from origin/main`.
@@ -273,6 +277,32 @@ railform-verdict: adopt pass ok
 
 The ruleset then requires `gate` and drops `test` and `lint` (step 6), `pre-commit` is added to the
 dev dependencies, and each contributor runs `railform arm` in their clone (step 7).
+
+## Changing the frame after adoption
+
+On a pull request, the changelog gate and the `changelog` job's `version-sites --base` read the
+`railform.toml` of the merge base, not the one the pull request writes. A pull request that
+edits `changelog.records`, `version.sites`, `release.tag_prefix` or `changelog.enabled` is judged
+by the frame it replaces, and its own frame holds from the next pull request on. The adoption pull
+request is the exception: its merge base has no `railform.toml`, so the frame it writes judges it.
+
+Most edits still land in one pull request, because the old frame passes them: a new records row, a
+records file moved to another path with its row in a pull request of its own, a new version site
+whose file already agrees, a prefix that watches more. An edit that the old frame would fail, such
+as moving a version site to another file, takes three, each judged by the frame the step before it
+merged:
+
+1. Add the new version site beside the old one, with the new file in step, and merge.
+2. Remove the old site's row and leave the old file as it is, still in step, and merge.
+3. Remove the old file, or the version in it, which no frame reads any more.
+
+Steps 2 and 3 cannot be one pull request: its judge is the frame of step 1, which still lists the
+old site, and a missing file or one with no version fails `version-sites` as `unreadable`.
+
+There is no `exceptions` row for these keys: they are parameter keys, which never depart, and a row
+written by the pull request it excuses would be the self-judgement the merge base's frame removes.
+The changelog gate also fails, with `watches-nothing`, a pull request whose own frame watches no
+tracked path, since every pull request after it would pass unread.
 
 ## Moving to a newer pin
 

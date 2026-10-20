@@ -21,6 +21,13 @@ the release check share (`release_lines`, `line_of`, `line_name`, `version_sites
 `read_site`, `reading_of`, `triple`), so the repository keeps one reading of them. `reading_of`
 is the reading over bytes, for a verb that reads a site at a git revision.
 
+`--base REF` reads `version.sites` and `release.tag_prefix` (the whole frame) from the
+`railform.toml` committed at the merge base of REF and HEAD instead of the working tree's, so a
+change cannot drop or loosen the sites it is judged by; the files are still read in the working
+tree. A merge base with no `railform.toml` (the adoption pull request) leaves the working tree's
+frame in force, and the verb says which frame it read. The reusable workflow's `changelog` job
+runs it so on pull requests, beside the `checks` job's run over the working tree's frame.
+
 A site's pattern is the repository's, and the file is read with no newline translation: a group
 that can reach the end of a line (`(.*)$`) captures a `\\r` in a CRLF file, so the site reads
 another value there. Write the group so that it stops before the line end (`([0-9.]+)`).
@@ -377,6 +384,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help='write this version to the non-authored sites of one release line, then check',
     )
     parser.add_argument(
+        '--base',
+        metavar='REF',
+        help=(
+            'read version.sites and release.tag_prefix from railform.toml at the merge base of '
+            "REF and HEAD (the working tree's when that commit has none); not with --bump"
+        ),
+    )
+    parser.add_argument(
         '--prefix',
         metavar='PREFIX',
         help=(
@@ -392,15 +407,31 @@ def run(args: argparse.Namespace) -> Verdict:
         return Verdict.usage(VERB, f'{VERB}: --bump takes X.Y.Z, three dot-separated integers')
     if args.prefix is not None and version is None:
         return Verdict.usage(VERB, f'{VERB}: --prefix is only meaningful with --bump')
+    if args.base is not None and version is not None:
+        return Verdict.usage(
+            VERB, f'{VERB}: --base judges a change against its merge base; it does not bump'
+        )
+    findings: list[str] = []
     try:
         root = frame_module.repository_root()
         frame = frame_module.load(root)
+        if args.base is not None:
+            commit = frame_module.merge_base(root, args.base)
+            at_base = frame_module.effective_frame_at(root, commit)
+            if at_base is None:
+                findings.append(
+                    'version.sites: the merge base has no railform.toml; read from the working tree'
+                )
+            else:
+                frame = at_base
+                findings.append(
+                    f'version.sites: read from railform.toml at the merge base {commit[:12]}'
+                )
         lines = release_lines(frame)
         sites = version_sites(frame, lines)
         prefix = _chosen_prefix(args.prefix, lines, sites) if version is not None else None
     except (*CONFIG_ERRORS, SitesError) as exc:
         return Verdict.usage(VERB, f'{VERB}: {exc}')
-    findings: list[str] = []
     if version is not None:
         try:
             findings += bump(root, sites, prefix, version)
