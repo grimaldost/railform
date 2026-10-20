@@ -619,6 +619,11 @@ def test_a_squash_release_commit_is_judged_and_a_merge_commit_is_not(
         ('1.0.0', '', 'release/1.0.0', 'chore: x', True),
         ('1.0.0', '', 'feat/x', 'release: 1.0.0 (from 0.9.0)', True),
         ('1.0.0', '', 'release/1.0.0-', 'chore: x', True),
+        # One pull request that releases two lines identifies the first only: the version must be
+        # the first of the title, so the second line's tag fails no-release-pr (README, Limits).
+        ('0.2.0', 'a', 'feat/x', 'release: a 0.2.0, b 0.3.0', True),
+        ('0.3.0', 'b', 'feat/x', 'release: a 0.2.0, b 0.3.0', False),
+        ('0.3.0', 'b', 'release/a-0.2.0-b-0.3.0', 'chore: x', False),
     ],
 )
 def test_a_release_pull_request_carries_the_version_and_the_name_as_tokens(
@@ -626,6 +631,60 @@ def test_a_release_pull_request_carries_the_version_and_the_name_as_tokens(
 ) -> None:
     candidate = release_check.Pull(1, title, head, '0' * 40)
     assert release_check.is_release_pull(candidate, version, name) is identifies
+
+
+@pytest.mark.parametrize(
+    ('prefix', 'pattern', 'head', 'title', 'identifies'),
+    [
+        ('rel/', r'^release: ', 'rel/0.2.0', 'chore: x', True),
+        ('rel/', r'^release: ', 'release/0.2.0', 'chore: x', False),
+        ('release/', r'^chore\(release\): ', 'feat/x', 'chore(release): 0.2.0', True),
+        ('release/', r'^chore\(release\): ', 'feat/x', 'release: 0.2.0', False),
+        # An empty prefix or pattern identifies nothing by that side.
+        ('', r'^release: ', 'release/0.2.0', 'chore: x', False),
+        ('', r'^release: ', 'feat/x', 'release: 0.2.0', True),
+        ('release/', '', 'feat/x', 'release: 0.2.0', False),
+        ('release/', '', 'release/0.2.0', 'release: 0.2.0', True),
+    ],
+)
+def test_the_release_pull_request_convention_is_the_frames(
+    prefix: str, pattern: str, head: str, title: str, identifies: bool
+) -> None:
+    candidate = release_check.Pull(1, title, head, '0' * 40)
+    found = release_check.is_release_pull(
+        candidate, '0.2.0', '', branch_prefix=prefix, title_pattern=pattern
+    )
+    assert found is identifies
+
+
+def test_red_proof_a_release_pull_request_under_another_convention_is_found(
+    scratch_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = base(scratch_repo)
+    tag(scratch_repo, 'v0.2.0', repo.merge)
+    pulls_file(tmp_path, monkeypatch, [pull(1, 'chore(release): 0.2.0', 'ship-0.2.0', repo.merge)])
+    code, verdict, findings = check(capsys)
+    assert (code, verdict) == (1, 'fail no-release-pr')
+    assert findings == [
+        'v0.2.0: no merged pull request releases 0.2.0 (a head branch release/... or a title '
+        r"matching '^release(\([^)]*\))?!?: ' carrying the version)"
+    ]
+    write_frame(
+        scratch_repo,
+        '[release]\npr_branch_prefix = "ship-"\n' r"pr_title_pattern = '^chore\(release\): '" '\n',
+    )
+    assert check(capsys)[:2] == (0, 'pass ok')
+    # The default convention no longer identifies.
+    pulls_file(tmp_path, monkeypatch, base_pulls(repo))
+    code, verdict, findings = check(capsys)
+    assert (code, verdict) == (1, 'fail no-release-pr')
+    assert findings == [
+        'v0.2.0: no merged pull request releases 0.2.0 (a head branch ship-... or a title '
+        r"matching '^chore\(release\): ' carrying the version)"
+    ]
 
 
 @pytest.mark.parametrize(
