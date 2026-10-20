@@ -349,7 +349,18 @@ there only, and has a bump drop that line's `\r`.
 - **Release lines.** Sites are grouped by the `release.tag_prefix` row their path falls under (the
   longest matching `prefix`), so two plugins at different versions both pass. Within a line the
   expected version is the one most sites read, and the earliest of them in `version.sites` order
-  on a tie. Authored sites take part. Versions compare as exact strings.
+  on a tie. Authored sites take part. Versions compare as exact strings, with the two
+  exceptions below.
+- **Between releases.** Two states are not failures. A line whose writable site reads a
+  development version `X.Y.Z.devN` (or `X.Y.Z.dev`) is on its way to `X.Y.Z`: an authored
+  site on that line (the newest changelog heading) that reads `X.Y.Z` or a lower release
+  passes and takes no part in the count, since the heading of the release being prepared is
+  written when it is cut. The writable sites still have to read one value, the dev version
+  included, and an authored site past `X.Y.Z` still fails. And an authored site whose file
+  has level-2 headings that are all `## [Unreleased]` has no release heading yet: it is
+  skipped, with the finding `<path>: holds no release heading yet, only ## [Unreleased]`.
+  A file with another heading the pattern misses (`## 0.1.0`), and a site that is not
+  authored, still fails with `unreadable`.
 - **Failures.** A site that reads another version fails with `mismatch`
   (`<path>: reads <value>, not <expected>`, with `(authored: write it by hand)` for an authored
   site). A site whose file is missing or is not UTF-8, or whose pattern matches nothing, fails with

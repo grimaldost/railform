@@ -13,8 +13,11 @@ a writer that rewrote it would rename the previous release.
 
 The check judges each release line apart (a line is a `release.tag_prefix` row and the paths under
 its prefix): the sites of a line agree when they read the value most of them read, and a site that
-reads another value, or none, fails. `--bump` writes the version to the writable sites of one line
-and then runs the same check, so a bump that leaves an authored heading behind still fails.
+reads another value, or none, fails. Two states between releases pass: an authored site that reads
+a release at or below the development version `X.Y.Z.devN` of a writable site on its line, and an
+authored site whose file holds only `## [Unreleased]` (see `judge`). `--bump` writes the version to
+the writable sites of one line and then runs the same check, so a bump that leaves an authored
+heading behind still fails.
 
 This module also owns the reading of release lines and version sites that the changelog gate and
 the release check share (`release_lines`, `line_of`, `line_name`, `version_sites`, `site_value`,
@@ -57,6 +60,11 @@ CODE_ORDER = (UNREADABLE, MISMATCH)
 
 _VERSION = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+', re.ASCII)
 _TRIPLE = re.compile(r'([0-9]+)\.([0-9]+)\.([0-9]+)', re.ASCII)
+# A development version between two releases: `X.Y.Z.dev` with an optional number.
+_DEV = re.compile(r'([0-9]+\.[0-9]+\.[0-9]+)\.dev[0-9]*', re.ASCII)
+# Every level-2 heading line of a changelog, to tell one that holds only `[Unreleased]`.
+_HEADING = re.compile(r'^##(?!#)[ \t]*(.*?)[ \t]*$', re.MULTILINE)
+_UNRELEASED = re.compile(r'\[?unreleased\]?(?:\W.*)?', re.IGNORECASE)
 
 CONFIG_ERRORS = (frame_module.FrameError, frame_module.FrameSchemaError)
 
@@ -256,28 +264,74 @@ def expected_value(values: Iterable[str]) -> str | None:
     return tally.most_common(1)[0][0] if tally else None
 
 
-def check(root: Path, lines: list[Line], sites: list[Site]) -> list[Failure]:
-    """Judge every line apart; return the failures in site order."""
+def _only_unreleased(text: str) -> bool:
+    """Whether the changelog text has a level-2 heading and every one is `[Unreleased]`: a
+    changelog before its first release heading. A heading the site's pattern misses, such as
+    `## 0.1.0`, makes it a misread, not an unreleased changelog."""
+    headings = _HEADING.findall(text)
+    return bool(headings) and all(_UNRELEASED.fullmatch(heading) for heading in headings)
+
+
+def _dev_ceilings(sites: list[Site], readings: list[Reading]) -> dict[str, tuple[int, int, int]]:
+    """Per release line (by prefix), the highest `X.Y.Z` that a non-authored site's development
+    version `X.Y.Z.devN` is on its way to."""
+    ceilings: dict[str, tuple[int, int, int]] = {}
+    for site, reading in zip(sites, readings, strict=True):
+        found = _DEV.fullmatch(reading.value) if reading.value and not site.authored else None
+        base = triple(found.group(1)) if found else None
+        if base is not None:
+            ceilings[site.line.prefix] = max(base, ceilings.get(site.line.prefix, base))
+    return ceilings
+
+
+def judge(root: Path, lines: list[Line], sites: list[Site]) -> tuple[list[Failure], list[str]]:
+    """Judge every line apart; return the failures in site order and the notes.
+
+    Two states between releases are not failures. An authored site (the changelog heading) that
+    reads a release at or below the development version `X.Y.Z.devN` of a writable site on its
+    line is behind the release being prepared, as it should be, and takes no part in the vote. And
+    an authored site whose file holds no release heading yet, only `## [Unreleased]`, has no
+    version to compare; a note says so.
+    """
     readings = [read_site(root, site) for site in sites]
+    ceilings = _dev_ceilings(sites, readings)
+
+    def excused(site: Site, reading: Reading) -> bool:
+        ceiling = ceilings.get(site.line.prefix)
+        value = triple(reading.value) if site.authored else None
+        return ceiling is not None and value is not None and value <= ceiling
+
+    voting = [
+        (site.line.prefix, reading.value)
+        for site, reading in zip(sites, readings, strict=True)
+        if reading.value is not None and not excused(site, reading)
+    ]
     expected: dict[str, str | None] = {}
     for line in lines:
         expected[line.prefix] = expected_value(
-            reading.value
-            for site, reading in zip(sites, readings, strict=True)
-            if site.line.prefix == line.prefix and reading.value is not None
+            value for prefix, value in voting if prefix == line.prefix
         )
     failures: list[Failure] = []
+    notes: list[str] = []
     for site, reading in zip(sites, readings, strict=True):
         if reading.value is None:
+            if site.authored and reading.text is not None and _only_unreleased(reading.text):
+                notes.append(f'{site.path}: holds no release heading yet, only ## [Unreleased]')
+                continue
             message = f'{site.path}: no version ({reading.why})'
             failures.append(Failure(UNREADABLE, site.path, message))
             continue
         wanted = expected[site.line.prefix]
-        if reading.value != wanted:
+        if reading.value != wanted and not excused(site, reading):
             note = ' (authored: write it by hand)' if site.authored else ''
             message = f'{site.path}: reads {reading.value}, not {wanted}{note}'
             failures.append(Failure(MISMATCH, site.path, message))
-    return failures
+    return failures, notes
+
+
+def check(root: Path, lines: list[Line], sites: list[Site]) -> list[Failure]:
+    """Judge every line apart; return the failures in site order."""
+    return judge(root, lines, sites)[0]
 
 
 # --- --bump (contract section 4.4) ---------------------------------------------------------------
@@ -437,7 +491,8 @@ def run(args: argparse.Namespace) -> Verdict:
             findings += bump(root, sites, prefix, version)
         except SitesError as exc:
             return Verdict.usage(VERB, f'{VERB}: {exc}')
-    failures = check(root, lines, sites)
+    failures, notes = judge(root, lines, sites)
+    findings += notes
     if not sites:
         findings.append('no version sites are declared in version.sites; nothing to check')
     if version is not None:

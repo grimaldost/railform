@@ -50,6 +50,11 @@ All notable changes to this project are recorded here, in the
   and passing. The watch judged is the frame at HEAD, so the pull request that mends an empty
   watch passes.
 - The reusable workflows pin `astral-sh/setup-uv` at v10.3.0 (`1c37ad07a6a961277cf70c0d37d6f313000f5884`), up from v10.2.0.
+- `railform version-sites` accepts two states between releases. An authored site (the newest
+  changelog heading) that reads `X.Y.Z` or a lower release passes beside a writable site that
+  reads `X.Y.Z.devN`, and takes no part in the count; an authored site whose file holds only
+  `## [Unreleased]` is skipped with a finding instead of failing `unreadable`. Writable sites
+  still have to agree, dev versions included.
 - The default `commit.attribution_patterns` name each product as a whole word and cover more of
   them: the stamp arm now catches "Generated with ChatGPT" and "Generated with GitHub Copilot",
   and neither arm refuses an ordinary line that names `CLAUDE.md` (or an address such as
