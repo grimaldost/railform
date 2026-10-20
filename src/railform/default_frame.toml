@@ -76,6 +76,10 @@ attribution_patterns = [
 # own list replaces this one whole, so one with only per-plugin changelogs has no root row.
 records = [{ prefix = "", file = "CHANGELOG.md" }]
 contract_surfaces = []
+# Path prefixes that no record is charged for, whichever row would own them, unless a row names a
+# prefix at least as long. The lock and the workflows are what a Dependabot pull request moves
+# alone, and it cannot add a trailer; they ship nothing a changelog reader would look for.
+unwatched = ["uv.lock", ".github/"]
 trailer = "Changelog: none (<reason>)"
 consumer_affecting = "advisory"
 enabled = true

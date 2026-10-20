@@ -96,7 +96,18 @@ Some keys hold rows rather than plain values:
   whole, so a repository whose only changelogs are per plugin lists those rows and has no root
   row. A tag row's `since` is optional and defaults to `""`; `railform frame --json` shows it on
   every row (see the release check below). The `python-package` preset's records row
-  watches `src/` only; the other types watch every path.
+  watches `src/` only; the other types watch every path, `uv.lock` and `.github/`
+  excepted (`changelog.unwatched`, below).
+- `changelog.unwatched` is a list of path prefixes (plain, case-sensitive prefixes of a
+  repository-relative path, as in `changelog.records`) that no record is charged for,
+  whichever row would own them. It defaults to `["uv.lock", ".github/"]` in every type: a
+  Dependabot pull request that moves only the lock or a workflow cannot add a trailer, and a
+  change to either ships nothing a changelog reader looks for. The more specific line wins: a
+  records row whose prefix is at least as long as the entry (a row with the prefix `.github/`,
+  say) watches the path again, and an entry longer than the row's prefix takes it out. Unlike
+  the records, the list is not a parameter key: another list is a departure and needs an
+  `exceptions` row. A lock in a subdirectory (`plugins/a/uv.lock`) is not matched by `uv.lock`;
+  list it.
 - `version.sites` is an array of `{ path, pattern, authored }` rows: the pattern's first group is
   the version, and `authored` (default `false`) marks a site that is checked and never rewritten.
 - `release.metadata_paths` holds globs of the release metadata (the manifests). The release check
@@ -184,7 +195,9 @@ merge base to HEAD. In CI the `changelog` job runs it on pull requests as
   `changelog.records` row with the longest matching prefix, and so to that row's file; a path no
   row matches is not watched, and a record file is never charged to itself. The `python-package`
   preset watches `src/` (`CHANGELOG.md`), the other types every path, and a repository with
-  per-plugin changelogs lists one row per plugin. For each commit and each record file it is
+  per-plugin changelogs lists one row per plugin. A path under `changelog.unwatched` (by
+  default `uv.lock` and `.github/`, in every type) is not watched either, so a Dependabot
+  pull request that moves only the lock or a workflow passes unrecorded. For each commit and each record file it is
   charged to, the range must add a line to that file, or the commit must carry the trailer
   `changelog.trailer` spells, by default `Changelog: none (<reason>)` with a reason that is not
   blank (`changelog: None (a rename)` counts; `Changelog: none ()` does not). A trailer declares
@@ -211,8 +224,9 @@ merge base to HEAD. In CI the `changelog` job runs it on pull requests as
   `"error"`, declared with an `exceptions` row, makes it fail.
 
 - **The watch covers something** (`watches-nothing`). When no tracked path at HEAD other than the
-  record files falls under a `changelog.records` row of the frame at HEAD (a flat-layout package
-  on the `python-package` preset's `src/`, for example), the gate fails with
+  record files falls under a `changelog.records` row of the frame at HEAD and outside
+  `changelog.unwatched` (a flat-layout package on the `python-package` preset's `src/`, for
+  example), the gate fails with
   `changelog.records: watches no tracked path ...`: such a watch would pass every later pull
   request unread. The watch judged is HEAD's, so the pull request that mends an empty watch
   passes.

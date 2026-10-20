@@ -26,6 +26,13 @@ All notable changes to this project are recorded here, in the
   has none) and names the frame it read; it does not combine with `--bump`. The `changelog` job
   of the reusable workflow runs `version-sites --base "origin/${BASE_REF}"` on pull requests, so
   a pull request can no longer drop the version site that disagrees from its own frame.
+- `changelog.unwatched`, a list of path prefixes that no changelog record is charged for, by
+  default `["uv.lock", ".github/"]` in every type. The `python-scripts` and `plugin-marketplace`
+  presets watch every path, so a Dependabot pull request that moved only `uv.lock` or a workflow
+  failed `changelog-gate` as unrecorded, and it cannot add a trailer. A records row whose prefix
+  is at least as long as an entry watches the path again; the list is not a parameter key, so
+  another list needs an `exceptions` row. A repository whose only tracked paths are the record
+  files, the lock and the workflows fails `watches-nothing`.
 
 ### Changed
 

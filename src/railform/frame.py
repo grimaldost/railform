@@ -219,6 +219,7 @@ SCHEMA = _Table(
             {
                 'records': _rows(prefix=_Str(), file=_Str()),
                 'contract_surfaces': _STRINGS,
+                'unwatched': _STRINGS,
                 'trailer': _Str(),
                 'consumer_affecting': _Str(choices=('advisory', 'error')),
                 'enabled': _Bool(),
