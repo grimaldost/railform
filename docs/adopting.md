@@ -286,13 +286,18 @@ edits `changelog.records`, `version.sites`, `release.tag_prefix` or `changelog.e
 by the frame it replaces, and its own frame holds from the next pull request on. The adoption pull
 request is the exception: its merge base has no `railform.toml`, so the frame it writes judges it.
 
-Most edits still land in one pull request, because the old frame passes them: a new records row,
-a new version site whose file already agrees, a prefix that watches more. An edit that the old
-frame would fail takes two:
+Most edits still land in one pull request, because the old frame passes them: a new records row, a
+records file moved to another path with its row in a pull request of its own, a new version site
+whose file already agrees, a prefix that watches more. An edit that the old frame would fail, such
+as moving a version site to another file, takes three, each judged by the frame the step before it
+merged:
 
-1. Add the new rows beside the old ones (a version site for the new file, say, with the old site
-   kept and the old file still in step) and merge.
-2. Remove the old rows and the old files, now judged by the frame of step 1.
+1. Add the new version site beside the old one, with the new file in step, and merge.
+2. Remove the old site's row and leave the old file as it is, still in step, and merge.
+3. Remove the old file, or the version in it, which no frame reads any more.
+
+Steps 2 and 3 cannot be one pull request: its judge is the frame of step 1, which still lists the
+old site, and a missing file or one with no version fails `version-sites` as `unreadable`.
 
 There is no `exceptions` row for these keys: they are parameter keys, which never depart, and a row
 written by the pull request it excuses would be the self-judgement the merge base's frame removes.

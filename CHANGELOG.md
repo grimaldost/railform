@@ -18,7 +18,9 @@ All notable changes to this project are recorded here, in the
   `private-refs --diff "origin/${BASE_REF}...HEAD" --event "$GITHUB_EVENT_PATH"`, so a home path
   (or, with a names file, a private name) in a commit message or in the pull request's text now
   fails CI; before, the `checks` job scanned the tracked files only and `pr-text` checked
-  attribution only.
+  attribution only. A Dependabot pull request whose body quotes upstream release notes can fail
+  with `home-path` for a path it did not write: edit the body to drop the path, or add that user
+  segment to `private_refs.placeholders`.
 - `railform version-sites --base REF` reads `version.sites` and `release.tag_prefix` from the
   `railform.toml` committed at the merge base of REF and HEAD (the working tree's when that commit
   has none) and names the frame it read; it does not combine with `--bump`. The `changelog` job
@@ -31,9 +33,9 @@ All notable changes to this project are recorded here, in the
   of the range, and from the working tree only when the merge base has none (the adoption pull
   request). A pull request that edits `changelog.records`, `version.sites`,
   `release.tag_prefix`, `changelog.enabled` or another key is judged by the frame it replaces, and
-  its frame holds from the next pull request on; an edit the old frame would fail lands in two
-  pull requests (README, "The changelog gate", and `docs/adopting.md`, "Changing the frame after
-  adoption"). The gate now resolves the range before it reads `changelog.enabled`, and a
+  its frame holds from the next pull request on; an edit the old frame would fail, such as
+  moving a version site to another file, lands in three pull requests (README, "The changelog
+  gate", and `docs/adopting.md`, "Changing the frame after adoption"). The gate now resolves the range before it reads `changelog.enabled`, and a
   finding line names the frame read. A `railform.toml` at the merge base that breaks the schema
   exits 2.
 - A `changelog.records` watch that covers no tracked path at HEAD fails the changelog gate with

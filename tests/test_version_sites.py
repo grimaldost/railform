@@ -785,6 +785,43 @@ def test_base_with_no_railform_toml_at_the_merge_base_reads_the_working_tree(
     )
 
 
+def test_moving_a_site_to_another_file_takes_three_pull_requests(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The route of README, "The changelog gate", and docs/adopting.md, "Changing the frame after
+    # adoption": each step is judged by the frame the step before it merged.
+    moved = ('src/pkg/_version.py', "__version__ = '([^']+)'", False)
+    _standard_tree(scratch_repo, '0.2.0', '0.2.0', '0.2.0')
+    _commit_all(scratch_repo, 'chore: the base')
+
+    # Step 1 adds the new site beside the old one, with the new file in step.
+    _git(scratch_repo, 'branch', 'step-0')
+    _write(scratch_repo, 'src/pkg/_version.py', "__version__ = '0.2.0'\n")
+    _configure(scratch_repo, (*STANDARD, moved))
+    _commit_all(scratch_repo, 'chore: add the new site')
+    assert _run(capsys, '--base', 'step-0')[:2] == (0, 'pass ok')
+    _git(scratch_repo, 'branch', 'step-1')
+
+    # Removing the old row and the old file together fails: the frame of step 1 still lists it.
+    _configure(scratch_repo, (PYPROJECT, HEADING, moved))
+    (scratch_repo / 'src/pkg/__init__.py').unlink()
+    _commit_all(scratch_repo, 'chore: drop the old site and its file')
+    code, verdict, findings, _ = _run(capsys, '--base', 'step-1')
+    assert (code, verdict) == (1, 'fail unreadable'), findings
+    _git(scratch_repo, 'reset', '-q', '--hard', 'step-1')
+
+    # Step 2 removes the old row only; the old file stays in step.
+    _configure(scratch_repo, (PYPROJECT, HEADING, moved))
+    _commit_all(scratch_repo, 'chore: drop the old site')
+    assert _run(capsys, '--base', 'step-1')[:2] == (0, 'pass ok')
+    _git(scratch_repo, 'branch', 'step-2')
+
+    # Step 3 removes the old file, which no frame lists any more.
+    (scratch_repo / 'src/pkg/__init__.py').unlink()
+    _commit_all(scratch_repo, 'chore: drop the old file')
+    assert _run(capsys, '--base', 'step-2')[:2] == (0, 'pass ok')
+
+
 def test_base_with_bump_is_a_usage_error(
     scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

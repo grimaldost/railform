@@ -227,16 +227,24 @@ that judges it by editing `changelog.records`, `version.sites`, `release.tag_pre
 `changelog.enabled` or any other key. A merge base with no `railform.toml` (the adoption pull
 request) leaves the working tree's frame in force. The verdict's findings name the frame read
 (`the frame: railform.toml at the merge base <sha>`). The `railform.toml` of the merge base must
-pass the schema of the railform that runs; when it does not, the gate exits 2 and names it.
+pass the schema of the railform that runs; when it does not, the gate exits 2 and names it. After a
+re-pin to a railform that no longer reads a key of the old frame, every pull request would exit 2,
+the one that rewrites the frame included, since its merge base still holds the old frame; so a
+release that renames or removes a frame key keeps reading the old key in a merge base's frame.
 
 A pull request that changes these keys is therefore judged by the frame it replaces, and the new
-frame holds from the next pull request on. Most such changes pass in one pull request: one that
-adds a records row, or watches a new prefix, is judged by the old rows and passes when it records
-or declares its commits. A change that the old frame would fail lands in two pull requests: the
-first adds the new rows beside the old ones (a second version site, a second records row), the
-second removes the old rows and files. There is no `exceptions` row for this: the keys are
-parameter keys, which never depart, and a row the pull request wrote would be the same
-self-judgement the merge base's frame removes. The two steps add a pull request and no mechanism.
+frame holds from the next pull request on. Most such changes pass in one pull request: one that adds
+a records row or watches a new prefix is judged by the old rows and passes when it records or
+declares its commits, and one that moves a records file and its row, with nothing else in it, passes
+too (a version site in that file moves by the steps below). A change that the old frame would fail,
+such as moving a version site to another file, lands in three pull requests, each judged by the
+frame the one before it merged: the first adds the new site beside the old one, with the new file in
+step; the second removes the old row and leaves the old file as it is, still in step; the third
+removes the old file, or its version, which no frame reads any more. Removing the old row and the
+old file together fails, because the frame that judges that pull request still lists the site and
+finds the file `unreadable`. There is no `exceptions` row for this: the keys are parameter keys,
+which never depart, and a row the pull request wrote would be the same self-judgement the merge
+base's frame removes. The steps add pull requests and no mechanism.
 
 These exit 2: an empty `changelog.records`, a records row with no file, a trailer template
 without exactly one `<reason>`, a range not of the form `BASE...HEAD`, a revision git cannot
@@ -354,7 +362,8 @@ there only, and has a bump drop that line's `\r`.
 The reusable workflow runs it in the `checks` job on every leg, right after `private-refs`, with
 the working tree's frame; on pull requests the `changelog` job, which has the history, runs it
 again as `version-sites --base "origin/${BASE_REF}"`. A pull request that changes `version.sites`
-lands as the changelog gate describes: one that the old sites would fail takes two pull requests.
+lands as the changelog gate describes: one that the old sites would fail, such as a site moved to
+another file, takes three pull requests.
 
 ## Adopting
 

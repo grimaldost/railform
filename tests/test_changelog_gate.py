@@ -968,6 +968,31 @@ class TestTheMergeBaseFrameJudges:
         _commit(repo, 'docs: tidy', {'docs/x.md': 'docs, tidied\n'})
         assert _gate(capsys)[:2] == (1, 'fail unrecorded')
 
+    def test_a_records_file_moved_on_its_own_lands_in_one_pull_request(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # README, "The changelog gate": a records file moved to another path, with its row, in a
+        # pull request of its own passes under the old frame; the next one records in the new file.
+        _frame_on_base(repo)
+        moved = SRC_RECORDS.replace('file = "CHANGELOG.md"', 'file = "docs/CHANGELOG.md"')
+        _git(repo, 'mv', 'CHANGELOG.md', 'docs/CHANGELOG.md')
+        _commit(
+            repo,
+            'docs: move the changelog',
+            {'railform.toml': '[project]\ntype = "python-package"\n\n' + moved},
+        )
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (0, 'pass ok'), findings
+        _git(repo, 'branch', '-f', 'base', 'main')
+        entry = BASE_CHANGELOG.replace('- an old line\n', '- a new line\n- an old line\n')
+        _commit(
+            repo,
+            'fix: change a',
+            {'src/pkg/a.py': 'x = 2\n', 'docs/CHANGELOG.md': entry},
+        )
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (0, 'pass ok'), findings
+
     def test_the_verdict_says_which_frame_judged(
         self, repo: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
