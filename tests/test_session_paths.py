@@ -243,6 +243,40 @@ def test_red_proof_an_exceptions_row_alone_narrows_the_guard(
     assert any('excepts' in f and SKILLS_GLOB in f for f in findings)
 
 
+_DROP_SKILLS = (
+    f'[[exceptions]]\nkey = "session_loaded"\ndrop = ["{SKILLS_GLOB}"]\n'
+    'reason = "the skills here are fixtures no session loads"\n'
+)
+
+
+def test_red_proof_a_row_that_drops_a_default_glob_fails_guard_narrowed(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    base = _base(repo)
+    _write(repo, 'railform.toml', _DROP_SKILLS)
+    head = _commit(repo)
+    code, verdict, findings = _judge(capsys, base, head)
+    assert (code, verdict) == (1, 'guard-narrowed')
+    assert findings == [
+        f'railform.toml: an exceptions row drops the session_loaded glob {SKILLS_GLOB} '
+        'that the frame it is judged against has'
+    ]
+
+
+def test_once_a_drop_is_in_the_frame_a_change_under_the_dropped_glob_passes(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(repo, 'railform.toml', _DROP_SKILLS)
+    base = _commit(repo)
+    _write(repo, 'skills/review/SKILL.md', 'two\n')
+    head = _commit(repo)
+    assert _judge(capsys, base, head) == (0, 'ok', [])
+    # Another default glob still guards.
+    _write(repo, 'agents/a.md', 'one\n')
+    later = _commit(repo)
+    assert _judge(capsys, base, later)[:2] == (1, 'session-loaded')
+
+
 def test_red_proof_the_frame_comes_from_frame_from_never_from_the_head(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

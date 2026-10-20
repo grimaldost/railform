@@ -59,6 +59,8 @@ CONTRACT_KEYS = (
     'python.newest',
     'hooks.pre_commit_version',
     'meta.parameter_keys',
+    'release.pr_branch_prefix',
+    'release.pr_title_pattern',
 )
 PARAMETER_KEYS = [
     'project.type',
@@ -481,10 +483,12 @@ def test_a_preset_value_restated_is_not_a_departure(
 def test_a_departure_is_judged_against_the_repositorys_own_preset(
     scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    package_type_check = frame.effective_frame(None)['python']['type_check']
+    # The python-package preset's test command in a plugin-marketplace repository: a departure
+    # there, and a test command railform cannot judge, so it needs a row.
+    package_command = frame.effective_frame(None)['python']['test_command']
     _write(
         scratch_repo,
-        f'[project]\ntype = "python-scripts"\n[python]\ntype_check = "{package_type_check}"\n',
+        f'[project]\ntype = "plugin-marketplace"\n[python]\ntest_command = "{package_command}"\n',
     )
     assert _check(capsys)[:2] == (1, 'unlisted-departure')
 
@@ -500,15 +504,20 @@ def test_every_type_leaves_the_lock_and_the_workflows_out_of_the_changelog_watch
     assert effective['changelog']['unwatched'] == ['uv.lock', '.github/']
 
 
-def test_changing_the_unwatched_paths_is_a_departure(
+def test_watching_more_paths_needs_no_row_and_watching_fewer_needs_one(
     scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # An empty list charges the lock and the workflows again: stricter, so no row.
     _write(scratch_repo, '[changelog]\nunwatched = []\n')
+    assert _check(capsys) == (0, 'ok', [])
+    # A list with an entry the preset lacks leaves more paths unread: it needs a row.
+    body = '[changelog]\nunwatched = ["uv.lock", ".github/", "docs/"]\n'
+    _write(scratch_repo, body)
     assert _check(capsys)[:2] == (1, 'unlisted-departure')
     _write(
         scratch_repo,
-        '[changelog]\nunwatched = []\n\n[[exceptions]]\nkey = "changelog.unwatched"\n'
-        'value = []\nreason = "the lock is a shipped file here"\n',
+        body + '\n[[exceptions]]\nkey = "changelog.unwatched"\n'
+        'reason = "the documentation ships nothing"\n',
     )
     assert _check(capsys) == (0, 'ok', [])
 
@@ -568,7 +577,7 @@ def test_red_proof_a_guard_list_with_one_extra_element_keeps_every_default_eleme
 
 
 @pytest.mark.parametrize('key', ['session_loaded', 'private_refs.placeholders'])
-def test_a_guard_list_cannot_drop_a_default_element(
+def test_a_restated_guard_list_cannot_drop_a_default_element(
     key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     default = _get(frame.effective_frame(None), key)
@@ -579,7 +588,8 @@ def test_a_guard_list_cannot_drop_a_default_element(
     assert _get(frame.effective_frame(config), key) == [*default, 'extra/**']
     _write(scratch_repo, _guard_list_toml(key, listed))
     assert _check(capsys) == (0, 'ok', [])
-    # Nothing departs, so an exceptions row for the key matches no departure.
+    # A guard list never departs, so a row that gives it a value is a bad row: a default element
+    # is left out only by a row's `drop` (below).
     row = f'[[exceptions]]\nkey = "{key}"\nvalue = {json.dumps(listed)}\nreason = "measured"\n'
     _write(scratch_repo, _guard_list_toml(key, listed) + row)
     assert _check(capsys)[:2] == (1, 'bad-exception')
@@ -657,6 +667,298 @@ def test_a_tag_row_may_set_since_which_defaults_to_empty(
     code, verdict, findings = _check(capsys)
     assert (code, verdict) == (1, 'wrong-type')
     assert any('release.tag_prefix[0].since' in line for line in findings), findings
+
+
+# --- rows by key, and only for a departure that loosens a check ---------------------------------
+
+LONG_COMMAND = 'uv run --frozen python -m pytest -q -p no:cacheprovider --durations=20 tests'
+TYPES = frame.effective_frame(None)['commit']['types']
+
+# Departures that loosen a check: each needs a row, which names the key and a reason.
+LOOSENING = [
+    pytest.param(f'[python]\ntest_command = "{LONG_COMMAND}"\n', 'python.test_command', id='cmd'),
+    pytest.param('[python]\ntest_command = ""\n', 'python.test_command', id='cmd-blank'),
+    pytest.param('[python]\ntest_command = "true"\n', 'python.test_command', id='cmd-no-op'),
+    pytest.param('[changelog]\nenabled = false\n', 'changelog.enabled', id='changelog-off'),
+    pytest.param('[release]\nenabled = false\n', 'release.enabled', id='release-off'),
+    pytest.param('[ci]\nextra_workflows = ["a.yml"]\n', 'ci.extra_workflows', id='extra-wf'),
+    pytest.param('[ci]\nself_hosted = true\n', 'ci.self_hosted', id='self-hosted'),
+    pytest.param('[ci]\nos = ["ubuntu-latest"]\n', 'ci.os', id='fewer-os'),
+    pytest.param(
+        '[commit]\nattribution_patterns = []\n', 'commit.attribution_patterns', id='no-stamp'
+    ),
+    pytest.param(
+        '[branch]\nallow = ["dependabot/**", "*-patch-*"]\n', 'branch.allow', id='branch-allow'
+    ),
+    pytest.param("[branch]\npattern = '.*'\n", 'branch.pattern', id='branch-pattern'),
+    pytest.param(
+        '[changelog]\nunwatched = ["uv.lock", ".github/", "docs/"]\n',
+        'changelog.unwatched',
+        id='unwatched',
+    ),
+    pytest.param('[hooks]\nnames = ["pre-commit"]\n', 'hooks.names', id='fewer-hooks'),
+    pytest.param('[hooks]\nwrapper = "true"\n', 'hooks.wrapper', id='wrapper'),
+    pytest.param('[python]\nlint_paths = ["src"]\n', 'python.lint_paths', id='lint-paths'),
+    pytest.param('[python]\ntype_check = ""\n', 'python.type_check', id='no-type-check'),
+    pytest.param(
+        '[release]\nmetadata_paths = ["pyproject.toml", "uv.lock", "src/**"]\n',
+        'release.metadata_paths',
+        id='more-metadata',
+    ),
+    pytest.param(
+        f'[commit]\ntypes = {json.dumps([*TYPES, "wip"])}\n', 'commit.types', id='more-types'
+    ),
+    pytest.param(
+        '[private_refs]\nnames_file_env = "UNSET_VARIABLE"\n',
+        'private_refs.names_file_env',
+        id='names-variable',
+    ),
+    # A bare `<reason>` template matches every commit message, which turns changelog-gate off.
+    pytest.param('[changelog]\ntrailer = "<reason>"\n', 'changelog.trailer', id='trailer-bare'),
+    pytest.param(
+        '[changelog]\ntrailer = "No-changelog: <reason>"\n', 'changelog.trailer', id='trailer'
+    ),
+    pytest.param('[release]\npr_branch_prefix = ""\n', 'release.pr_branch_prefix', id='rel-branch'),
+    pytest.param(
+        '[release]\npr_branch_prefix = "rel/"\n', 'release.pr_branch_prefix', id='rel-branch-other'
+    ),
+    pytest.param(
+        "[release]\npr_title_pattern = '.*'\n", 'release.pr_title_pattern', id='rel-title'
+    ),
+    pytest.param(
+        "[release]\npr_title_pattern = '^chore\\(release\\): '\n",
+        'release.pr_title_pattern',
+        id='rel-title-other',
+    ),
+]
+
+STAMP = frame.effective_frame(None)['commit']['attribution_patterns']
+
+# Departures that are stricter or neutral: none needs a row.
+NOT_LOOSENING = [
+    pytest.param('[ci.setup]\nfetch_depth = 0\n', id='fetch-depth'),
+    pytest.param('[ci.setup]\nextra_installs = ["hypothesis"]\n', id='extra-installs'),
+    pytest.param('[ci]\nos = ["ubuntu-latest", "windows-latest", "macos-latest"]\n', id='more-os'),
+    pytest.param(
+        f'[commit]\nattribution_patterns = {json.dumps([*STAMP, "^Made-with: "])}\n',
+        id='more-stamp-patterns',
+    ),
+    pytest.param('[changelog]\nunwatched = []\n', id='watch-everything'),
+    pytest.param('[changelog]\nconsumer_affecting = "error"\n', id='consumer-error'),
+    pytest.param('[hooks]\ndir = ".hooks"\n', id='hooks-dir'),
+    pytest.param('[python]\nsync_args = ["--all-extras"]\n', id='sync-args'),
+    pytest.param('[python]\nlint_paths = [".", "extra"]\n', id='more-lint-paths'),
+    pytest.param('[release]\nmetadata_paths = ["pyproject.toml"]\n', id='less-metadata'),
+    pytest.param('[commit]\ntypes = ["feat", "fix", "docs"]\n', id='fewer-types'),
+    pytest.param('[branch]\nallow = []\n', id='no-bot-branches'),
+    pytest.param(
+        '[project]\ntype = "python-scripts"\n[python]\ntype_check = "src"\n', id='add-type-check'
+    ),
+]
+
+
+@pytest.mark.parametrize(('body', 'key'), LOOSENING)
+def test_a_departure_that_loosens_a_check_needs_a_row_that_names_its_key(
+    body: str, key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, body)
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'unlisted-departure')
+    assert any(key in finding for finding in findings), findings
+    # The row names the key and a reason; it need not copy the value.
+    _write(scratch_repo, body + f'[[exceptions]]\nkey = "{key}"\nreason = "measured"\n')
+    assert _check(capsys) == (0, 'ok', [])
+
+
+@pytest.mark.parametrize('body', NOT_LOOSENING)
+def test_a_stricter_or_neutral_departure_needs_no_row(
+    body: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, body)
+    assert _check(capsys) == (0, 'ok', [])
+
+
+def test_a_row_may_still_name_a_departure_that_needs_none(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    body = '[ci.setup]\nfetch_depth = 0\n'
+    _write(scratch_repo, body + '[[exceptions]]\nkey = "ci.setup.fetch_depth"\nreason = "tags"\n')
+    assert _check(capsys) == (0, 'ok', [])
+    _write(
+        scratch_repo,
+        body + '[[exceptions]]\nkey = "ci.setup.fetch_depth"\nvalue = 0\nreason = "tags"\n',
+    )
+    assert _check(capsys) == (0, 'ok', [])
+
+
+def test_a_long_test_command_is_written_once(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = (
+        f'[python]\ntest_command = "{LONG_COMMAND}"\n'
+        '[[exceptions]]\nkey = "python.test_command"\nreason = "the suite takes a path"\n'
+    )
+    _write(scratch_repo, text)
+    assert _check(capsys) == (0, 'ok', [])
+    assert text.count(LONG_COMMAND) == 1
+
+
+def test_a_verbatim_row_from_before_still_covers_its_departure(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(
+        scratch_repo,
+        f'[python]\ntest_command = "{LONG_COMMAND}"\n'
+        f'[[exceptions]]\nkey = "python.test_command"\nvalue = "{LONG_COMMAND}"\n'
+        'reason = "the suite takes a path"\n',
+    )
+    assert _check(capsys) == (0, 'ok', [])
+
+
+def test_a_row_by_key_for_a_key_that_does_not_depart_fails(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, '[[exceptions]]\nkey = "python.test_command"\nreason = "left over"\n')
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'bad-exception')
+    assert findings == [
+        'railform.toml: exceptions[0] (python.test_command): matches no departure '
+        '(python.test_command does not depart from the python-package preset)'
+    ]
+
+
+def test_a_row_without_a_key_fails(scratch_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write(scratch_repo, _DEPARTURE + '[[exceptions]]\nvalue = "true"\nreason = "migrating"\n')
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'bad-exception')
+    assert 'railform.toml: exceptions[0]: key is required' in findings
+
+
+# --- dropping a default element of a guard list -------------------------------------------------
+
+GUARD_KEYS = ('session_loaded', 'private_refs.placeholders')
+
+
+def _drop_row(key: str, drop: list[str], reason: str = 'measured') -> str:
+    return f'[[exceptions]]\nkey = "{key}"\ndrop = {json.dumps(drop)}\nreason = "{reason}"\n'
+
+
+@pytest.mark.parametrize('key', GUARD_KEYS)
+def test_a_row_with_a_reason_drops_a_default_element_of_a_guard_list(
+    key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    default = _get(frame.effective_frame(None), key)
+    dropped = default[1]
+    effective = _effective(scratch_repo, _drop_row(key, [dropped]), capsys)
+    assert _get(effective, key) == [item for item in default if item != dropped]
+    assert _check(capsys) == (0, 'ok', [])
+    # The repository's own elements are still joined in.
+    text = _guard_list_toml(key, ['extra/**']) + _drop_row(key, [dropped])
+    effective = _effective(scratch_repo, text, capsys)
+    assert _get(effective, key) == [*(item for item in default if item != dropped), 'extra/**']
+
+
+@pytest.mark.parametrize('key', GUARD_KEYS)
+@pytest.mark.parametrize(
+    ('row', 'message'),
+    [
+        pytest.param(
+            '[[exceptions]]\nkey = "{key}"\nreason = "measured"\n',
+            'names no drop',
+            id='no-drop',
+        ),
+        pytest.param(
+            '[[exceptions]]\nkey = "{key}"\ndrop = []\nreason = "measured"\n',
+            'drop is empty',
+            id='empty-drop',
+        ),
+        pytest.param(
+            '[[exceptions]]\nkey = "{key}"\ndrop = ["not-a-default"]\nreason = "measured"\n',
+            'drops not-a-default, which is not an element of the default list',
+            id='not-default',
+        ),
+    ],
+)
+def test_a_bad_drop_row_fails_and_drops_nothing(
+    key: str, row: str, message: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, row.replace('{key}', key))
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'bad-exception')
+    assert any(message in finding for finding in findings), findings
+    default = _get(frame.effective_frame(None), key)
+    assert _get(frame.load(scratch_repo), key) == default
+
+
+@pytest.mark.parametrize('key', GUARD_KEYS)
+def test_a_drop_row_with_one_bad_element_drops_none_of_its_elements(
+    key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    default = _get(frame.effective_frame(None), key)
+    _write(scratch_repo, _drop_row(key, [default[1], 'not-a-default']))
+    assert _check(capsys)[:2] == (1, 'bad-exception')
+    assert _get(frame.load(scratch_repo), key) == default
+
+
+@pytest.mark.parametrize('key', GUARD_KEYS)
+def test_a_duplicate_drop_row_fails_and_drops_nothing(
+    key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    default = _get(frame.effective_frame(None), key)
+    _write(scratch_repo, _drop_row(key, [default[1]]) + _drop_row(key, [default[2]]))
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'bad-exception')
+    assert any('exceptions[1]' in finding and 'duplicates' in finding for finding in findings)
+    # The first row, which frame --check accepts, still drops; the duplicate drops nothing.
+    assert _get(frame.load(scratch_repo), key) == [item for item in default if item != default[1]]
+
+
+@pytest.mark.parametrize('key', GUARD_KEYS)
+def test_a_drop_row_without_a_reason_fails_and_drops_nothing(
+    key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    default = _get(frame.effective_frame(None), key)
+    _write(scratch_repo, _drop_row(key, [default[0]], reason=' '))
+    assert _check(capsys)[:2] == (1, 'bad-exception')
+    assert _get(frame.load(scratch_repo), key) == default
+
+
+def test_a_drop_on_a_key_that_is_not_a_guard_list_fails(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, '[ci]\nos = ["ubuntu-latest"]\n' + _drop_row('ci.os', ['windows-latest']))
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'bad-exception')
+    assert any('drop' in finding and 'ci.os' in finding for finding in findings), findings
+
+
+def test_a_dropped_placeholder_is_a_home_path_again(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = '/'.join(['', 'home', 'user', 'project'])
+    (scratch_repo / 'notes.md').write_text(path + '\n', encoding='utf-8')
+    subprocess.run(['git', 'add', 'notes.md'], cwd=scratch_repo, check=True)
+    assert main(['private-refs']) == 0
+    capsys.readouterr()
+    _write(scratch_repo, _drop_row('private_refs.placeholders', ['user']))
+    assert main(['private-refs']) == 1
+    assert 'railform-verdict: private-refs fail home-path' in capsys.readouterr().out
+
+
+# --- the release pull request convention ---------------------------------------------------------
+
+
+def test_the_release_pull_request_convention_defaults_to_the_release_branch_and_title() -> None:
+    release = frame.effective_frame(None)['release']
+    assert release['pr_branch_prefix'] == 'release/'
+    assert release['pr_title_pattern'] == r'^release(\([^)]*\))?!?: '
+
+
+def test_the_release_title_pattern_must_be_a_regular_expression(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, "[release]\npr_title_pattern = '(unclosed'\n")
+    assert _check(capsys)[:2] == (1, 'wrong-type')
 
 
 # --- unknown-key -------------------------------------------------------------------------------

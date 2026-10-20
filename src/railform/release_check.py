@@ -17,8 +17,9 @@ Per judged tag of version V on a release line named N (the last segment of the r
 
 - `lightweight-tag`: `git cat-file -t` does not say `tag`;
 - `no-release-pr`: no merged pull request is a release pull request of the tag, that is, one
-  whose head branch starts with `release/` or whose title is a `release` subject, and which
-  names V as its first version and, on a named line, N as a name token;
+  whose head branch starts with `release.pr_branch_prefix` (`release/`) or whose title matches
+  `release.pr_title_pattern` (a `release` subject), and which names V as its first version and,
+  on a named line, N as a name token;
 - `tag-placement`: the tag's commit is not the merge commit of any of its release pull requests;
 - `release-commit`: a commit the tag's commit brings in (`git rev-list <tag>^1..<tag>`) with at
   most one parent, whose subject is a `release` subject, changes a path outside the release
@@ -197,11 +198,42 @@ def _carries(text: str, version: str, name: str) -> bool:
     return _has_version(text, version) and (not name or _has_name(text, name))
 
 
-def is_release_pull(pull: Pull, version: str, name: str) -> bool:
-    """Whether a merged pull request released `version` of the line named `name`."""
-    by_branch = pull.head.startswith(RELEASE_BRANCH) and _carries(pull.head, version, name)
-    by_title = RELEASE_SUBJECT.match(pull.title) is not None and _carries(pull.title, version, name)
+def is_release_pull(
+    pull: Pull,
+    version: str,
+    name: str,
+    *,
+    branch_prefix: str = RELEASE_BRANCH,
+    title_pattern: str = RELEASE_SUBJECT.pattern,
+) -> bool:
+    """Whether a merged pull request released `version` of the line named `name`: its head
+    branch starts with `branch_prefix`, or `title_pattern` matches the start of its title, and
+    that side carries the version (and the name). An empty prefix or pattern identifies nothing
+    by its side."""
+    by_branch = (
+        bool(branch_prefix)
+        and pull.head.startswith(branch_prefix)
+        and _carries(pull.head, version, name)
+    )
+    by_title = (
+        bool(title_pattern)
+        and re.match(title_pattern, pull.title) is not None
+        and _carries(pull.title, version, name)
+    )
     return by_branch or by_title
+
+
+def _convention(frame: dict[str, Any]) -> str:
+    """The release pull request convention of the frame, as a finding words it; "" when
+    both settings are empty."""
+    prefix = frame['release']['pr_branch_prefix']
+    pattern = frame['release']['pr_title_pattern']
+    sides = []
+    if prefix:
+        sides.append(f'a head branch {prefix}...')
+    if pattern:
+        sides.append(f"a title matching '{pattern}'")
+    return ' or '.join(sides)
 
 
 def read_pulls_file(path: str) -> list[Pull]:
@@ -413,6 +445,7 @@ def _judge(
     item: Judged,
     pulls: list[Pull],
     rule: tuple[list[re.Pattern[str]], set[str]],
+    frame: dict[str, Any],
 ) -> list[tuple[str, str]]:
     tag = item.tag
     failures: list[tuple[str, str]] = []
@@ -429,16 +462,27 @@ def _judge(
     commit = done.stdout.decode('ascii', 'replace').strip() if done.returncode == 0 else ''
     version = item.text
     looked_for = f'{version}' + (f' of {item.line.name}' if item.line.name else '')
-    candidates = [pull for pull in pulls if is_release_pull(pull, version, item.line.name)]
+    release = frame['release']
+    candidates = [
+        pull
+        for pull in pulls
+        if is_release_pull(
+            pull,
+            version,
+            item.line.name,
+            branch_prefix=release['pr_branch_prefix'],
+            title_pattern=release['pr_title_pattern'],
+        )
+    ]
     if not candidates:
+        how = _convention(frame)
+        detail = (
+            f'{how} carrying the version' + (' and the name' if item.line.name else '')
+            if how
+            else 'release.pr_branch_prefix and release.pr_title_pattern are both empty'
+        )
         failures.append(
-            (
-                NO_RELEASE_PR,
-                f'{tag}: no merged pull request releases {looked_for} (a head branch release/... '
-                'or a release: title carrying the version'
-                + (' and the name' if item.line.name else '')
-                + ')',
-            )
+            (NO_RELEASE_PR, f'{tag}: no merged pull request releases {looked_for} ({detail})')
         )
     # A real merge commit only: an unresolved tag or a candidate with no merge commit never
     # satisfies the rule (interface contract, Wave C, section 11.5).
@@ -502,7 +546,7 @@ def check(root: Path) -> Verdict:
     rule = metadata_rule(frame, sites)
     failures: list[tuple[str, str]] = []
     for item in judged:
-        failures += _judge(root, item, pulls, rule)
+        failures += _judge(root, item, pulls, rule, frame)
     if not failures:
         count = len(judged)
         return Verdict.ok(VERB, (f'{count} release tag{"s" if count != 1 else ""} judged',))

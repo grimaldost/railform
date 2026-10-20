@@ -53,6 +53,13 @@ Every gate has a red proof: a test that fails without the change it protects. Wh
 adds a rule, its tests include a case that must fail, run through the real command or workflow
 that applies the rule.
 
+## Changing adopt
+
+`railform adopt` already refuses or reports a long list of edge cases. It takes no more
+edge-case hardening unless a real adoption runs into the case: the repository and what adopt did
+come first, then the test that reproduces it. Work on adoption goes into `docs/adopting.md` and
+the README's five steps instead.
+
 ## Dependencies and installing
 
 The only runtime dependency is PyYAML. There is no model client, and a test fails if a module

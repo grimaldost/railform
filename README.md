@@ -10,6 +10,26 @@ The verbs, the hook manifest and the reusable CI workflow exist, and railform's 
 through that workflow. The first release is 0.1.0; an adopter pins the commit the tag
 `v0.1.0` points at, the release pull request's merge commit.
 
+## Adopting a repository in five steps
+
+[Adopting a repository](docs/adopting.md) is the full path, with the inventory table, the
+choices adopt leaves to the repository and a worked example. Its steps, in order:
+
+1. **Take an inventory** of the workflows, the hooks, the changelog and version scripts and the
+   required status checks, before anything changes ([step 1](docs/adopting.md#1-take-an-inventory)).
+2. **Run adopt at a release commit,** on a branch. `git ls-remote
+   https://github.com/grimaldost/railform 'refs/tags/v0.1.0^{}'` prints the commit, and
+   `uvx --from git+https://github.com/grimaldost/railform@<40-hex sha> railform adopt --pin
+   <40-hex sha>` writes the owned files. Then delete the jobs and hooks railform replaces
+   ([step 2](docs/adopting.md#2-run-railform-adopt)).
+3. **Settle the frame** in `railform.toml`: an `exceptions` row, a key and a reason, for each
+   setting that loosens a check. Every later `railform <verb>` runs through the same
+   `uvx --from` install; `railform frame --check` and `railform adopt --check` must pass
+   ([steps 3 to 5](docs/adopting.md#3-write-an-exceptions-row-for-each-departure-that-loosens-a-check)).
+4. **Require `gate`:** push the branch, open the pull request, and make `gate` the one required
+   status of the default branch's ruleset ([step 6](docs/adopting.md#6-require-gate-in-the-branch-ruleset)).
+5. **Arm every clone** with `railform arm`, once per clone ([step 7](docs/adopting.md#7-arm-every-clone)).
+
 ## What it is
 
 - A shared CI workflow, one fixed pipeline per project type, with typed parameters.
@@ -62,18 +82,37 @@ is built in three layers: the default frame shipped in the package
 `railform.toml`. Arrays replace (except the two guard lists below); tables merge key by key.
 Without a `railform.toml`, the frame is the default with the `python-package` preset.
 
-A value that differs from the preset is a departure, and a departure is legal only when an
-`exceptions` row names its key and its value with a non-empty reason:
+A value that differs from the preset is a departure. A departure that loosens a check is legal
+only when an `exceptions` row names its key with a non-empty reason; a stricter or neutral
+departure needs no row, though a row may still name it to record why:
 
 ```toml
 [python]
-test_command = "true"
+test_command = "uv run --frozen python -m pytest -q tests/unit"
 
 [[exceptions]]
 key = "python.test_command"
-value = "true"
-reason = "the suite runs in a separate workflow during the migration"
+reason = "the integration suite runs in a separate workflow during the migration"
 ```
+
+A row matches its departure by key. It may also carry `value`, which must then equal the
+departed value; that is the form every row had before, and it still passes. A row whose key does
+not depart, or whose `value` is not the departed one, is a bad row (`bad-exception`).
+
+These departures loosen a check (`LOOSENING` in `src/railform/frame.py`):
+
+| Key | Loosens when |
+|---|---|
+| `python.test_command`, `python.type_check`, `branch.pattern`, `hooks.wrapper`, `changelog.trailer`, `release.pr_branch_prefix`, `release.pr_title_pattern`, `private_refs.names_file_env` | the preset sets it and the repository changes it: railform cannot judge a command, a pattern or a variable name, a blank or `true` command runs nothing, a trailer of `<reason>` alone declares every commit and so turns `changelog-gate` off, a broad release convention lets any pull request carrying the version count as the release, and a variable CI does not set turns off the private-name half of `railform private-refs` |
+| `changelog.enabled`, `release.enabled` | it is `false` |
+| `ci.self_hosted` | it is `true` |
+| `ci.extra_workflows`, `changelog.unwatched`, `branch.allow`, `release.metadata_paths`, `commit.types` | the list has an element the preset lacks |
+| `ci.os`, `commit.attribution_patterns`, `hooks.names`, `python.lint_paths` | the list leaves out an element the preset has |
+
+Any other departure, and these in the other direction, needs no row: a `ci.setup.fetch_depth`, a
+longer `ci.os`, an empty `changelog.unwatched`, `changelog.consumer_affecting = "error"`, or a
+shorter `commit.types`. A key of the first row needs a row for any change, a stricter one
+included.
 
 The keys in `meta.parameter_keys` (the project type and layout, the Python versions and package,
 the version sites, the changelog records and contract surfaces, and the release start and tag
@@ -82,11 +121,26 @@ prefixes) are per repository and never depart.
 The two guard lists, `session_loaded` and `private_refs.placeholders`, are joined to the default
 instead of replacing it: the effective list is the default's elements, then the repository's own
 that the default lacks, each once. A repository lists only what it adds, its list never goes
-stale when a later pin adds a default element, and it cannot drop a default element. These lists
-never depart, so an `exceptions` row for them matches nothing: `railform frame --check` fails on
-one with `bad-exception`, and deleting the row is the fix, since the default element it dropped is
-back in the list. `railform frame` and `railform frame --json` print the joined list. For example,
-`session_loaded = ["docs/prompts/**"]` keeps every default glob and adds one.
+stale when a later pin adds a default element, and a list that leaves out a default element keeps
+it. For example, `session_loaded = ["docs/prompts/**"]` keeps every default glob and adds one.
+`railform frame` and `railform frame --json` print the effective list.
+
+A default element leaves a guard list only through an `exceptions` row that names it in `drop`,
+with a reason:
+
+```toml
+[[exceptions]]
+key = "private_refs.placeholders"
+drop = ["shared"]
+reason = "no machine here has a shared profile, so a path under it is a real account"
+```
+
+`drop` names default elements of that list and is not empty, and the row gives no `value`; a row
+that breaks this is `bad-exception` and drops nothing, not even its default elements. One row per
+list: a second row for the same list is `bad-exception` too and drops nothing. Dropping a
+placeholder makes the private-reference check stricter. Dropping a `session_loaded` glob narrows
+the guard, so `railform session-paths` fails the pull request that adds the row with
+`guard-narrowed` (see the session-paths check below).
 
 Some keys hold rows rather than plain values:
 
@@ -105,9 +159,9 @@ Some keys hold rows rather than plain values:
   change to either ships nothing a changelog reader looks for. The more specific line wins: a
   records row whose prefix is at least as long as the entry (a row with the prefix `.github/`,
   say) watches the path again, and an entry longer than the row's prefix takes it out. Unlike
-  the records, the list is not a parameter key: another list is a departure and needs an
-  `exceptions` row. A lock in a subdirectory (`plugins/a/uv.lock`) is not matched by `uv.lock`;
-  list it.
+  the records, the list is not a parameter key: a list with an entry the preset lacks leaves more
+  unread and needs an `exceptions` row, and a shorter one needs none. A lock in a subdirectory
+  (`plugins/a/uv.lock`) is not matched by `uv.lock`; list it.
 - `version.sites` is an array of `{ path, pattern, authored }` rows: the pattern's first group is
   the version, and `authored` (default `false`) marks a site that is checked and never rewritten.
 - `release.metadata_paths` holds globs of the release metadata (the manifests). The release check
@@ -116,9 +170,9 @@ Some keys hold rows rather than plain values:
 
 - `railform frame` prints the effective frame as TOML, and `--json` prints it as one JSON object.
 - `railform frame --check` fails on an unknown key (`unknown-key`), a value of the wrong type
-  (`wrong-type`), an exceptions row with an empty reason or matching no departure
-  (`bad-exception`), and a departure no row lists (`unlisted-departure`), naming the first in
-  that order.
+  (`wrong-type`), an exceptions row with no key, an empty reason, matching no departure or with a
+  bad `drop` (`bad-exception`), and a departure that loosens a check and that no row lists
+  (`unlisted-departure`), naming the first in that order.
 - `railform frame --github-output` appends one `name=value` line per key to the file
   `$GITHUB_OUTPUT` names, as `<table>_<key>`; lists, tables, booleans and numbers are written as
   compact JSON. It also writes `pipeline`, the type's pipeline (see the reusable CI workflow
@@ -224,7 +278,7 @@ merge base to HEAD. In CI the `changelog` job runs it on pull requests as
   `changelog.contract_surfaces` and no record's added lines say `(consumer-affecting)`, the rule
   fires once per surface. By default (`changelog.consumer_affecting = "advisory"`) a firing is a
   `::warning::<path>: consumer-affecting (advisory): ...` line and the verdict stays a pass;
-  `"error"`, declared with an `exceptions` row, makes it fail.
+  `"error"`, which is stricter and needs no `exceptions` row, makes it fail.
 
 - **The watch covers something** (`watches-nothing`). When no tracked path at HEAD other than the
   record files falls under a `changelog.records` row of the frame at HEAD and outside
@@ -289,8 +343,11 @@ compare case-insensitively. So `**/hooks/**` matches `plugins/x/hooks/hooks.json
 `.githooks/pre-commit`. A malformed glob (an empty segment, a `.` or `..` segment, a leading or
 trailing `/`, or a backslash), from the frame or from `--glob`, is a configuration error (exit
 2), because it would match nothing. The check also fails with `guard-narrowed` when the
-`railform.toml` at HEAD removes or excepts a glob the frame at `REF` had. Since the list is joined
-to the default, only a glob the repository added itself can be removed.
+`railform.toml` at HEAD removes a glob the frame at `REF` had, drops one with an `exceptions` row
+(the only way a default glob leaves the list), or gives `session_loaded` a row with a value that
+leaves one out. Since the list is joined to the default, a list that leaves out a default glob
+keeps it. So the pull request that drops a glob is seen failing this check, and once the drop is
+in the frame at `REF` the glob no longer guards.
 
 The check is blind to the inside of a submodule: git lists a submodule as its own path, so a
 change to files in its contents is not seen unless the submodule path itself is changed.
@@ -312,7 +369,9 @@ names file in CI, the names half is silent there, as below.
 
 - **Home paths.** A home-directory path fails (`home-path`) unless its user segment is in
   `private_refs.placeholders` (default: `me`, `x`, `someone`, `alice`, `user`, `runner`, and the
-  system folders `public`, `default`, `shared` and `runneradmin`) or plainly a placeholder (it
+  system folders `public`, `default`, `shared` and `runneradmin`; a repository adds names to the
+  list, and leaves a default one out with an `exceptions` row, see the frame) or plainly a
+  placeholder (it
   contains `<`, `>`, `$`, `%`, `{`, `}` or `*`, or is made only of full stops and ellipsis
   characters, as in `/home/.../` or `C:\Users\…\`). The six shapes are `X:\Users\<name>\`,
   `X:/Users/<name>/`, the JSON-escaped `X:\\Users\\<name>`, the project-slug form
@@ -664,9 +723,12 @@ keep.
   holds `..` or a backslash, a pattern with no group, or a site no tag row covers.
 - **The release pull request** of a tag of version V on a line named N (the last segment of the
   row's `prefix`, none for the root row) is a merged pull request whose head branch starts with
-  `release/`, or whose title is a `release` subject (`release: …`, `release(scope): …`), and that
+  `release.pr_branch_prefix` (default `release/`), or whose title `release.pr_title_pattern`
+  matches at its start (default a `release` subject: `release: …`, `release(scope): …`), and that
   carries N as a whole token on a named line and V as its first version: the first `X.Y.Z` of the
-  head branch (or of the title), with no pre-release or build suffix after it.
+  head branch (or of the title), with no pre-release or build suffix after it. A repository with
+  another convention sets the two keys, each with an `exceptions` row, since a broader convention
+  weakens this check; an empty one identifies nothing by its side.
   `release/0.2.0`, `release/keel-0.2.0` and `release(humblepowers): 0.19.0` identify;
   `docs/after-0.2.0`, `release/0.2.01`, `release/1.0.0-rc1` and `release: 1.1.0 (from 1.0.0)` do
   not identify the versions they mention later or with a suffix.
@@ -692,6 +754,10 @@ keep.
   - A repository's floor must sit past its last release whose pull request does not identify
     (one released from a branch not under `release/` with a title that is not a `release`
     subject); every judged tag needs an identifying pull request.
+  - One pull request identifies one version per line, the first of its branch or title. A pull
+    request that releases two lines at once (`release: a 0.2.0, b 0.3.0`) identifies `a` 0.2.0
+    only, so the tag of the second line fails `no-release-pr`. Release each line in a pull request
+    of its own.
 
 The pull requests come from the GitHub REST API: `$GITHUB_REPOSITORY` (`owner/name`),
 `$GITHUB_API_URL` (default `https://api.github.com`), and `$GITHUB_TOKEN` when set, which is

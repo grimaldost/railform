@@ -31,11 +31,44 @@ All notable changes to this project are recorded here, in the
   presets watch every path, so a Dependabot pull request that moved only `uv.lock` or a workflow
   failed `changelog-gate` as unrecorded, and it cannot add a trailer. A records row whose prefix
   is at least as long as an entry watches the path again; the list is not a parameter key, so
-  another list needs an `exceptions` row. A repository whose only tracked paths are the record
-  files, the lock and the workflows fails `watches-nothing`.
+  a list with an entry the preset lacks needs an `exceptions` row. A repository whose only
+  tracked paths are the record files, the lock and the workflows fails `watches-nothing`.
+- An `exceptions` row may leave a default element out of a guard list: a row for
+  `session_loaded` or `private_refs.placeholders` names the elements in `drop`, with a reason,
+  and gives no `value`. A row whose `drop` is empty or names an element the default lacks, and a
+  second row for the same list, is `bad-exception` and drops nothing. A repository can now
+  tighten the placeholder floor (`user`, `default`, `public`, `shared` and the rest).
+  `railform session-paths` fails the pull request that adds a `session_loaded` drop with
+  `guard-narrowed`, so the change is seen; once the drop is in the frame at `--frame-from`, the
+  glob no longer guards. Before, a guard list could not shrink at all.
+- `release.pr_branch_prefix` (default `release/`) and `release.pr_title_pattern` (default
+  `^release(\([^)]*\))?!?: `, matched at the start of the title) set the release pull request
+  convention that `railform release-check` looks for; they were fixed in the code. An empty one
+  identifies nothing by its side, and the `no-release-pr` finding names the convention it used.
+  Changing either needs an `exceptions` row: a broader convention weakens `no-release-pr` and
+  `tag-placement`.
+- The README opens with the five steps of an adoption, each linked to its section of
+  `docs/adopting.md`.
 
 ### Changed
 
+- `exceptions` rows match their departure by key, and only a departure that loosens a check
+  needs one. A row is a `key` and a `reason`; `value` is optional and, when given, must equal the
+  departed value, so every row written before still passes and a long `python.test_command` is
+  written once. The departures that need a row (`LOOSENING` in `src/railform/frame.py`, a table
+  in the README's section on the frame): a changed `python.test_command`, `python.type_check`,
+  `branch.pattern`, `hooks.wrapper`, `changelog.trailer` (a template of `<reason>` alone
+  declares every commit), `release.pr_branch_prefix`, `release.pr_title_pattern` or
+  `private_refs.names_file_env`; `changelog.enabled` or `release.enabled` off;
+  `ci.self_hosted` on; an element added to `ci.extra_workflows`, `changelog.unwatched`,
+  `branch.allow`, `release.metadata_paths` or `commit.types`; an element left out of `ci.os`,
+  `commit.attribution_patterns`, `hooks.names` or `python.lint_paths`. Every other departure,
+  such as `ci.setup.fetch_depth`, a longer `ci.os`, an empty `changelog.unwatched` or
+  `changelog.consumer_affecting = "error"`, needs none, and a row may still name it. A row for a
+  key that does not depart, and a row with no key, stay `bad-exception`.
+- The README documents a limit of `railform release-check`: one pull request identifies one
+  version per line, the first of its branch or title, so a pull request that releases two lines
+  fails `no-release-pr` for the second line's tag.
 - `railform changelog-gate` reads its frame from the `railform.toml` committed at the merge base
   of the range, and from the working tree only when the merge base has none (the adoption pull
   request). A pull request that edits `changelog.records`, `version.sites`,

@@ -19,9 +19,10 @@ trailing `/`, or a backslash) would match nothing and switch the guard off unsee
 configuration error (exit 2), from the frame or from `--glob`.
 
 The check also fails (`guard-narrowed`) when `railform.toml` at HEAD removes a glob that the
-frame at `--frame-from` had, or adds an `exceptions` row for `session_loaded` that leaves one out.
-Since the repository's list is joined to the default, only a glob the repository added itself
-can be removed; a list that leaves out a default glob keeps it.
+frame at `--frame-from` had, drops one with an `exceptions` row (a default glob leaves the list
+only that way), or gives `session_loaded` an `exceptions` row with a value that leaves one out.
+Since the repository's list is joined to the default, a list that leaves out a default glob
+keeps it. Once a drop is in the frame at `--frame-from`, the glob no longer guards.
 """
 
 from __future__ import annotations
@@ -154,15 +155,25 @@ def _narrowed(
     guard: list[str], head_frame: dict[str, Any], head_config: dict[str, Any] | None
 ) -> list[str]:
     """Findings for the globs of `guard` that the frame at HEAD no longer holds."""
+    rows = [row for row in (head_config or {}).get('exceptions', []) if isinstance(row, dict)]
+    dropped = {
+        glob
+        for row in rows
+        if row.get('key') == SESSION_LOADED and isinstance(row.get('drop'), list)
+        for glob in row['drop']
+    }
     findings: list[str] = []
     for glob in guard:
         if glob not in head_frame[SESSION_LOADED]:
+            how = 'an exceptions row drops' if glob in dropped else 'removes'
             findings.append(
-                f'{frame.CONFIG_NAME}: removes the {SESSION_LOADED} glob {glob} '
+                f'{frame.CONFIG_NAME}: {how} the {SESSION_LOADED} glob {glob} '
                 f'that the frame it is judged against has'
             )
-    for row in (head_config or {}).get('exceptions', []):
-        if row.get('key') != SESSION_LOADED:
+    # A row that gives the list a value is a bad row (frame --check), but it states an intent to
+    # narrow the guard, so it is reported here too.
+    for row in rows:
+        if row.get('key') != SESSION_LOADED or 'value' not in row:
             continue
         value = row.get('value')
         kept = value if isinstance(value, list) else []

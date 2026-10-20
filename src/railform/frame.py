@@ -4,10 +4,12 @@ Development-rails spec, §2, invented here. The default frame (`default_frame.to
 this package) is applied first, then the preset of `project.type`, then the repository's
 `railform.toml`; arrays replace and tables merge key by key, except the two guard lists,
 `session_loaded` and `private_refs.placeholders`, where the repository's list is joined to the
-default (default first, each element once), so they grow and never shrink. A value that departs
-from the preset is legal only when an `exceptions` row names its key and its value with a
-reason, and `railform frame --check` fails an unlisted departure. The keys in
-`meta.parameter_keys` are per repository and never depart, nor do the two guard lists.
+default (default first, each element once), so they grow, and shrink only by an `exceptions`
+row that drops a default element with a reason. A value that departs from the preset and
+loosens a check (`LOOSENING`) is legal only when an `exceptions` row names its key with a
+reason, and `railform frame --check` fails an unlisted one; a stricter or neutral departure
+needs no row. The keys in `meta.parameter_keys` are per repository and never depart, nor do the
+two guard lists.
 
 `commit.attribution_patterns` in the default frame is keel's set
 (https://github.com/grimaldost/keel, `.pre-commit-config.yaml` at c3313fd), and its test cases
@@ -44,10 +46,43 @@ PROJECT_TYPES = ('python-package', 'python-scripts', 'plugin-marketplace')
 GITHUB_OUTPUT_ENV = 'GITHUB_OUTPUT'
 
 # The guard lists: the repository's list is joined to the default (default first, each element
-# once), so a repository names only what it adds and can never drop a default element (the
-# development-rails spec, §13, from the craft-collection pilot). A safety rule, not a
-# preference, so it is not frame data a repository could relax.
+# once), so a repository names only what it adds and a restated list never drops a default
+# element (the development-rails spec, §13, from the craft-collection pilot). A default element
+# leaves the list only through an `exceptions` row that names it in `drop` with a reason, which
+# `railform session-paths` reports as `guard-narrowed` in the pull request that adds it.
 EXTENDABLE_KEYS = ('session_loaded', 'private_refs.placeholders')
+
+# How a departure of a key loosens a check, and so needs an `exceptions` row. A departure of a
+# key not listed here, or in the other direction, is stricter or neutral and needs none.
+# A string the preset sets (non-empty) is changed: railform cannot judge a command, a pattern or
+# the name of a variable, so any change, stricter or not, needs a row.
+REPLACED = 'replaced'
+TURNED_OFF = 'turned off'  # a boolean the preset has true is false
+TURNED_ON = 'turned on'  # a boolean the preset has false is true
+DROPS = 'drops an element'  # a list leaves out an element the preset has
+ADDS = 'adds an element'  # a list has an element the preset lacks
+LOOSENING = {
+    'python.test_command': REPLACED,
+    'python.type_check': REPLACED,
+    'python.lint_paths': DROPS,
+    'changelog.enabled': TURNED_OFF,
+    'changelog.unwatched': ADDS,
+    'changelog.trailer': REPLACED,
+    'release.enabled': TURNED_OFF,
+    'release.metadata_paths': ADDS,
+    'ci.extra_workflows': ADDS,
+    'commit.types': ADDS,
+    'private_refs.names_file_env': REPLACED,
+    'release.pr_branch_prefix': REPLACED,
+    'release.pr_title_pattern': REPLACED,
+    'ci.self_hosted': TURNED_ON,
+    'ci.os': DROPS,
+    'commit.attribution_patterns': DROPS,
+    'branch.pattern': REPLACED,
+    'branch.allow': ADDS,
+    'hooks.names': DROPS,
+    'hooks.wrapper': REPLACED,
+}
 
 # Replaced in `hooks.wrapper` by the value of `hooks.pre_commit_version`.
 WRAPPER_VERSION_FIELD = '{hooks.pre_commit_version}'
@@ -210,7 +245,10 @@ SCHEMA = _Table(
     {
         'session_loaded': _STRINGS,
         'exceptions': _List(
-            _Table({'key': _Str(), 'value': _Anything(), 'reason': _Str()}, require=False)
+            _Table(
+                {'key': _Str(), 'value': _Anything(), 'drop': _STRINGS, 'reason': _Str()},
+                require=False,
+            )
         ),
         'meta': _Table({'parameter_keys': _STRINGS}),
         'project': _Table({'type': _Str(choices=PROJECT_TYPES), 'layout': _Str()}),
@@ -273,6 +311,8 @@ SCHEMA = _Table(
                     )
                 ),
                 'enabled': _Bool(),
+                'pr_branch_prefix': _Str(),
+                'pr_title_pattern': _Str(regex=True),
             }
         ),
     }
@@ -376,6 +416,19 @@ def _union(default: list[Any], own: list[Any]) -> list[Any]:
     return joined
 
 
+def _drops(config: dict[str, Any], key: str, default: list[Any]) -> list[Any]:
+    """The default elements of the guard list `key` that the `exceptions` rows of a schema-valid
+    `config` drop: those of the first row for `key` that `frame --check` accepts (a non-blank
+    reason, no value, and a `drop` that is not empty and names only default elements). A row
+    that check fails, and a later row for the same key (a duplicate), drop nothing."""
+    for row in config.get('exceptions', []):
+        if row.get('key') != key or not str(row.get('reason', '')).strip():
+            continue
+        if not _drop_problem(row, key, default):
+            return list(row['drop'])
+    return []
+
+
 def _unrendered(config: dict[str, Any]) -> dict[str, Any]:
     problems = validate(config)
     if problems:
@@ -388,7 +441,9 @@ def _unrendered(config: dict[str, Any]) -> dict[str, Any]:
         for table in tables:
             target[table] = dict(target[table])
             target, default = target[table], default[table]
-        target[leaf] = _union(default[leaf], target[leaf])
+        dropped = _drops(config, key, default[leaf])
+        joined = _union(default[leaf], target[leaf])
+        target[leaf] = [item for item in joined if not any(_same(item, d) for d in dropped)]
     return frame
 
 
@@ -567,6 +622,24 @@ def departures(config: dict[str, Any]) -> list[Departure]:
     return found
 
 
+def loosens(departure: Departure) -> str | None:
+    """How `departure` loosens a check (one of the `LOOSENING` words), or None when it does
+    not."""
+    how = LOOSENING.get(departure.key)
+    preset, value = departure.preset, departure.value
+    if how == REPLACED and isinstance(preset, str) and preset.strip():
+        return how
+    if how == TURNED_OFF and preset is True and value is False:
+        return how
+    if how == TURNED_ON and preset is False and value is True:
+        return how
+    if how == DROPS and any(not any(_same(p, v) for v in value) for p in preset):
+        return how
+    if how == ADDS and any(not any(_same(v, p) for p in preset) for v in value):
+        return how
+    return None
+
+
 def _show(value: object) -> str:
     return json.dumps(value, ensure_ascii=True)
 
@@ -585,32 +658,32 @@ def check(config: dict[str, Any] | None) -> tuple[str, list[str]]:
 
 
 def _exception_problems(config: dict[str, Any]) -> list[Problem]:
-    found = departures(config)
+    found = {departure.key: departure for departure in departures(config)}
     project_type = _project_type(config)
+    preset = preset_frame(project_type)
     problems: list[Problem] = []
-    covering: list[dict[str, Any]] = []
+    covered: set[str] = set()
     for index, row in enumerate(config.get('exceptions', [])):
         where = f'exceptions[{index}]'
-        missing = [field for field in ('key', 'value', 'reason') if field not in row]
+        missing = [field for field in ('key', 'reason') if field not in row]
         if missing:
             problems.append(Problem(BAD_EXCEPTION, f'{where}: {", ".join(missing)} is required'))
             continue
-        where = f'{where} ({row["key"]})'
+        key = row['key']
+        where = f'{where} ({key})'
         if not row['reason'].strip():
             problems.append(
                 Problem(BAD_EXCEPTION, f'{where}: reason is required and must not be empty')
             )
             continue
-        if not any(d.key == row['key'] and _same(d.value, row['value']) for d in found):
-            problems.append(
-                Problem(
-                    BAD_EXCEPTION,
-                    f'{where}: matches no departure (no key departs from the {project_type} '
-                    f'preset with the value {_show(row["value"])})',
-                )
-            )
+        if key in EXTENDABLE_KEYS:
+            wrong = _drop_problem(row, key, _get(preset, key))
+        else:
+            wrong = _row_problem(row, found.get(key), project_type)
+        if wrong:
+            problems.append(Problem(BAD_EXCEPTION, f'{where}: {wrong}'))
             continue
-        if any(earlier['key'] == row['key'] for earlier in covering):
+        if key in covered:
             problems.append(
                 Problem(
                     BAD_EXCEPTION,
@@ -618,20 +691,57 @@ def _exception_problems(config: dict[str, Any]) -> list[Problem]:
                 )
             )
             continue
-        covering.append(row)
-    for departure in found:
-        if not any(
-            row['key'] == departure.key and _same(row['value'], departure.value) for row in covering
-        ):
-            problems.append(
-                Problem(
-                    UNLISTED_DEPARTURE,
-                    f'{departure.key} departs from the {project_type} preset '
-                    f'(preset {_show(departure.preset)}, here {_show(departure.value)}) '
-                    'and no exceptions row lists it',
-                )
+        covered.add(key)
+    for departure in found.values():
+        how = loosens(departure)
+        if how is None or departure.key in covered:
+            continue
+        problems.append(
+            Problem(
+                UNLISTED_DEPARTURE,
+                f'{departure.key} departs from the {project_type} preset '
+                f'(preset {_show(departure.preset)}, here {_show(departure.value)}) and loosens '
+                f'a check ({how}), and no exceptions row lists it',
             )
+        )
     return problems
+
+
+def _row_problem(row: dict[str, Any], departure: Departure | None, project_type: str) -> str:
+    """Why a row for a key that is not a guard list is bad, or "" when it is good."""
+    key = row['key']
+    if 'drop' in row:
+        return (
+            f'drop names default elements of a guard list ({" or ".join(EXTENDABLE_KEYS)}) to '
+            f'leave out, and {key} is not one'
+        )
+    if 'value' not in row:
+        if departure is None:
+            return f'matches no departure ({key} does not depart from the {project_type} preset)'
+        return ''
+    if departure is None or not _same(departure.value, row['value']):
+        return (
+            f'matches no departure (no key departs from the {project_type} preset with the '
+            f'value {_show(row["value"])})'
+        )
+    return ''
+
+
+def _drop_problem(row: dict[str, Any], key: str, default: list[Any]) -> str:
+    """Why a row for the guard list `key` is bad, or "" when it is good."""
+    if 'value' in row:
+        return (
+            f'{key} never departs, so a row gives it no value; it names the default elements it '
+            'leaves out in drop'
+        )
+    if 'drop' not in row:
+        return f'names no drop: a row for {key} names the default elements it leaves out'
+    if not row['drop']:
+        return 'drop is empty'
+    for item in row['drop']:
+        if not any(_same(item, d) for d in default):
+            return f'drops {item}, which is not an element of the default list'
+    return ''
 
 
 # --- output ------------------------------------------------------------------------------------
