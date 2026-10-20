@@ -133,6 +133,13 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
           UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
         run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform branch-name -- "$HEAD_REF"
+      # The checks job scans the tracked files; this step scans what only a pull request carries:
+      # the range's commit messages and the title and body in the event payload.
+      - name: railform private-refs (the range, its messages and the pull request)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
+        run: uvx --from "git+https://github.com/grimaldost/railform@$RAILFORM_SHA" railform private-refs --diff "origin/${BASE_REF}...HEAD" --event "$GITHUB_EVENT_PATH"
 
   # The changelog gate (the development-rails spec, §14) judges every commit the pull request
   # adds, so the checkout takes the whole history. On a push it is skipped, which counts as

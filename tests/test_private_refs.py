@@ -3,6 +3,7 @@
 Home paths are built at run time from parts, so no file of this repository carries one.
 """
 
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -688,6 +689,106 @@ def test_outside_a_git_repository_it_exits_2(
     monkeypatch.setenv('GIT_CEILING_DIRECTORIES', str(outside.parent))
     code, out, _ = check(capsys)
     assert (code, verdict(out)) == (2, 'railform-verdict: private-refs fail usage')
+
+
+# --- the pull request's title and body (--event) -----------------------------------------------
+
+
+def _event(tmp_path: Path, payload: object) -> str:
+    """Each payload in a file of its own, so a test can hold several."""
+    path = tmp_path / f'event-{len(list(tmp_path.glob("event-*.json")))}.json'
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    return str(path)
+
+
+def _pull_request(tmp_path: Path, title: object, body: object) -> str:
+    return _event(tmp_path, {'pull_request': {'title': title, 'body': body}})
+
+
+def test_red_proof_a_home_path_in_the_pull_request_body_fails(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    clean = _pull_request(tmp_path, 'docs: a note', 'A note.\n')
+    assert check(capsys, '--event', clean)[0] == 0
+    leaked = _pull_request(tmp_path, 'docs: a note', f'A note.\n\nRun from {home("linux")}\n')
+    code, out, findings = check(capsys, '--event', leaked)
+    assert code == 1
+    assert verdict(out) == 'railform-verdict: private-refs fail home-path'
+    assert findings == ['pull request body:3: home path /home/<name>']
+    assert STRANGER not in out
+
+
+def test_a_home_path_in_the_pull_request_title_fails_under_its_own_label(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    leaked = _pull_request(tmp_path, f'fix: read {home("slash")}', None)
+    code, out, findings = check(capsys, '--event', leaked)
+    assert code == 1
+    assert findings == ['pull request title:1: home path C:/Users/<name>']
+    assert STRANGER not in out
+
+
+def test_a_private_name_in_the_pull_request_text_fails(
+    scratch_repo: Path, tmp_path: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text(f'{STRANGER}\n', encoding='utf-8')
+    leaked = _pull_request(tmp_path, 'docs: a note', f'Asked by {STRANGER}.')
+    code, out, findings = check(capsys, '--event', leaked)
+    assert code == 1
+    assert verdict(out) == 'railform-verdict: private-refs fail private-name'
+    assert findings == ['pull request body:1: private name (names file line 1)']
+    assert STRANGER not in out
+
+
+def test_a_null_or_absent_title_or_body_is_empty_text(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert check(capsys, '--event', _pull_request(tmp_path, 'docs: x', None))[0] == 0
+    assert check(capsys, '--event', _event(tmp_path, {'pull_request': {}}))[0] == 0
+
+
+@pytest.mark.parametrize(
+    'payload',
+    [{'action': 'push'}, {'pull_request': None}, {'pull_request': {'title': 3}}, ['x']],
+    ids=['no-pull-request', 'null-pull-request', 'title-not-text', 'not-an-object'],
+)
+def test_an_event_without_a_readable_pull_request_is_a_usage_error(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], payload: object
+) -> None:
+    code, out, _ = check(capsys, '--event', _event(tmp_path, payload))
+    assert (code, verdict(out)) == (2, 'railform-verdict: private-refs fail usage')
+
+
+def test_an_event_file_that_cannot_be_read_is_a_usage_error(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert check(capsys, '--event', str(tmp_path / 'missing.json'))[0] == 2
+    broken = tmp_path / 'broken.json'
+    broken.write_text('{', encoding='utf-8')
+    assert check(capsys, '--event', str(broken))[0] == 2
+
+
+def test_the_event_joins_the_diff_scope(
+    scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # What the commit-lane job runs: the range's files and messages, and the pull request text.
+    stage(scratch_repo, 'a.txt', 'one\n')
+    base = commit(scratch_repo)
+    stage(scratch_repo, 'a.txt', 'two\n')
+    commit(scratch_repo, 'fix: two')
+    clean = _pull_request(tmp_path, 'fix: two', 'Two.')
+    leaked = _pull_request(tmp_path, 'fix: two', f'Two, from {home("macos")}.')
+    passed = check(capsys, '--diff', f'{base}...HEAD', '--event', clean)
+    assert passed[0] == 0, passed[1]
+    code, out, findings = check(capsys, '--diff', f'{base}...HEAD', '--event', leaked)
+    assert code == 1
+    assert [line.split(':')[0] for line in findings] == ['pull request body']
+    assert STRANGER not in out
+    stage(scratch_repo, 'a.txt', 'three\n')
+    commit(scratch_repo, f'fix: the log said {home("linux")}')
+    code, _, findings = check(capsys, '--diff', f'{base}...HEAD', '--event', clean)
+    assert code == 1
+    assert [line.split(':')[0][:7] for line in findings] == ['commit ']
 
 
 # --- railform itself ---------------------------------------------------------------------------

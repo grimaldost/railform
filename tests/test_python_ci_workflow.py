@@ -201,7 +201,7 @@ def test_every_railform_command_is_installed_from_the_input(workflow: dict[Any, 
             installed = run.count(f'{INSTALL} {verb}')
             assert invoked == installed, (verb, run)
             commands += invoked
-    assert commands == 10
+    assert commands == 11
 
 
 def test_no_run_text_interpolates_an_expression(workflow: dict[Any, Any]) -> None:
@@ -408,11 +408,26 @@ def test_the_commit_lane_checks_the_range_the_text_and_the_branch(
         f'{INSTALL} commit-range "origin/${{BASE_REF}}...HEAD"',
         f'{INSTALL} pr-text',
         f'{INSTALL} branch-name -- "$HEAD_REF"',
+        f'{INSTALL} private-refs --diff "origin/${{BASE_REF}}...HEAD" --event "$GITHUB_EVENT_PATH"',
     ]
     assert _step(job, 'commit-range')['env'] == {
         'BASE_REF': '${{ github.base_ref }}',
         'UV_EXCLUDE_NEWER': DATE,
     }
+
+
+def test_red_proof_the_commit_lane_scans_the_messages_and_the_pull_request_text(
+    workflow: dict[Any, Any],
+) -> None:
+    # The checks job runs private-refs over the tracked files only, so a home path or a private
+    # name in a commit message or in the pull request's title or body reached the base branch
+    # unseen. The commit lane scans the range, its messages included, and the event's text.
+    job = _job(workflow, 'commit-lane')
+    step = _step(job, 'private-refs')
+    assert step['name'] == 'railform private-refs (the range, its messages and the pull request)'
+    assert step['env'] == {'BASE_REF': '${{ github.base_ref }}', 'UV_EXCLUDE_NEWER': DATE}
+    assert 'if' not in step  # it runs under the job's condition, nothing narrower
+    assert job['if'] == PR_CONDITION
 
 
 def test_red_proof_the_branch_name_step_takes_the_head_branch_through_the_environment(

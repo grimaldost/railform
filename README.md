@@ -250,11 +250,18 @@ change to files in its contents is not seen unless the submodule path itself is 
 
 ## The private-reference check
 
-`railform private-refs [PATH ...] [--diff BASE...HEAD] [--text FILE]... [--require-names]` keeps
-two kinds of private reference out of a public repository. It checks the given paths; otherwise,
-with `--diff`, the files the range changes (read at its tip) and the range's commit messages;
-otherwise every tracked file. `--text FILE` (repeatable, one file per flag) adds a file to any
-scope, such as a pull request's title or body. Binary files are skipped.
+`railform private-refs [PATH ...] [--diff BASE...HEAD] [--text FILE]... [--event PATH]
+[--require-names]` keeps two kinds of private reference out of a public repository. It checks the
+given paths; otherwise, with `--diff`, the files the range changes (read at its tip) and the
+range's commit messages; otherwise every tracked file. `--text FILE` (repeatable, one file per
+flag) adds a file to any scope. `--event PATH` adds the title and body of the pull request in a
+GitHub event payload, read as `pr-text` reads them and reported as `pull request title` and
+`pull request body`. Binary files are skipped.
+
+In the reusable workflow, the `checks` job runs it over the tracked files, and the `commit-lane`
+job runs `private-refs --diff "origin/${BASE_REF}...HEAD" --event "$GITHUB_EVENT_PATH"` on pull
+requests, so a home path in a commit message or in the pull request's text fails too. Without a
+names file in CI, the names half is silent there, as below.
 
 - **Home paths.** A home-directory path fails (`home-path`) unless its user segment is in
   `private_refs.placeholders` (default: `me`, `x`, `someone`, `alice`, `user`, `runner`, and the
@@ -450,7 +457,7 @@ checks that the input is 40 hexadecimal characters before anything is installed.
 |---|---|---|
 | `frame` | `railform frame --check`, then `railform frame --github-output` | every run |
 | `checks` | `railform private-refs`, `railform version-sites`, then the type's pipeline, on every leg of `ci.os` by `python.versions` | every run |
-| `commit-lane` | `railform commit-range`, `railform pr-text`, and `railform branch-name` on the head branch | pull requests |
+| `commit-lane` | `railform commit-range`, `railform pr-text`, `railform branch-name` on the head branch, and `railform private-refs` over the range (its commit messages included) and the pull request's title and body | pull requests |
 | `changelog` | `railform changelog-gate "origin/${BASE_REF}...HEAD"` (see the changelog gate above) | pull requests |
 | `hooks` | `railform hooks-check`, `railform adopt --check`, and the hygiene hooks over the changed files, with pre-commit on the newest of `python.versions`, else `python.newest` (the `hooks_python` output of `frame --github-output`), so a `default_language_version` naming that Python resolves | every run; the hygiene hooks on pull requests |
 | `audit` | zizmor 1.30.0 at high severity over the caller's workflows | every run |

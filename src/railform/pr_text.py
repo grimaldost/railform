@@ -44,6 +44,12 @@ def _read_event(args: argparse.Namespace) -> tuple[str, str]:
     path = args.event or os.environ.get(EVENT_ENV, '')
     if not path:
         raise commit_lane.LaneError(f'neither --event nor ${EVENT_ENV} is set')
+    return read_pull_request(path)
+
+
+def read_pull_request(path: str) -> tuple[str, str]:
+    """The title and body of the pull request in the event payload at `path`; a `null` or absent
+    value is empty text. LaneError when the payload cannot be read or holds no pull request."""
     try:
         payload = json.loads(Path(path).read_bytes().decode('utf-8-sig'))
     except (OSError, ValueError) as exc:

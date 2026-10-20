@@ -12,6 +12,18 @@ All notable changes to this project are recorded here, in the
   beside `ci.yml`, `railform arm`, the `gate` ruleset, type detection, a python-package example
   and the move to a newer pin. `tests/test_adopting_guide.py` fails when the guide names a verb or
   a flag the command does not have.
+- `railform private-refs --event PATH` adds the title and body of the pull request in a GitHub
+  event payload to the scan, reported as `pull request title` and `pull request body`. The
+  `commit-lane` job of the reusable workflow runs
+  `private-refs --diff "origin/${BASE_REF}...HEAD" --event "$GITHUB_EVENT_PATH"`, so a home path
+  (or, with a names file, a private name) in a commit message or in the pull request's text now
+  fails CI; before, the `checks` job scanned the tracked files only and `pr-text` checked
+  attribution only.
+- `railform version-sites --base REF` reads `version.sites` and `release.tag_prefix` from the
+  `railform.toml` committed at the merge base of REF and HEAD (the working tree's when that commit
+  has none) and names the frame it read; it does not combine with `--bump`. The `changelog` job
+  of the reusable workflow runs `version-sites --base "origin/${BASE_REF}"` on pull requests, so
+  a pull request can no longer drop the version site that disagrees from its own frame.
 
 ### Changed
 

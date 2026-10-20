@@ -130,9 +130,13 @@ run the checks that CI will run on it:
 ```
 railform hooks-check
 railform private-refs
+railform private-refs --diff origin/main...HEAD
 railform commit-range origin/main...HEAD
 railform branch-name
 ```
+
+The second `private-refs` reads the branch's commit messages as well as the files it changes; in
+CI the `commit-lane` job also passes the pull request's title and body (`--event`).
 
 A repository with files a coding-assistant session loads (`session_loaded` in the frame) also runs
 `railform session-paths --diff origin/main...HEAD --frame-from origin/main`.
