@@ -5,6 +5,8 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-24
+
 ### Added
 
 - `docs/adopting.md`, an ordered guide to adopting a repository: the inventory, `railform adopt

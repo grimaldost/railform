@@ -1,6 +1,6 @@
 [project]
 name = 'railform'
-version = '0.1.0'
+version = '0.2.0'
 description = 'Shared CI workflow, commit hooks and repository checks, referenced at a pinned commit.'
 readme = 'README.md'
 requires-python = '>=3.11'
