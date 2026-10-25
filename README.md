@@ -565,18 +565,23 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
 - Whole files: the hook wrappers in `hooks.dir`, staged as their exact bytes and tracked as
   `100755` (so `core.autocrlf` and `core.safecrlf` never touch them), and
   `.github/workflows/railform-tag-watch.yml`, the caller of the reusable tag watch (see the
-  release check below). Adopt writes the caller when it is absent and `release.enabled` is
-  true; with the release check off (`release.enabled = false`) it writes none, and `--check`
-  does not ask for one. A caller that exists is kept either way: when it exists, adopt writes
-  only its two pin sites, the whole `uses:` value and the
-  `railform-sha` value, with the current mode's values (the pinned call and the pin, or the call
-  by local path and `${{ github.sha }}` when self-hosted), and leaves the rest as it is, line
-  endings included. A switch between pinned and self-hosted in either direction therefore needs
+  release check below). A hook already in `hooks.dir` under a wrapper's name is overwritten.
+  Adopt writes the caller when it is absent and `release.enabled` is true; with the release check
+  off (`release.enabled = false`) it writes none, and `--check` does not ask for one. A caller that
+  exists is kept either way: when it exists, adopt writes only its two pin sites, the whole
+  `uses:` value and the `railform-sha` value, with the current mode's values (the pinned call and
+  the pin, or the call by local path and `${{ github.sha }}` when self-hosted), and leaves the
+  rest as it is, line endings included. A switch between pinned and self-hosted in either direction therefore needs
   only another `railform adopt`. `--check` renders the template at the file's own `uses:` commit
   (or by local path, when self-hosted) and compares the whole file: a missing file or any other difference is `drift`, which
   deleting the file and running `railform adopt` clears; a pin site that differs from the others
   is `pin-mismatch`. A workflow of the
   repository's own, such as a `tag-watch.yml` it already had, is never touched.
+- In `.gitattributes`, one line for `hooks.dir`, `<hooks.dir>/** text eol=lf`, and one for the
+  directory where adopt writes stubs, when it writes any, between marker lines (`#` starts a comment
+  there too). The region goes after every other line, so it wins over a `* text=auto`. Without it,
+  a clone with `core.autocrlf=true` checks the wrappers and the stubs out with CRLF, and a new
+  worktree shows them as modified, though the index holds LF. The file is created when absent.
 - `railform.toml`, on the first run only, with the project type and `python.versions`. A `src/`
   layout is `python-package`, another `pyproject.toml` is `python-scripts`, and no
   `pyproject.toml` is `plugin-marketplace`; `--type` overrides the guess. The versions are the floor
@@ -587,7 +592,7 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
   first daily run of the tag watch stays green; a repository with other tag prefixes sets
   `since` itself. After the first run the file is the repository's.
 
-Each owned part of the three shared files sits between two marker lines:
+Each owned part of the four shared files sits between two marker lines:
 
 ```yaml
 # >>> railform: owned by `railform adopt`; `railform adopt --check` fails on any edit
@@ -613,10 +618,12 @@ nothing.
   would silence every railform hook.
 
   Wrappers are judged by their index entry, mode `100755` and the exact LF bytes, so a wrapper
-  committed with CRLF is `drift`. The check fails with `pin-mismatch` when the pins differ from
-  each other, and with `extra-pr-workflow` while another workflow file runs on `pull_request` or
-  `pull_request_target`, or cannot be parsed. A job's `needs:` cannot reach another workflow
-  file, so move such a job into `ci.yml` (the next adopt adds it to `gate`), or list the file in
+  committed with CRLF is `drift`. A `.gitattributes` that is missing, or has no region, or whose
+  first line is not the `hooks.dir` line, is `drift`; the check accepts further lines of the same
+  shape for the stub directory, which it does not work out again. The check fails with
+  `pin-mismatch` when the pins differ from each other, and with `extra-pr-workflow` while another
+  workflow file runs on `pull_request` or `pull_request_target`, or cannot be parsed. A job's
+  `needs:` cannot reach another workflow file, so move such a job into `ci.yml` (the next adopt adds it to `gate`), or list the file in
   `ci.extra_workflows`, by name or by path, with an `exceptions` row.
 
   A `paths`, `paths-ignore`, `branches` or `branches-ignore` filter on the `pull_request` trigger
@@ -627,9 +634,10 @@ nothing.
   `core.hooksPath` when it is not the same directory as `hooks.dir` (a subdirectory of it
   counts), or else the tracked directory, outside `hooks.dir` and outside every `session_loaded`
   glob, with the most `100755` files named after a hook. The stub prints the `railform arm`
-  command and fails, so a clone armed to the old directory cannot commit unchecked. The stub is
-  meant to be removed one release later: the first railform patch release after an adopter's
-  adoption leaves it.
+  command and the one-shot form, `git -c core.hooksPath=<hooks.dir> <command>`, which runs a single
+  git command with the hooks without arming the clone, and fails, so a clone armed to the old
+  directory cannot commit unchecked. The stub is meant to be removed one release later: the first
+  railform patch release after an adopter's adoption leaves it.
   - Directories are compared as Windows reads them: each segment without its trailing dots and
     spaces, then casefolded. The filesystem decides when both directories exist.
   - A `core.hooksPath` that differs from `hooks.dir` only that way (`.GitHooks`, `.githooks.`)
@@ -640,8 +648,11 @@ nothing.
     `.git`, or holds a character Windows forbids in a name (`<>:"|?*`) is not a directory adopt
     writes in; it is reported and gets no stub.
   - Every candidate passed over is reported in a finding line.
-  - A file there that is tracked but not `100755`, or not tracked at all, is reported and left
-    alone.
+  - A file there that is tracked as `100644` (an old hook that lost its mode, as in
+    mantis-research and fathom) is replaced by the stub, tracked as `100755`, and the finding line
+    names the replaced mode, unless the working copy differs from the index: then it is reported
+    and left alone. A file of another tracked mode (a symlink, a submodule), or one that is not
+    tracked at all, is reported and left alone.
 - Adopt refuses, before writing anything, a target path with a symlink or junction on the way, a
   `hooks.dir` inside `.git` (`.git.` and `.git ` included), starting with a `~` or `%(` that git
   expands, or holding a character Windows forbids,

@@ -94,6 +94,21 @@ All notable changes to this project are recorded here, in the
   emoji, `>`, `-`, `*`, bold markers), a list number or a word and a colon such as a
   `type(scope): ` prefix. A stamp pasted mid-sentence or inside an HTML tag passes; the Claude Code stamp line, `Generated with Claude` and every
   trailer case still fail.
+- `railform adopt` replaces every hook file of the previous hooks directory with a stub. A file
+  tracked as `100644` there (an old hook that lost its mode, as in mantis-research and fathom) was
+  reported and left, so a clone armed to that directory ran the old hook and never saw the stub;
+  it is now replaced, tracked as `100755`, and the finding line names the mode it replaced. A
+  file with unstaged changes, another tracked mode or no tracking is still reported and left.
+- The stub's message gives the one-shot form, `git -c core.hooksPath=<hooks.dir> <command>`, which
+  runs a single git command with the hooks without arming the clone.
+- `railform adopt` writes a marked region in `.gitattributes`, `<hooks.dir>/** text eol=lf` and
+  the stub directory when it writes stubs, after every other line. With `core.autocrlf=true` and
+  `* text=auto` (fathom, craft-collection) the wrappers and stubs were checked out as CRLF, and a
+  new worktree showed them as modified though the index held LF. `railform adopt --check` fails
+  with `drift` when the file or the region is missing or its first line is not the `hooks.dir`
+  line. A repository that adopted earlier runs `railform adopt` and commits `.gitattributes`.
+- `docs/adopting.md` says that adopt overwrites a file already in `hooks.dir` under a wrapper's
+  name, lists `.gitattributes` among the files adopt writes, and gives the one-shot form in step 7.
 
 ## [0.2.0] - 2026-10-24
 

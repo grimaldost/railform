@@ -27,7 +27,7 @@ it to see what stops running and what keeps running.
 |---|---|---|
 | Workflows and jobs | `.github/workflows/*.yml` | Each job is replaced by a railform job, kept inside `ci.yml`, or left as a workflow that never runs on pull requests |
 | Pull request triggers | the `on:` block of each workflow | A workflow that runs on `pull_request` beside `ci.yml` is judged by `railform adopt --check` (step 5) |
-| Hooks | `.pre-commit-config.yaml`, the hook directory, `git config core.hooksPath` | Adopt writes the wrappers into `hooks.dir` (`.githooks`) and leaves a stub in the directory they came from |
+| Hooks | `.pre-commit-config.yaml`, the hook directory, `git config core.hooksPath`, `.gitattributes` | Adopt writes the wrappers into `hooks.dir` (`.githooks`, overwriting a file of the same name), leaves a stub in the directory they came from, and pins both directories to LF in `.gitattributes` |
 | Changelog and version scripts | `CHANGELOG.md`, release or bump scripts | Their paths become `changelog.records` and `version.sites` rows in `railform.toml` |
 | Python floor and commands | `requires-python`, the test and lint commands CI runs | The floor seeds `python.versions`; a test command that differs from the type's preset needs an `exceptions` row (step 3) |
 | Required status checks | the branch ruleset, or branch protection | These move to the single status `gate` (step 6) |
@@ -65,14 +65,18 @@ file before writing any, and writes these:
 | `.github/workflows/ci.yml` | Two jobs between marker lines. `railform` calls the shared workflow at the pin and passes the pin as `railform-sha`. `gate` needs every other job in the file and fails when one failed or was cancelled. The `pull_request` trigger gains `types: [opened, synchronize, reopened, edited]`. The file is created when absent; every other line is kept |
 | `.pre-commit-config.yaml` | Two entries between marker lines: railform's hooks at the pin, and the hygiene hooks of `pre-commit/pre-commit-hooks` |
 | `.github/dependabot.yml` | An ignore entry for `grimaldost/railform` in the `github-actions` update, so Dependabot leaves the pin to `railform adopt --pin` |
-| `.githooks/pre-commit`, `commit-msg`, `pre-push` | The hook wrappers, tracked as `100755` in the git index |
+| `.githooks/pre-commit`, `commit-msg`, `pre-push` | The hook wrappers, tracked as `100755` in the git index. A file already in `hooks.dir` under one of these names is overwritten |
+| `.gitattributes` | A region with `.githooks/** text eol=lf`, and the stub directory when adopt writes stubs, so a clone with `core.autocrlf=true` checks the hooks out as LF. The file is created when absent; every other line is kept |
 | `.github/workflows/railform-tag-watch.yml` | The caller of the release-tag watch, pinned. Not written when `release.enabled` is false |
 | `railform.toml` | On the first run only: the project type, `python.versions`, and `release.since` when the repository has release tags. After that the file is the repository's |
 
 Everything outside the marker lines is kept byte for byte, and a second run changes nothing. If the
 hooks lived in another directory, adopt leaves a stub for each hook there, which prints the
-`railform arm` command and fails, so a clone still armed to the old directory cannot commit
-unchecked. The wrappers are staged by adopt; `git add` the other files, which are written to the
+`railform arm` command and the one-shot form (step 7) and fails, so a clone still armed to the old
+directory cannot commit unchecked. A file there tracked as `100644`, which is how an old hook that
+lost its mode looks, is replaced by the stub and tracked as `100755`; the output names each
+replacement, so read it before you commit. A file with unstaged changes, or not tracked, is left
+and reported. The wrappers are staged by adopt; `git add` the other files, which are written to the
 working tree only.
 
 Adopt does not decide what to do with the repository's own jobs and hooks. Do that now:
@@ -236,6 +240,15 @@ Worktrees share their clone's configuration, so arming the clone arms them. `rai
 --armed` fails with `not-armed` in a clone that has not run it. Put the command in the
 contributing guide.
 
+To run one git command with the hooks, without arming the clone, name the directory for that
+command alone:
+
+```
+git -c core.hooksPath=.githooks commit -m "chore: a change"
+```
+
+The stub in a former hooks directory prints this form with `<command>` in place of `commit ...`.
+
 ## How the type is detected
 
 The first `railform adopt` writes `railform.toml` with a guessed `project.type`:
@@ -277,6 +290,7 @@ railform.toml: written (the first run seeds it)
 .pre-commit-config.yaml: written
 .github/workflows/railform-tag-watch.yml: written
 .github/dependabot.yml: written
+.gitattributes: written
 .githooks/pre-commit: written, 100755 in the git index
 .githooks/commit-msg: written, 100755 in the git index
 .githooks/pre-push: written, 100755 in the git index
@@ -286,8 +300,8 @@ railform-verdict: adopt pass ok
 
 The type was detected as `python-package`, the seeded `railform.toml` holds the type and
 `python.versions = ["3.11", "3.14"]`, and `ci.yml` now has the marked `railform` and `gate` jobs
-above the old `test` job, with `needs: [railform, test]`. The directory did not move, so no stub
-was written.
+above the old `test` job, with `needs: [railform, test]`. `.gitattributes` holds the region that
+pins `.githooks` to LF. The directory did not move, so no stub was written.
 
 The `test` job runs what `checks` now runs, so it is deleted; `lint.yml` is deleted and its steps
 go into a `lint` job in `ci.yml`, which the next run puts under `gate`:
@@ -357,5 +371,8 @@ pre-commit `rev` and the tag-watch caller. Then run `railform frame --check` and
 repository setting that the new frame rejects fails as `unknown-key`, `wrong-type` or
 `missing-path`. A pin from
 before rows matched by key keeps its rows: each one that names its value still passes. Commit the
-result as one pull request that touches only the pin sites and, if needed, `railform.toml`.
-A stub left in a former hooks directory is deleted once every clone has run `railform arm`.
+result as one pull request that touches the pin sites, the `.gitattributes` region and any stub
+`adopt` rewrote in a former hooks directory (a release whose changelog entry lists a new part
+that adopt owns adds it to that pull request) and, if needed, `railform.toml`.
+A stub left in a former hooks directory is deleted once every clone has run `railform arm`; run
+`railform adopt` after that, and its line leaves the region in `.gitattributes`.

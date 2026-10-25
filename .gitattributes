@@ -1,1 +1,4 @@
 * text=auto eol=lf
+# >>> railform: owned by `railform adopt`; `railform adopt --check` fails on any edit
+.githooks/** text eol=lf
+# <<< railform
