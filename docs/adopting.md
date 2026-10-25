@@ -49,7 +49,7 @@ A pin is the full 40-hexadecimal commit of a railform release, never a branch or
 of a release is annotated, so this prints the commit the tag points at:
 
 ```
-git ls-remote https://github.com/grimaldost/railform 'refs/tags/v0.2.0^{}'
+git ls-remote https://github.com/grimaldost/railform 'refs/tags/v0.3.0^{}'
 ```
 
 Work on a branch, with the repository's `ci.yml` and hooks as they are, and run adopt from the
@@ -214,7 +214,7 @@ to the scan. In CI both read the event payload; locally a file of the same shape
 repository, stands in:
 
 ```json
-{"pull_request": {"title": "ci: adopt the shared rails", "body": "Pins the shared workflow at v0.2.0."}}
+{"pull_request": {"title": "ci: adopt the shared rails", "body": "Pins the shared workflow at v0.3.0."}}
 ```
 
 ```
