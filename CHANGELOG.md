@@ -7,6 +7,12 @@ All notable changes to this project are recorded here, in the
 
 ### Added
 
+- `tests/test_adopter_frames.py` and `tests/fixtures/adopter_frames/`: the `railform.toml` of the
+  five public adopters (keel, convoy, fathom, mantis-research, craft-collection), each copied at
+  its `origin/main` with a header naming the repository and commit. The test requires that
+  `frame --check` passes each one and that each one read as a merge-base frame (`changelog-gate`,
+  `version-sites --base`) is accepted by the schema, so renaming or retyping a frame key fails
+  here before it stops an adopter's pull requests. No private adopter's frame is copied.
 - `private_refs.names_enabled` (default `true`) in the frame. `false` turns the names half of
   `railform private-refs` off for a private repository whose tracked files carry the listed names
   by design, on machines where the variable is set: the names file is not read, `--require-names`
