@@ -31,10 +31,13 @@ the record diff is taken from the merge base of BASE and HEAD to HEAD. Three rul
   the version at HEAD and be greater than the version at the merge base; a side with no readable
   version is not compared. A line with no non-authored site skips the rule and says so.
 - **Contract surfaces carry the marker** (`consumer-affecting`). When the range changes a path of
-  `changelog.contract_surfaces` and no record file's added lines hold `(consumer-affecting)`, the
-  rule fires once per surface. With `changelog.consumer_affecting = "advisory"` (the default) a
-  firing is a `::warning::` finding with the fixed text `consumer-affecting (advisory)` and the
-  verdict stays a pass; with `"error"` it fails.
+  `changelog.contract_surfaces` and no record file carries `(consumer-affecting)` on an added
+  entry, the rule fires once per surface. An entry is an added `- ` line of the record file at HEAD,
+  or an added indented line continuing an entry, under the `## [Unreleased]` heading or the newest
+  `## [X.Y.Z]` heading (the first one in the file); the marker in added prose, in a heading or in
+  an older release's section marks nothing. With `changelog.consumer_affecting = "advisory"` (the
+  default) a firing is a `::warning::` finding with the fixed text `consumer-affecting (advisory)`
+  and the verdict stays a pass; with `"error"` it fails.
 
 - **The watch covers something** (`watches-nothing`). When no tracked path at HEAD other than the
   record files falls under a `changelog.records` row of the frame at HEAD, the gate fails: a watch
@@ -95,6 +98,10 @@ Version = tuple[int, int, int]
 
 # ASCII digits only: `\d` would also read other scripts' digits, which no version carries.
 _ADDED_HEADING = re.compile(r'^## \[([0-9]+)\.([0-9]+)\.([0-9]+)\]', re.MULTILINE)
+_RELEASE_HEADING = re.compile(r'## \[[0-9]+\.[0-9]+\.[0-9]+\]')
+_UNRELEASED_HEADING = re.compile(r'## \[unreleased\]', re.IGNORECASE)
+# A unified-diff hunk header: the line of the new file where the hunk starts.
+_HUNK = re.compile(r'@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,[0-9]+)? @@')
 # What `git merge-tree --write-tree` prints on its first line when it wrote a tree: a SHA-1 or a
 # SHA-256 object id.
 _OBJECT_ID = re.compile(r'[0-9a-f]{40}(?:[0-9a-f]{24})?')
@@ -260,6 +267,64 @@ def diff_side(diff: str, sign: str) -> str:
     return '\n'.join(kept)
 
 
+def added_lines(diff: str) -> set[int]:
+    """The 1-based line numbers, in the new file, of the lines a unified diff adds."""
+    found: set[int] = set()
+    number = 0
+    in_hunk = False
+    for line in diff.split('\n'):
+        hunk = _HUNK.match(line)
+        if hunk is not None:
+            in_hunk = True
+            number = int(hunk.group(1))
+        elif in_hunk and line.startswith('+'):
+            found.add(number)
+            number += 1
+        elif in_hunk and (line.startswith(' ') or not line):
+            # An empty line is a context line that `diff.suppressBlankEmpty` printed bare.
+            number += 1
+    return found
+
+
+def marked_entry(text: str, diff: str) -> bool:
+    """Whether the diff adds `(consumer-affecting)` on an entry of the newest section of `text`,
+    the record file at HEAD.
+
+    The newest section is `## [Unreleased]` together with the first `## [X.Y.Z]` heading and
+    what follows it, up to the next `## ` heading. An entry line is a `- ` line, or a line
+    indented under one (a wrapped entry) with no blank line or heading between. An added line
+    that is prose, a heading, or in an older section marks nothing.
+    """
+    added = added_lines(diff)
+    if not added:
+        return False
+    in_scope = False
+    seen_release = False
+    in_entry = False
+    for number, raw in enumerate(text.split('\n'), start=1):
+        line = raw.rstrip('\r')
+        if line.startswith('## '):
+            in_entry = False
+            if _UNRELEASED_HEADING.match(line):
+                in_scope = True
+            elif _RELEASE_HEADING.match(line) and not seen_release:
+                seen_release = True
+                in_scope = True
+            else:
+                in_scope = False
+            continue
+        if line.lstrip().startswith('- '):
+            in_entry = True
+        elif not line.strip() or not line[0].isspace():
+            in_entry = False
+            continue
+        elif not in_entry:
+            continue
+        if in_scope and number in added and MARKER in line:
+            return True
+    return False
+
+
 def _headings(side: str) -> list[Version]:
     found: list[Version] = []
     for match in _ADDED_HEADING.finditer(side):
@@ -346,10 +411,11 @@ def heading_findings(
     return found
 
 
-def surface_findings(changed: Iterable[str], added: Iterable[str], settings: Settings) -> list[str]:
-    """One finding per contract surface the range changes when no record file's added lines
-    hold the marker: a workflow warning when advisory, a plain finding when an error."""
-    if any(MARKER in text for text in added):
+def surface_findings(changed: Iterable[str], marked: bool, settings: Settings) -> list[str]:
+    """One finding per contract surface the range changes when no record file carries the marker
+    on an added entry (`marked_entry`): a workflow warning when advisory, a plain finding when an
+    error."""
+    if marked:
         return []
     changed_set = set(changed)
     found: list[str] = []
@@ -357,8 +423,8 @@ def surface_findings(changed: Iterable[str], added: Iterable[str], settings: Set
         if surface not in changed_set:
             continue
         message = (
-            f'the range changes this contract surface and no record says {MARKER}; if the '
-            'change moves what a consumer reads, mark its entry'
+            'the range changes this contract surface and no added entry of a record says '
+            f'{MARKER}; if the change moves what a consumer reads, mark its entry'
         )
         if settings.consumer_affecting == 'error':
             found.append(f'{surface}: {CONSUMER_AFFECTING}: {message}')
@@ -494,7 +560,16 @@ class _Git:
         # A content diff: an external diff or a textconv driver would otherwise run on the
         # branch under judgement.
         return self.out(
-            'diff', '--no-ext-diff', '--no-textconv', '--no-color', base, head, '--', file
+            '-c',
+            'diff.suppressBlankEmpty=false',
+            'diff',
+            '--no-ext-diff',
+            '--no-textconv',
+            '--no-color',
+            base,
+            head,
+            '--',
+            file,
         )
 
     def watches_something(self, head: str, settings: Settings) -> bool:
@@ -553,9 +628,13 @@ def _judge(
         for sha, parents, message in git.commits(base, head)
     ]
     sides = {}
+    marked = False
     for file in settings.files:
         diff = git.record_diff(merge_base, head, file)
         sides[file] = (diff_side(diff, '+'), diff_side(diff, '-'))
+        if not marked and MARKER in sides[file][0]:
+            text = git.show(head, file)
+            marked = text is not None and marked_entry(text.decode('utf-8', errors='replace'), diff)
     recorded = [
         file for file, (added, removed) in sides.items() if records_something(added, removed)
     ]
@@ -588,8 +667,7 @@ def _judge(
 
     surfaces: list[str] = []
     if settings.surfaces:
-        added_sides = [added for added, _ in sides.values()]
-        surfaces = surface_findings(git.changed(merge_base, head), added_sides, settings)
+        surfaces = surface_findings(git.changed(merge_base, head), marked, settings)
     if settings.consumer_affecting == 'error':
         found[CONSUMER_AFFECTING] = surfaces
     else:

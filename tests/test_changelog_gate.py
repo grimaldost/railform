@@ -1298,6 +1298,19 @@ def _surface_change(repo: Path, bullet: str) -> None:
     )
 
 
+def _surface_edit(repo: Path, base_log: str, new_log: str) -> None:
+    """The base commit holds `base_log`; the branch changes the surface and the log to `new_log`."""
+    _commit(repo, 'chore: api', {'src/pkg/api.py': 'API = 1\n', 'CHANGELOG.md': base_log})
+    _git(repo, 'branch', '-f', 'base', 'main')
+    _commit(repo, 'feat: api', {'src/pkg/api.py': 'API = 2\n', 'CHANGELOG.md': new_log})
+
+
+RELEASED_CHANGELOG = (
+    '# Changelog\n\n## [Unreleased]\n\n## [0.2.0] - 2026-02-01\n\n### Added\n\n'
+    '- the second cut\n\n## [0.1.0] - 2026-01-01\n\n### Added\n\n- the first cut\n'
+)
+
+
 class TestConsumerAffecting:
     def test_an_unmarked_surface_warns_and_passes_by_default(
         self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
@@ -1330,6 +1343,98 @@ class TestConsumerAffecting:
         code, verdict, findings = _gate(capsys)
         assert (code, verdict) == (0, 'pass ok'), findings
         assert not any('consumer-affecting' in line for line in findings)
+
+    @pytest.mark.parametrize('error', [False, True])
+    def test_red_proof_a_marker_on_added_prose_is_no_marker(
+        self, scratch_repo: Path, error: bool, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The problem: the text `(consumer-affecting)` anywhere in an added line silenced the
+        # rule, so a sentence of prose did what an entry is meant to do.
+        repo = _start(scratch_repo, SURFACE + (ERROR_ROW if error else '') + SRC_RECORDS)
+        _surface_edit(
+            repo,
+            BASE_CHANGELOG,
+            BASE_CHANGELOG + '\nNote: nothing here is (consumer-affecting).\n',
+        )
+        code, verdict, findings = _gate(capsys)
+        if error:
+            assert (code, verdict) == (1, 'fail consumer-affecting'), findings
+            assert any(line.startswith('src/pkg/api.py: consumer-affecting: ') for line in findings)
+        else:
+            assert (code, verdict) == (0, 'pass ok'), findings
+            warnings = [line for line in findings if line.startswith('::warning::')]
+            assert len(warnings) == 1, findings
+            assert 'consumer-affecting (advisory)' in warnings[0]
+
+    def test_red_proof_a_marker_in_an_older_section_is_no_marker(
+        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _start(scratch_repo, SURFACE + ERROR_ROW + SRC_RECORDS)
+        _surface_edit(
+            repo,
+            RELEASED_CHANGELOG,
+            RELEASED_CHANGELOG.replace(
+                '- the first cut\n', '- the first cut\n- a late note (consumer-affecting)\n'
+            ),
+        )
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (1, 'fail consumer-affecting'), findings
+
+    def test_a_marker_on_an_entry_under_the_newest_release_passes(
+        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A release pull request moves the entries under the new heading: the marker is read there.
+        repo = _start(scratch_repo, SURFACE + ERROR_ROW + SRC_RECORDS)
+        _surface_edit(
+            repo,
+            RELEASED_CHANGELOG,
+            RELEASED_CHANGELOG.replace(
+                '- the second cut\n', '- the second cut\n- a renamed field (consumer-affecting)\n'
+            ),
+        )
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (0, 'pass ok'), findings
+
+    def test_a_marker_on_the_wrapped_line_of_an_added_entry_passes(
+        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _start(scratch_repo, SURFACE + ERROR_ROW + SRC_RECORDS)
+        _surface_edit(
+            repo,
+            BASE_CHANGELOG,
+            BASE_CHANGELOG + '- a renamed field, which a consumer\n  reads (consumer-affecting)\n',
+        )
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (0, 'pass ok'), findings
+
+    def test_the_users_diff_settings_do_not_move_the_marker(
+        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # With `diff.suppressBlankEmpty` an empty context line prints with no leading space; the
+        # line numbers of the added entry must not fall behind by one at each such line.
+        repo = _start(scratch_repo, SURFACE + ERROR_ROW + SRC_RECORDS)
+        _git(repo, 'config', 'diff.suppressBlankEmpty', 'true')
+        _surface_edit(
+            repo,
+            BASE_CHANGELOG,
+            BASE_CHANGELOG.replace(
+                '- an old line\n', '- a renamed field (consumer-affecting)\n- an old line\n'
+            ),
+        )
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (0, 'pass ok'), findings
+
+    def test_an_indented_prose_line_after_a_blank_line_is_no_entry(
+        self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _start(scratch_repo, SURFACE + ERROR_ROW + SRC_RECORDS)
+        _surface_edit(
+            repo,
+            BASE_CHANGELOG,
+            BASE_CHANGELOG + '\n  a stray (consumer-affecting) line\n',
+        )
+        code, verdict, findings = _gate(capsys)
+        assert (code, verdict) == (1, 'fail consumer-affecting'), findings
 
     def test_a_change_to_another_file_does_not_fire(
         self, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
@@ -1486,3 +1591,47 @@ class TestUsage:
         effective = frame.effective_frame({'changelog': {'records': []}})
         with pytest.raises(GateError, match='empty'):
             changelog_gate.settings(effective)
+
+
+class TestMarkedEntry:
+    """The pure reading: which added lines of a record file at HEAD are an entry in scope."""
+
+    LOG = (
+        '# Changelog\n\n## [Unreleased]\n\n- one\n- two\n\n## [0.2.0] - 2026-02-01\n\n- three\n\n'
+        '## [0.1.0] - 2026-01-01\n\n- four\n'
+    )
+
+    @staticmethod
+    def _diff(start: int, *added: str) -> str:
+        return f'--- a/C\n+++ b/C\n@@ -{start},0 +{start},{len(added)} @@\n' + ''.join(
+            f'+{line}\n' for line in added
+        )
+
+    def test_an_empty_line_inside_a_hunk_is_a_context_line(self) -> None:
+        diff = '@@ -1,3 +1,4 @@\n a\n\n+b\n c\n'
+        assert changelog_gate.added_lines(diff) == {3}
+
+    def test_a_hunk_header_places_the_added_line_in_the_new_file(self) -> None:
+        diff = '@@ -1,2 +1,3 @@\n a\n+b\n c\n@@ -9,1 +10,2 @@\n x\n+y\n'
+        assert changelog_gate.added_lines(diff) == {2, 11}
+
+    @pytest.mark.parametrize(
+        ('line_no', 'in_scope'), [(5, True), (6, True), (10, True), (14, False)]
+    )
+    def test_only_the_unreleased_and_the_newest_release_sections_count(
+        self, line_no: int, in_scope: bool
+    ) -> None:
+        lines = self.LOG.split('\n')
+        lines[line_no - 1] += ' (consumer-affecting)'
+        assert changelog_gate.marked_entry('\n'.join(lines), self._diff(line_no, 'x')) is in_scope
+
+    def test_a_heading_carrying_the_marker_marks_nothing(self) -> None:
+        text = self.LOG.replace('## [Unreleased]', '## [Unreleased] (consumer-affecting)')
+        assert not changelog_gate.marked_entry(text, self._diff(3, 'x'))
+
+    def test_a_crlf_file_is_read_by_its_lines(self) -> None:
+        text = (self.LOG.replace('- one', '- one (consumer-affecting)')).replace('\n', '\r\n')
+        assert changelog_gate.marked_entry(text, self._diff(5, 'x'))
+
+    def test_an_unmarked_added_line_in_scope_marks_nothing(self) -> None:
+        assert not changelog_gate.marked_entry(self.LOG, self._diff(5, 'x'))
