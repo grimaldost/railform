@@ -136,8 +136,15 @@ UNLISTED_DEPARTURE = 'unlisted-departure'
 CODE_ORDER = (UNKNOWN_KEY, WRONG_TYPE, MISSING_PATH, BAD_EXCEPTION, UNLISTED_DEPARTURE)
 
 
+NO_REPOSITORY = 'not inside a git repository'
+
+
 class FrameError(Exception):
     """A usage or configuration error: no repository, or a `railform.toml` that cannot be read."""
+
+
+class NoRepositoryError(FrameError):
+    """The current directory is not inside a git repository."""
 
 
 @dataclass(frozen=True)
@@ -642,12 +649,20 @@ def repository_root() -> Path:
             text=True,
             encoding='utf-8',
             errors='surrogateescape',
+            env={**os.environ, 'LC_ALL': 'C'},  # the check below reads git's English message
             check=False,
         )
     except OSError as exc:
         raise FrameError(f'cannot run git: {exc}') from exc
-    if done.returncode != 0 or not done.stdout.strip():
-        raise FrameError('not inside a git repository')
+    if done.returncode != 0:
+        # Only "there is no repository" is NoRepositoryError; a repository git refuses to read
+        # (dubious ownership, the inside of .git) is a plain error with git's own words.
+        detail = done.stderr.strip().splitlines()
+        if not detail or 'not a git repository' in detail[0]:
+            raise NoRepositoryError(NO_REPOSITORY)
+        raise FrameError(detail[0])
+    if not done.stdout.strip():
+        raise NoRepositoryError(NO_REPOSITORY)
     return Path(done.stdout.strip())
 
 
