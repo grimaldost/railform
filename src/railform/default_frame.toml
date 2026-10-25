@@ -28,7 +28,7 @@ session_loaded = [
 # Departures from the preset that a repository declares: rows of a key and a reason, with an
 # optional value that must then equal the departed value. A departure that loosens a check needs
 # one (frame.py, LOOSENING); a row for a guard list names the default elements it leaves out in
-# `drop` instead of a value.
+# `drop`; a row for private_refs.placeholders may give `value`, the elements the repository adds.
 exceptions = []
 
 [meta]
@@ -115,6 +115,10 @@ allow = ["dependabot/**"]
 
 [private_refs]
 names_file_env = "RAILFORM_PRIVATE_NAMES"
+# False turns the names half of `railform private-refs` off for a private repository whose tracked
+# files carry the listed names by design, on machines where the variable is set; it needs an
+# `exceptions` row with a reason. The paths half stays on.
+names_enabled = true
 placeholders = [
   "me", "x", "someone", "alice", "user", "runner", "public", "default", "shared", "runneradmin",
 ]
@@ -141,6 +145,9 @@ package = ""
 sync_args = []
 test_command = ""
 lint_paths = ["."]
+# The paths `ty check` runs over, from the repository root: a string of shell words ("pkg tool.py")
+# or an array (["pkg", "tool.py"]); "" or [] runs no `ty`. `railform frame --check` fails an entry
+# a repository sets that is not "." or a path in the tree.
 type_check = ""
 
 [version]
@@ -187,6 +194,8 @@ os = ["ubuntu-latest", "windows-latest"]
 [presets.python-package.python]
 versions = ["3.11", "3.14"]
 test_command = "uv run --frozen python -m pytest -q"
+# `src` for the `src` layout; with `project.layout = "flat"` and a `python.package`, the package
+# itself (frame.py, `_layout_type_check`), so that repository states neither.
 type_check = "src"
 
 [presets.python-package.release]

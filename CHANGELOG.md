@@ -5,15 +5,80 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+### Added
+
+- `tests/test_adopter_frames.py` and `tests/fixtures/adopter_frames/`: the `railform.toml` of the
+  five public adopters (keel, convoy, fathom, mantis-research, craft-collection), each copied at
+  its `origin/main` with a header naming the repository and commit. The test requires that
+  `frame --check` passes each one and that each one read as a merge-base frame (`changelog-gate`,
+  `version-sites --base`) is accepted by the schema, so renaming or retyping a frame key fails
+  here before it stops an adopter's pull requests. No private adopter's frame is copied.
+- `private_refs.names_enabled` (default `true`) in the frame. `false` turns the names half of
+  `railform private-refs` off for a private repository whose tracked files carry the listed names
+  by design, on machines where the variable is set: the names file is not read, `--require-names`
+  is no failure, and the run prints a line saying the half is off. The home-path half stays on.
+  The switch loosens a check, so `railform frame --check` fails it as `unlisted-departure` unless
+  an `exceptions` row names `private_refs.names_enabled` with a reason.
+- `NEUTRAL` in `railform.frame` names the keys whose departure loosens nothing, each with its
+  reason (`ci.setup.fetch_depth`, `changelog.consumer_affecting`, `hooks.dir`, `python.newest`,
+  `meta.parameter_keys`), and a test fails on any key of the default frame, a preset or the schema
+  that is in none of `LOOSENING`, `NEUTRAL`, `meta.parameter_keys` or the guard lists, or in more
+  than one. Before, nine keys were in none, four of them keys that loosen a check.
+  A key that is in none anyway reads as loosening, so its departure needs a row.
+
+### Changed
+
+- `railform private-refs --diff` reads the `private_refs` settings (the switch, the variable name
+  and the placeholders) from the `railform.toml` committed at the merge base of the range, and the
+  working tree's when that commit has none. A pull request that adds the switch, or a placeholder
+  for the user segment of a path it also adds, used to be judged by its own frame and pass; it is
+  now judged by the frame it started from.
+- **Breaking for a repository that adds `private_refs.placeholders`.** An element a repository
+  adds to that guard list is a user name the private-reference scan lets through in a home path,
+  so it now loosens a check: `frame --check` fails with `unlisted-departure` unless an
+  `exceptions` row names `private_refs.placeholders` with a reason. The row may give `value`, the
+  elements it adds, which must then be exactly those (`bad-exception` otherwise); a row that has a
+  `drop` and no `value` does not cover an addition, and one that drops and adds gives both.
+  Before, the addition passed with no row. Of the five public adopters, fathom's
+  `railform.toml` is the only one affected (it adds four names); its next re-pin adds the row.
+  Adding to `session_loaded` still needs no row, and an element the default already has is not an
+  addition.
+- `ci.ruff_version`, `hooks.pre_commit_version`, `python.sync_args` and `ci.setup.extra_installs`
+  now loosen a check, so a departure of one needs an `exceptions` row: the first two when the
+  preset sets a value (only `plugin-marketplace` does) and the repository changes it, the other
+  two when the repository adds an element. Before, `frame --check` passed all four with no row.
+  craft-collection's `ci.ruff_version` row already covers its departure.
+
 ### Fixed
 
+- `railform private-refs` fails with `names-file-missing` when the names variable is set to a path
+  that is not a file, without `--require-names`; before, a stale path turned the names half off
+  and the run passed. A variable that is unset or empty is still silent, and a names file that
+  exists but cannot be read is a usage error (exit 2). A test pins that the
+  `railform-private-refs` hook passes no `--require-names`, and that a names file with CRLF line
+  ends finds a term in lower, mixed and upper case.
+- `python.type_check` is the paths `ty check` runs over: an array of strings, or a string of
+  shell words that is split into one argument per word. At 0.2.0 `["claude_archive", "archive.py"]`
+  was `wrong-type`, and `"claude_archive archive.py"` became one quoted argument, so the
+  pipeline ran `ty check 'claude_archive archive.py'` on a path that does not exist. A string and
+  an array that name the same paths are one value (`["src"]` is not a departure from `"src"`).
+- `railform frame --check` fails a `python.type_check` entry, or a `python.package`, that
+  `railform.toml` sets and that is neither `.` nor a path in the tree, as the new verdict code
+  `missing-path` (after `wrong-type`, before `bad-exception`): it was a failed `ty` step late in
+  CI. The preset's own `src` is not looked for.
+- A `python-package` repository with `project.layout = "flat"` and a `python.package` and no
+  `python.type_check` type-checks its package (`ty check claude_archive`); it was `ty check src`,
+  and changing it needed an `exceptions` row for a path no row could justify. A `type_check` of
+  its own still departs and needs the row. A flat-layout repository whose `python.type_check` row
+  only restated its package must drop both the `type_check` and the row, or `frame --check` fails
+  `bad-exception`; a row is still needed when `type_check` adds a path, such as a script.
 - The default stamp arm of `commit.attribution_patterns` is anchored at the start of the line.
   Before, `Generated with` matched anywhere, so prose that described the rule next to a product
   name (a pull request body saying the check rejects a line that says Generated with Claude Code)
   failed `pr-text`. Now the line must open with the stamp, after only non-word characters (an
   emoji, `>`, `-`, `*`, bold markers), a list number or a word and a colon such as a
-  `type(scope): ` prefix. A stamp pasted mid-sentence or inside an HTML tag passes; the Claude Code stamp line, `Generated with Claude` and every trailer case
-  still fail.
+  `type(scope): ` prefix. A stamp pasted mid-sentence or inside an HTML tag passes; the Claude Code stamp line, `Generated with Claude` and every
+  trailer case still fail.
 
 ## [0.2.0] - 2026-10-24
 
