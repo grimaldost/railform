@@ -28,7 +28,7 @@ session_loaded = [
 # Departures from the preset that a repository declares: rows of a key and a reason, with an
 # optional value that must then equal the departed value. A departure that loosens a check needs
 # one (frame.py, LOOSENING); a row for a guard list names the default elements it leaves out in
-# `drop` instead of a value.
+# `drop`; a row for private_refs.placeholders may give `value`, the elements the repository adds.
 exceptions = []
 
 [meta]

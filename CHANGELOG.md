@@ -19,6 +19,12 @@ All notable changes to this project are recorded here, in the
   is no failure, and the run prints a line saying the half is off. The home-path half stays on.
   The switch loosens a check, so `railform frame --check` fails it as `unlisted-departure` unless
   an `exceptions` row names `private_refs.names_enabled` with a reason.
+- `NEUTRAL` in `railform.frame` names the keys whose departure loosens nothing, each with its
+  reason (`ci.setup.fetch_depth`, `changelog.consumer_affecting`, `hooks.dir`, `python.newest`,
+  `meta.parameter_keys`), and a test fails on any key of the default frame, a preset or the schema
+  that is in none of `LOOSENING`, `NEUTRAL`, `meta.parameter_keys` or the guard lists, or in more
+  than one. Before, nine keys were in none, four of them keys that loosen a check.
+  A key that is in none anyway reads as loosening, so its departure needs a row.
 
 ### Changed
 
@@ -27,6 +33,21 @@ All notable changes to this project are recorded here, in the
   working tree's when that commit has none. A pull request that adds the switch, or a placeholder
   for the user segment of a path it also adds, used to be judged by its own frame and pass; it is
   now judged by the frame it started from.
+- **Breaking for a repository that adds `private_refs.placeholders`.** An element a repository
+  adds to that guard list is a user name the private-reference scan lets through in a home path,
+  so it now loosens a check: `frame --check` fails with `unlisted-departure` unless an
+  `exceptions` row names `private_refs.placeholders` with a reason. The row may give `value`, the
+  elements it adds, which must then be exactly those (`bad-exception` otherwise); a row that has a
+  `drop` and no `value` does not cover an addition, and one that drops and adds gives both.
+  Before, the addition passed with no row. Of the five public adopters, fathom's
+  `railform.toml` is the only one affected (it adds four names); its next re-pin adds the row.
+  Adding to `session_loaded` still needs no row, and an element the default already has is not an
+  addition.
+- `ci.ruff_version`, `hooks.pre_commit_version`, `python.sync_args` and `ci.setup.extra_installs`
+  now loosen a check, so a departure of one needs an `exceptions` row: the first two when the
+  preset sets a value (only `plugin-marketplace` does) and the repository changes it, the other
+  two when the repository adds an element. Before, `frame --check` passed all four with no row.
+  craft-collection's `ci.ruff_version` row already covers its departure.
 
 ### Fixed
 

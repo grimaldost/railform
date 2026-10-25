@@ -1,6 +1,6 @@
 # Copied from github.com/grimaldost/fathom at commit df07ba0 (origin/main on 2026-10-25), unchanged
-# below this header. railform.toml of a public adopter; tests/test_adopter_frames.py keeps it
-# readable by every verb that reads a frame.
+# below this header except the last exceptions row. railform.toml of a public adopter;
+# tests/test_adopter_frames.py keeps it readable by every verb that reads a frame.
 # This repository's frame for railform: `railform frame` prints the effective frame and
 # `railform frame --check` judges this file.
 [project]
@@ -56,3 +56,10 @@ reason = "fathom has no type-check gate and no type checker among its developmen
 key = "release.metadata_paths"
 value = ["pyproject.toml", "uv.lock", ".claude-plugin/plugin.json", "README.md", "README-plugin.md", "docs/backlog.md", "skills/fathom-eval/reference/authoring.md"]
 reason = "a fathom release commit also sets the plugin manifest version, the pinned install lines in both READMEs and the authoring guide, and the Unreleased markers in docs/backlog.md"
+
+# Not in fathom's file at that commit: since railform asks a row for an added placeholder, fathom's
+# next re-pin adds this one (docs/adopting.md, step 3).
+[[exceptions]]
+key = "private_refs.placeholders"
+value = ["example", "examples", "u", "longna~1"]
+reason = "home-directory paths in fathom's tests and docstrings name nobody: the neutral name its tests use, a one-letter test value and an 8.3 short name"
