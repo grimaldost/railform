@@ -43,14 +43,16 @@ VARIABLE_PIN_FILES = (REUSABLE_WORKFLOW, TAG_WATCH_WORKFLOW, 'tests/workflow_mod
 
 
 def _tracked_text_files() -> list[Path]:
-    listed = subprocess.run(
+    done = subprocess.run(
         ['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
         cwd=ROOT,
         capture_output=True,
         text=True,
-        check=True,
-    ).stdout
-    paths = [ROOT / name for name in listed.split('\0') if name]
+        check=False,
+    )
+    if done.returncode != 0:
+        pytest.skip('not a git checkout, so the files git would track are unknown')
+    paths = [ROOT / name for name in done.stdout.split('\0') if name]
     return [p for p in paths if p.suffix in TEXT_SUFFIXES and p.name != Path(__file__).name]
 
 

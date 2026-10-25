@@ -27,7 +27,7 @@ it to see what stops running and what keeps running.
 |---|---|---|
 | Workflows and jobs | `.github/workflows/*.yml` | Each job is replaced by a railform job, kept inside `ci.yml`, or left as a workflow that never runs on pull requests |
 | Pull request triggers | the `on:` block of each workflow | A workflow that runs on `pull_request` beside `ci.yml` is judged by `railform adopt --check` (step 5) |
-| Hooks | `.pre-commit-config.yaml`, the hook directory, `git config core.hooksPath` | Adopt writes the wrappers into `hooks.dir` (`.githooks`) and leaves a stub in the directory they came from |
+| Hooks | `.pre-commit-config.yaml`, the hook directory, `git config core.hooksPath`, `.gitattributes` | Adopt writes the wrappers into `hooks.dir` (`.githooks`, overwriting a file of the same name), leaves a stub in the directory they came from, and pins both directories to LF in `.gitattributes` |
 | Changelog and version scripts | `CHANGELOG.md`, release or bump scripts | Their paths become `changelog.records` and `version.sites` rows in `railform.toml` |
 | Python floor and commands | `requires-python`, the test and lint commands CI runs | The floor seeds `python.versions`; a test command that differs from the type's preset needs an `exceptions` row (step 3) |
 | Required status checks | the branch ruleset, or branch protection | These move to the single status `gate` (step 6) |
@@ -71,14 +71,18 @@ file before writing any, and writes these:
 | `.github/workflows/ci.yml` | Two jobs between marker lines. `railform` calls the shared workflow at the pin and passes the pin as `railform-sha`. `gate` needs every other job in the file and fails when one failed or was cancelled. The `pull_request` trigger gains `types: [opened, synchronize, reopened, edited]`. The file is created when absent; every other line is kept |
 | `.pre-commit-config.yaml` | Two entries between marker lines: railform's hooks at the pin, and the hygiene hooks of `pre-commit/pre-commit-hooks` |
 | `.github/dependabot.yml` | An ignore entry for `grimaldost/railform` in the `github-actions` update, so Dependabot leaves the pin to `railform adopt --pin` |
-| `.githooks/pre-commit`, `commit-msg`, `pre-push` | The hook wrappers, tracked as `100755` in the git index |
+| `.githooks/pre-commit`, `commit-msg`, `pre-push` | The hook wrappers, tracked as `100755` in the git index. A file already in `hooks.dir` under one of these names is overwritten |
+| `.gitattributes` | A region with `.githooks/** text eol=lf`, and the stub directory when adopt writes stubs, so a clone with `core.autocrlf=true` checks the hooks out as LF. The file is created when absent; every other line is kept |
 | `.github/workflows/railform-tag-watch.yml` | The caller of the release-tag watch, pinned. Not written when `release.enabled` is false |
 | `railform.toml` | On the first run only: the project type, `python.versions`, and `release.since` when the repository has release tags. After that the file is the repository's |
 
 Everything outside the marker lines is kept byte for byte, and a second run changes nothing. If the
 hooks lived in another directory, adopt leaves a stub for each hook there, which prints the
-`railform arm` command and fails, so a clone still armed to the old directory cannot commit
-unchecked. The wrappers are staged by adopt; `git add` the other files, which are written to the
+`railform arm` command and the one-shot form (step 7) and fails, so a clone still armed to the old
+directory cannot commit unchecked. A file there tracked as `100644`, which is how an old hook that
+lost its mode looks, is replaced by the stub and tracked as `100755`; the output names each
+replacement, so read it before you commit. A file with unstaged changes, or not tracked, is left
+and reported. The wrappers are staged by adopt; `git add` the other files, which are written to the
 working tree only.
 
 Adopt does not decide what to do with the repository's own jobs and hooks. Do that now:
@@ -106,8 +110,9 @@ The effective frame is the default frame, then the preset of the project type, t
 `railform.toml`. `railform frame` prints it and `railform frame --json` prints it as JSON. A value
 in `railform.toml` that differs from the preset is a departure. A departure that loosens a check
 (a changed test command, a check turned off, another pull request workflow beside `ci.yml`, a
-shorter `ci.os`; the README's section on the frame has the whole table) is legal only when an
-`exceptions` row names its key and gives a reason:
+shorter `ci.os`, a pinned tool version other than the preset's, an added `python.sync_args` or
+`ci.setup.extra_installs`; the README's section on the frame has the whole table) is legal only
+when an `exceptions` row names its key and gives a reason:
 
 ```toml
 [python]
@@ -120,7 +125,7 @@ reason = "the integration suite needs a database and runs in its own workflow"
 
 The row names the key, not the value, so a long command is written once. A row may also carry
 `value`, which must then equal the departed value. A stricter or neutral departure needs no row: a
-full checkout (`ci.setup.fetch_depth = 0`), another `ci.os`, `changelog.consumer_affecting =
+full checkout (`ci.setup.fetch_depth = 0`), a longer `ci.os`, `changelog.consumer_affecting =
 "error"`. Keys that are per repository by nature (`python.versions`, `python.package`,
 `version.sites`, `changelog.records`, `release.since`, `release.tag_prefix` and the others in
 `meta.parameter_keys`) never depart and never need a row.
@@ -131,9 +136,25 @@ craft-collection's three, for its test command, its ruff version and the same de
 rules only the test command needs a row, and the other rows still pass.
 
 The two guard lists, `session_loaded` and `private_refs.placeholders`, take the repository's
-additions and keep every default element. An `exceptions` row that names a default element in
-`drop`, with a reason, leaves it out (the README's section on the frame); for `session_loaded`,
-the pull request that adds such a row fails `railform session-paths` with `guard-narrowed`.
+additions and keep every default element. An added glob in `session_loaded` guards more paths and
+needs no row. An added placeholder is a user name the private-reference scan lets through in a
+home path, so it loosens a check and needs a row for `private_refs.placeholders` with a reason;
+without it `frame --check` fails with `unlisted-departure`:
+
+```toml
+[private_refs]
+placeholders = ["example"]
+
+[[exceptions]]
+key = "private_refs.placeholders"
+reason = "the tests use example as the neutral user name in a home path"
+```
+
+List only a name that belongs to nobody: a home path under a placeholder passes the scan in every
+file. A row that also leaves a default element out with `drop` must give `value`, the elements it
+adds (the README's section on the frame). An `exceptions` row that names a default element in
+`drop`, with a reason, leaves it out; for `session_loaded`, the pull request that adds such a row
+fails `railform session-paths` with `guard-narrowed`.
 
 ## 4. Check the frame and the adoption
 
@@ -142,9 +163,11 @@ railform frame --check
 railform adopt --check
 ```
 
-`frame --check` fails with `unknown-key`, `wrong-type`, `bad-exception` (a row with no key, an
-empty reason, one that matches no departure, or a bad `drop`) or `unlisted-departure` (a
-departure that loosens a check and that no row lists). `adopt --check` writes nothing and fails with
+`frame --check` fails with `unknown-key`, `wrong-type`, `missing-path` (a `python.package` or a
+`python.type_check` entry that `railform.toml` sets and that is neither `.` nor a path in the tree),
+`bad-exception` (a row with no key, an empty reason, one that matches no departure, or a bad `drop`
+or `value`) or `unlisted-departure` (a departure that loosens a check and that no row lists).
+`adopt --check` writes nothing and fails with
 `drift` when an owned part differs from what adopt would write, `pin-mismatch` when the pin sites
 disagree, and `extra-pr-workflow` (step 5). The `frame` job of the shared workflow runs
 `frame --check` and the `hooks` job runs `adopt --check`, on every pull request, so a hand edit
@@ -261,6 +284,15 @@ Worktrees share their clone's configuration, so arming the clone arms them. `rai
 --armed` fails with `not-armed` in a clone that has not run it. Put the command in the
 contributing guide.
 
+To run one git command with the hooks, without arming the clone, name the directory for that
+command alone:
+
+```
+git -c core.hooksPath=.githooks commit -m "chore: a change"
+```
+
+The stub in a former hooks directory prints this form with `<command>` in place of `commit ...`.
+
 ## Release tags
 
 A repository that tags releases is watched by the daily tag watch (`release-check`). A release tag
@@ -323,6 +355,7 @@ railform.toml: written (the first run seeds it)
 .pre-commit-config.yaml: written
 .github/workflows/railform-tag-watch.yml: written
 .github/dependabot.yml: written
+.gitattributes: written
 .githooks/pre-commit: written, 100755 in the git index
 .githooks/commit-msg: written, 100755 in the git index
 .githooks/pre-push: written, 100755 in the git index
@@ -332,8 +365,8 @@ railform-verdict: adopt pass ok
 
 The type was detected as `python-package`, the seeded `railform.toml` holds the type and
 `python.versions = ["3.11", "3.14"]`, and `ci.yml` now has the marked `railform` and `gate` jobs
-above the old `test` job, with `needs: [railform, test]`. The directory did not move, so no stub
-was written.
+above the old `test` job, with `needs: [railform, test]`. `.gitattributes` holds the region that
+pins `.githooks` to LF. The directory did not move, so no stub was written.
 
 The `test` job runs what `checks` now runs, so it is deleted; `lint.yml` is deleted and its steps
 go into a `lint` job in `ci.yml`, which the next run puts under `gate`:
@@ -400,7 +433,11 @@ uvx --from git+https://github.com/grimaldost/railform@<new 40-hex sha> railform 
 pre-commit `rev` and the tag-watch caller. Then run `railform frame --check` and
 `railform adopt --check`. A new default or preset can change what counts as a departure: an
 `exceptions` row for a key that no longer departs fails as `bad-exception` and is deleted, and a
-repository setting that the new frame rejects fails as `unknown-key` or `wrong-type`. A pin from
+repository setting that the new frame rejects fails as `unknown-key`, `wrong-type` or
+`missing-path`. A pin from
 before rows matched by key keeps its rows: each one that names its value still passes. Commit the
-result as one pull request that touches only the pin sites and, if needed, `railform.toml`.
-A stub left in a former hooks directory is deleted once every clone has run `railform arm`.
+result as one pull request that touches the pin sites, the `.gitattributes` region and any stub
+`adopt` rewrote in a former hooks directory (a release whose changelog entry lists a new part
+that adopt owns adds it to that pull request) and, if needed, `railform.toml`.
+A stub left in a former hooks directory is deleted once every clone has run `railform arm`; run
+`railform adopt` after that, and its line leaves the region in `.gitattributes`.

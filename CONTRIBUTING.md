@@ -21,6 +21,15 @@ uv run --frozen python -m pytest -q
 uvx zizmor==1.30.0 --min-severity high .github/workflows
 ```
 
+Give the test command at least 4 GB of memory: the suite builds scratch repositories, runs
+pre-commit hook environments and `uv lock`, so in a container or on a remote runner give it that
+limit on its own. A runner's global git configuration, home directory, pre-commit cache and
+installed uv tools do not reach the tests: `tests/conftest.py` moves them to temporary
+directories for every test, and `tests/test_suite_isolation.py` proves it (the uv cache and
+uv-managed Pythons stay the developer's own; see `tests/hook_isolation.py`). A copy of the tree
+without `.git` runs the suite too; the tests that read the clone's tracked files through git skip
+with a reason.
+
 CI runs the same commands on Ubuntu and Windows with Python 3.11 and 3.14, through railform's own
 reusable workflow: `ci.yml` calls `.github/workflows/python-ci.yml` by local path at the commit
 under test, and the commands come from `railform.toml` and the frame. Use `uv run --frozen

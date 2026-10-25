@@ -22,15 +22,40 @@ stops and ellipsis characters (`...`, `…`).
 
 The names half reads a private list of terms from the one file that the variable named by
 `private_refs.names_file_env` points to, and nowhere else. It matches whole tokens, case
--insensitively: the characters on either side of a term are not letters or digits. Without the
-variable or the file it is silent, which is why it is silent in CI; `--require-names` makes a
-missing file a failure. No list of names is part of this package.
+-insensitively: the characters on either side of a term are not letters or digits. With the
+variable unset it is silent, which is why it is silent in CI; `--require-names` makes an unset
+variable a failure. A variable set to a path that is not a file fails without the flag
+(`names-file-missing`): a stale path would otherwise turn the half off unnoticed on the very
+machine meant to be checking; a file that exists but cannot be read is a usage error (exit 2).
+No list of names is part of this package.
+
+`private_refs.names_enabled = false` in the frame turns the names half off, for a private
+repository whose tracked files carry the listed names by design, on machines where the variable is
+set (where it is unset the half is already silent); the frame check lists it as a loosening that
+needs an `exceptions` row with a reason. The paths half stays on, and a finding line says the
+names half is off.
+
+With `--diff`, the private-reference settings (the switch, the variable name and the
+placeholders) are read from the `railform.toml` committed at the merge base of the range, so the
+range cannot switch the names half off or add a placeholder for the path it carries. A merge base
+without a `railform.toml` leaves the working tree's frame in force. Without `--diff` the working
+tree's frame judges.
 
 `--event PATH` adds the title and body of the pull request in a GitHub event payload, read as
 `railform pr-text` reads them (a `null` or absent value is empty text) and labelled
 `pull request title` and `pull request body`. The `commit-lane` job of the reusable workflow runs
 it with `--diff` over the pull request's range, so the commit messages and the pull request text
 are checked as well as the tracked files.
+
+`--history` checks every commit message reachable from `HEAD` and every line any of those commits
+added, including a line a later commit removed. It adds to the scope the other arguments choose
+(the given paths, `--diff`, else the tracked files), so it never reads less than the default does.
+It does not replace that scope, because `git log -p` shows no line for a file marked `-diff` or
+binary, for a merge commit's own conflict resolution, or for a change not yet committed. A finding
+is labelled `commit SHA PATH` (`commit SHA` for a message), SHA being the first 12 characters.
+
+Outside a git repository the verb checks the files named as `PATH` or `--text`, and `--event`,
+under the default frame; the tracked files, `--diff`, `--history` and a directory exit 2.
 
 No output contains a matched name or the user segment of a matched home path. A finding shows the
 shape with the segment replaced by `<name>`, and a term only by its line number in the names file.
@@ -41,21 +66,23 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from railform import commit_lane, frame, pr_text
 from railform.verdict import Verdict
 
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator
 
 VERB = 'private-refs'
 HOME_PATH = 'home-path'
 PRIVATE_NAME = 'private-name'
 NAMES_FILE_MISSING = 'names-file-missing'
+NAMES_OFF_NOTE = 'private_refs.names_enabled is false: the names half is off'
 
 REDACTED = '<name>'
 # A user segment containing one of these is a placeholder, whatever the list says.
@@ -194,9 +221,13 @@ class Checker:
 
     def scan(self, source: Source) -> list[tuple[str, str]]:
         """The findings in one text, as (code, finding line), in reading order."""
-        label = self.label(source.label)
+        return self.scan_lines(source.label, enumerate(source.text.split('\n'), start=1))
+
+    def scan_lines(self, label: str, numbered: Iterable[tuple[int, str]]) -> list[tuple[str, str]]:
+        """The findings in the given (line number, line) pairs of one text called `label`."""
+        label = self.label(label)
         findings: list[tuple[str, str]] = []
-        for number, line in enumerate(source.text.split('\n'), start=1):
+        for number, line in numbered:
             line = line.rstrip('\r')
             name_hits = self.names.hits(line)
             for span in home_path_hits(line, self.placeholders):
@@ -264,24 +295,34 @@ def _tracked_files(root: Path, *pathspec: str) -> list[str]:
     return _names_from(output)
 
 
-def sources_for_paths(root: Path, paths: list[str]) -> list[Source]:
-    """The given paths; a directory stands for the tracked files under it."""
+def sources_for_paths(root: Path | None, paths: list[str]) -> list[Source]:
+    """The given paths; a directory stands for the tracked files under it.
+
+    Outside a repository (`root` is None) only files can be given, and a file's label is the
+    path as given.
+    """
     found: list[Source] = []
     for given in paths:
         path = Path(given)
         if not path.is_absolute():
             path = Path.cwd() / path
         if path.is_dir():
+            if root is None:
+                raise UsageError(
+                    f'{given}: a directory stands for tracked files, {frame.NO_REPOSITORY}'
+                )
             try:
                 relative = path.resolve().relative_to(root.resolve())
             except ValueError as exc:
                 raise UsageError(f'{given}: outside the repository') from exc
             found.extend(_tracked_sources(root, relative.as_posix()))
         elif path.is_file():
-            try:
-                label = path.resolve().relative_to(root.resolve()).as_posix()
-            except ValueError:
-                label = given
+            label = given
+            if root is not None:
+                try:
+                    label = path.resolve().relative_to(root.resolve()).as_posix()
+                except ValueError:
+                    pass
             source = _read_file(path, label)
             if source is not None:
                 found.append(source)
@@ -299,8 +340,8 @@ def _tracked_sources(root: Path, *pathspec: str) -> list[Source]:
     return found
 
 
-def sources_for_diff(root: Path, spec: str) -> list[Source]:
-    """The files a range changes, read at its tip, and the range's commit messages."""
+def split_range(spec: str) -> tuple[str, str]:
+    """The base and the tip (default HEAD) of a `BASE...TIP` or `BASE..TIP` range."""
     if '...' in spec:
         base, _, tip = spec.partition('...')
     elif '..' in spec:
@@ -309,7 +350,12 @@ def sources_for_diff(root: Path, spec: str) -> list[Source]:
         raise UsageError(f'--diff expects BASE...HEAD, not {spec!r}')
     if not base:
         raise UsageError(f'--diff expects BASE...HEAD, not {spec!r}')
-    tip = tip or 'HEAD'
+    return base, tip or 'HEAD'
+
+
+def sources_for_diff(root: Path, spec: str) -> list[Source]:
+    """The files a range changes, read at its tip, and the range's commit messages."""
+    base, tip = split_range(spec)
     diff = ['diff', '--no-renames', '--name-only', '-z', '--diff-filter=d', spec]
     changed = _git(root, '-c', 'core.quotepath=off', *diff)
     found: list[Source] = []
@@ -328,12 +374,165 @@ def sources_for_diff(root: Path, spec: str) -> list[Source]:
         source = _source(name, done.stdout)
         if source is not None:
             found.append(source)
-    log = _git(root, 'log', '-z', '--format=%H%n%B', f'{base}..{tip}')
+    found.extend(_commit_messages(root, f'{base}..{tip}'))
+    return found
+
+
+def _commit_messages(root: Path, revisions: str) -> list[Source]:
+    """The message of each commit in `revisions`, labelled with its short sha."""
+    found: list[Source] = []
+    log = _git(root, 'log', '-z', '--format=%H%n%B', revisions)
     for entry in log.split(b'\0'):
         sha, _, message = entry.decode('utf-8', 'replace').partition('\n')
         if sha.strip():
             found.append(Source(f'commit {sha.strip()[:12]}', message))
     return found
+
+
+# A hunk header; `-U0` hunks carry exactly the removed and the added lines the header counts
+# (context lines are counted too, should a hunk hold any).
+_HUNK = re.compile(rb'@@ -\d+(?:,(?P<old>\d+))? \+(?P<start>\d+)(?:,(?P<new>\d+))? @@')
+_COMMIT_MARK = b'\x01'
+_ESCAPE = re.compile(rb'\\(?:([abfnrtv"\\])|([0-7]{3}))')
+_SIMPLE_ESCAPES = {
+    b'a': b'\a',
+    b'b': b'\b',
+    b'f': b'\f',
+    b'n': b'\n',
+    b'r': b'\r',
+    b't': b'\t',
+    b'v': b'\v',
+    b'"': b'"',
+    b'\\': b'\\',
+}
+
+
+def _header_path(field: bytes) -> str | None:
+    """The path in a `+++ b/PATH` header, or None for `/dev/null`."""
+    field = field.rstrip(b'\t')
+    if field.startswith(b'"') and field.endswith(b'"') and len(field) >= 2:
+        field = _ESCAPE.sub(
+            lambda m: _SIMPLE_ESCAPES[m[1]] if m[1] else bytes([int(m[2], 8)]), field[1:-1]
+        )
+    if not field.startswith(b'b/'):
+        return None
+    return field[2:].decode('utf-8', 'replace')
+
+
+def _added_lines(root: Path) -> Iterator[tuple[str, str, list[tuple[int, str]]]]:
+    """Every line any commit reachable from HEAD added, as (full sha, path, [(number, text)]).
+
+    The lines come from the patch of each commit read with no context (`-U0`), so a line is named
+    by its number in the file the commit wrote. A merge commit shows no patch of its own, a
+    binary file shows no hunk, and a deleted file adds nothing.
+    """
+    command = [
+        'git',
+        '-c',
+        'core.quotepath=off',
+        'log',
+        '-p',
+        '-U0',
+        '--inter-hunk-context=0',  # a config that merges hunks would add context lines
+        '--root',  # log.showRoot=false would hide the first commit's lines
+        '-M',
+        '--no-color',
+        '--no-ext-diff',
+        '--no-textconv',
+        '--src-prefix=a/',
+        '--dst-prefix=b/',
+        '--format=%x01%H',
+        'HEAD',
+    ]
+    with tempfile.TemporaryFile() as errors:
+        try:
+            proc = subprocess.Popen(command, cwd=root, stdout=subprocess.PIPE, stderr=errors)
+        except OSError as exc:
+            raise UsageError(f'cannot run git: {exc}') from exc
+        if proc.stdout is None:
+            raise UsageError('cannot read the output of git log')
+        sha = ''
+        path: str | None = None
+        lines: list[tuple[int, str]] = []
+        old_left = new_left = number = 0
+        try:
+            for raw in proc.stdout:
+                line = raw.rstrip(b'\n')
+                if old_left or new_left:
+                    if line.startswith(b'-'):
+                        old_left -= 1
+                        continue
+                    if line.startswith(b'+'):
+                        new_left -= 1
+                        if path is not None:
+                            lines.append((number, line[1:].decode('utf-8', 'replace')))
+                        number += 1
+                        continue
+                    if line.startswith(b' '):  # a context line, in case git still prints one
+                        old_left -= 1
+                        new_left -= 1
+                        number += 1
+                        continue
+                    if line.startswith(b'\\'):  # "No newline at end of file"
+                        continue
+                    old_left = new_left = 0  # a header that miscounted: read this line afresh
+                if line.startswith((_COMMIT_MARK, b'diff --git ')):
+                    if lines and path is not None:
+                        yield sha, path, lines
+                    path, lines = None, []
+                    if line.startswith(_COMMIT_MARK):
+                        sha = line[1:].decode('ascii', 'replace')
+                elif line.startswith(b'+++ '):
+                    path = _header_path(line[4:])
+                elif (hunk := _HUNK.match(line)) is not None:
+                    old_left = int(hunk['old'] if hunk['old'] is not None else 1)
+                    new_left = int(hunk['new'] if hunk['new'] is not None else 1)
+                    number = int(hunk['start'])
+            if lines and path is not None:
+                yield sha, path, lines
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.stdout.close()
+            proc.wait()
+        if proc.returncode != 0:
+            errors.seek(0)
+            detail = errors.read().decode('utf-8', 'replace').strip().splitlines()
+            raise UsageError(f'git log failed: {detail[0] if detail else "no output"}')
+
+
+def _has_commits(root: Path) -> bool:
+    try:
+        done = subprocess.run(
+            ['git', 'rev-parse', '--verify', '--quiet', 'HEAD^{commit}'],
+            cwd=root,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise UsageError(f'cannot run git: {exc}') from exc
+    return done.returncode == 0
+
+
+def history_findings(
+    root: Path, checker: Checker, scanned: frozenset[str] = frozenset()
+) -> list[tuple[str, str]]:
+    """The findings in every commit message reachable from HEAD and in every line any of those
+    commits added, whether or not a later commit removed it.
+
+    A message is labelled `commit SHA`, an added line `commit SHA PATH`, SHA being the first 12
+    characters. The messages come first, then the lines, both newest commit first. A message
+    whose label is in `scanned` was read already (by `--diff`) and is left out.
+    """
+    if not _has_commits(root):
+        return []
+    findings: list[tuple[str, str]] = []
+    for source in _commit_messages(root, 'HEAD'):
+        if source.label not in scanned:
+            findings.extend(checker.scan(source))
+    for sha, path, lines in _added_lines(root):
+        findings.extend(checker.scan_lines(f'commit {sha[:12]} {path}', lines))
+    return findings
 
 
 def sources_for_event(path: str | None) -> list[Source]:
@@ -364,9 +563,13 @@ def sources_for_text(files: list[str]) -> list[Source]:
 # --- the verb ----------------------------------------------------------------------------------
 
 
+def _variable_value(variable: str) -> str:
+    return os.environ.get(variable, '') if variable else ''
+
+
 def _read_names(variable: str) -> Names | None:
-    """The compiled names file, or None when the variable or the file is missing."""
-    value = os.environ.get(variable, '') if variable else ''
+    """The compiled names file, or None when the variable is unset or does not name a file."""
+    value = _variable_value(variable)
     if not value:
         return None
     path = Path(value)
@@ -383,12 +586,22 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.description = (
         'Fail when text carries a home-directory path (unless its user segment is a '
         'placeholder) or a term from the private names file. Scope: the given paths; else '
-        'the files and commit messages of --diff; else every tracked file. --text and --event '
-        'add to any scope.'
+        'the files and commit messages of --diff; else every tracked file. --history adds every '
+        'commit message and every line any commit added. '
+        '--text and --event add to any scope. Outside a git repository only files (PATH, '
+        '--text) and --event can be checked, under the default frame.'
     )
     parser.add_argument('paths', nargs='*', metavar='PATH', help='files to check (staged names)')
     parser.add_argument(
         '--diff', metavar='BASE...HEAD', help='check the files the range changes and its messages'
+    )
+    parser.add_argument(
+        '--history',
+        action='store_true',
+        help=(
+            'check every commit message reachable from HEAD and every line any of those '
+            'commits added, including lines a later commit removed'
+        ),
     )
     parser.add_argument(
         '--text',
@@ -405,47 +618,97 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         '--require-names',
         action='store_true',
-        help='fail with names-file-missing when the names file cannot be read',
+        help='also fail with names-file-missing when the names variable is unset',
     )
+
+
+def _repository_root() -> Path | None:
+    """The repository that contains the current directory, or None outside any repository."""
+    try:
+        return frame.repository_root()
+    except frame.NoRepositoryError:
+        return None
+
+
+def _need(root: Path | None) -> Path:
+    if root is None:
+        raise UsageError(frame.NO_REPOSITORY)
+    return root
+
+
+def _scope_sources(root: Path | None, args: argparse.Namespace) -> list[Source]:
+    """The files and messages of the chosen scope, before --text and --event are added."""
+    if args.paths:
+        return sources_for_paths(root, list(args.paths))
+    if args.diff:
+        return sources_for_diff(_need(root), args.diff)
+    if root is not None:
+        return _tracked_sources(root)  # --history adds to this scope
+    if args.text or args.event:
+        return []  # outside a repository the explicit files are the whole scope
+    raise UsageError(frame.NO_REPOSITORY)
 
 
 def run(args: argparse.Namespace) -> Verdict:
     try:
-        root = frame.repository_root()
-        effective = frame.load(root)
+        root = _repository_root()
+        effective = frame.load(root) if root is not None else frame.effective_frame(None)
     except (frame.FrameError, frame.FrameSchemaError) as exc:
         # No frame yet, so no placeholder list: every home-shaped path in the message is hidden.
         return Verdict.usage(
             VERB, f'{VERB}: {Checker(frozenset(), Names(None, ())).label(str(exc))}'
         )
     settings = effective['private_refs']
+    try:
+        if args.diff:
+            settings = _settings_at_merge_base(_need(root), args.diff, settings)
+    except (UsageError, frame.FrameError) as exc:
+        return Verdict.usage(
+            VERB, f'{VERB}: {Checker(frozenset(), Names(None, ())).label(str(exc))}'
+        )
     placeholders = frozenset(str(name).lower() for name in settings['placeholders'])
     variable = str(settings['names_file_env'])
+    names_enabled = bool(settings['names_enabled'])
     names: Names | None = None
     checker = Checker(placeholders, Names(None, ()))
+    history: list[tuple[str, str]] = []
     try:
-        names = _read_names(variable)
+        names = _read_names(variable) if names_enabled else None
         checker = Checker(placeholders, names or Names(None, ()))
-        if args.paths:
-            sources = sources_for_paths(root, list(args.paths))
-        elif args.diff:
-            sources = sources_for_diff(root, args.diff)
-        else:
-            sources = _tracked_sources(root)
+        sources = _scope_sources(root, args)
         sources += sources_for_text(list(args.text))
         sources += sources_for_event(args.event)
+        if args.history:
+            history = history_findings(
+                _need(root), checker, frozenset(source.label for source in sources)
+            )
     except UsageError as exc:
         # A message may carry a path the user gave: it is redacted like a finding's label.
         return Verdict.usage(VERB, f'{VERB}: {checker.label(str(exc))}')
     findings: list[tuple[str, str]] = []
-    if names is None and args.require_names:
+    notes: list[str] = []
+    if not names_enabled:
+        notes.append(NAMES_OFF_NOTE)
+    elif names is None and (args.require_names or _variable_value(variable)):
+        # Unset: only --require-names asks for the file. Set to a path that is not a file: a
+        # stale path fails closed, whatever the flags say.
         shown = f'${variable}' if variable else 'private_refs.names_file_env'
         findings.append((NAMES_FILE_MISSING, f'the names file named by {shown} is not readable'))
     for source in sources:
         findings.extend(checker.scan(source))
+    findings.extend(history)
     if not findings:
-        return Verdict.ok(VERB)
+        return Verdict.ok(VERB, tuple(notes))
     for code in (NAMES_FILE_MISSING, HOME_PATH, PRIVATE_NAME):
         if any(found == code for found, _ in findings):
-            return Verdict.fail(VERB, code, tuple(line for _, line in findings))
+            return Verdict.fail(VERB, code, (*notes, *(line for _, line in findings)))
     raise AssertionError('unreachable: every finding carries one of the three codes')
+
+
+def _settings_at_merge_base(root: Path, spec: str, current: dict[str, Any]) -> dict[str, Any]:
+    """The `private_refs` settings that judge the range `spec`: the merge base's, so the range
+    cannot loosen the check it is judged by; `current` when that commit has no `railform.toml`."""
+    base, tip = split_range(spec)
+    commit = frame.merge_base(root, base, tip)
+    at_base = frame.effective_frame_at(root, commit)
+    return current if at_base is None else at_base['private_refs']
