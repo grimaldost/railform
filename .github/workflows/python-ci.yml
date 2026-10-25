@@ -24,7 +24,7 @@ env:
   # into each step that needs it; the `checks` job's pipeline step never sees it). Each railform
   # release moves it to its own day, in a commit of the release pull request that is not the
   # `release:` commit. `tag-watch.yml` holds the same value.
-  RAILFORM_EXCLUDE_NEWER: '2026-10-24T00:00:00Z'
+  RAILFORM_EXCLUDE_NEWER: '2026-10-25T00:00:00Z'
 defaults:
   run:
     shell: bash
