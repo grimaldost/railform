@@ -13,6 +13,29 @@ All notable changes to this project are recorded here, in the
   `frame --check` passes each one and that each one read as a merge-base frame (`changelog-gate`,
   `version-sites --base`) is accepted by the schema, so renaming or retyping a frame key fails
   here before it stops an adopter's pull requests. No private adopter's frame is copied.
+- `private_refs.names_enabled` (default `true`) in the frame. `false` turns the names half of
+  `railform private-refs` off for a private repository whose tracked files carry the listed names
+  by design, on machines where the variable is set: the names file is not read, `--require-names`
+  is no failure, and the run prints a line saying the half is off. The home-path half stays on.
+  The switch loosens a check, so `railform frame --check` fails it as `unlisted-departure` unless
+  an `exceptions` row names `private_refs.names_enabled` with a reason.
+
+### Changed
+
+- `railform private-refs --diff` reads the `private_refs` settings (the switch, the variable name
+  and the placeholders) from the `railform.toml` committed at the merge base of the range, and the
+  working tree's when that commit has none. A pull request that adds the switch, or a placeholder
+  for the user segment of a path it also adds, used to be judged by its own frame and pass; it is
+  now judged by the frame it started from.
+
+### Fixed
+
+- `railform private-refs` fails with `names-file-missing` when the names variable is set to a path
+  that is not a file, without `--require-names`; before, a stale path turned the names half off
+  and the run passed. A variable that is unset or empty is still silent, and a names file that
+  exists but cannot be read is a usage error (exit 2). A test pins that the
+  `railform-private-refs` hook passes no `--require-names`, and that a names file with CRLF line
+  ends finds a term in lower, mixed and upper case.
 
 ## [0.2.0] - 2026-10-24
 
