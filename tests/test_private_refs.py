@@ -514,12 +514,65 @@ def test_blank_and_comment_lines_in_the_names_file_are_not_terms(
     assert check(capsys)[0] == 0
 
 
-def test_the_names_half_is_silent_without_the_variable_or_the_file(
-    scratch_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_the_names_half_is_silent_without_the_variable(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     stage(scratch_repo, 'a.md', 'quillfeather\n')
-    assert check(capsys)[0] == 0
-    monkeypatch.setenv(NAMES_ENV, str(scratch_repo / 'no-such-file.txt'))
+    code, out, findings = check(capsys)
+    assert (code, verdict(out), findings) == (0, 'railform-verdict: private-refs pass ok', [])
+
+
+def test_red_proof_a_variable_that_names_a_missing_file_fails_closed(
+    scratch_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A stale path in the variable would otherwise turn the names half off without a word: the
+    # run would pass on exactly the machine that was meant to be checking.
+    stage(scratch_repo, 'a.md', 'clean\n')
+    missing = scratch_repo / 'quillfeather-names.txt'
+    monkeypatch.setenv(NAMES_ENV, str(missing))
+    code, out, findings = check(capsys)
+    assert code == 1
+    assert verdict(out) == 'railform-verdict: private-refs fail names-file-missing'
+    assert findings == [f'the names file named by ${NAMES_ENV} is not readable']
+    assert 'quillfeather' not in out
+
+
+def test_a_variable_that_names_a_directory_fails_closed_too(
+    scratch_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, 'a.md', 'clean\n')
+    monkeypatch.setenv(NAMES_ENV, str(scratch_repo))
+    assert verdict(check(capsys)[1]).endswith('fail names-file-missing')
+
+
+def test_a_names_file_that_cannot_be_read_is_a_configuration_error(
+    scratch_repo: Path,
+    names_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The file is there, so this is not names-file-missing: it is a usage error (exit 2), and the
+    # run still fails closed.
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    stage(scratch_repo, 'a.md', 'clean\n')
+    real = Path.read_bytes
+
+    def refuse(self: Path) -> bytes:
+        if self == names_file:
+            raise PermissionError('denied')
+        return real(self)
+
+    monkeypatch.setattr(Path, 'read_bytes', refuse)
+    code, out, _ = check(capsys)
+    assert code == 2
+    assert verdict(out) == 'railform-verdict: private-refs fail usage'
+
+
+def test_an_empty_variable_is_unset(
+    scratch_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, 'a.md', 'clean\n')
+    monkeypatch.setenv(NAMES_ENV, '')
     assert check(capsys)[0] == 0
 
 
@@ -579,6 +632,142 @@ def test_a_path_that_carries_a_name_is_hidden_in_the_finding(
     assert code == 1
     assert findings == ['<name>.md:1: private name (names file line 1)']
     assert 'quillfeather' not in out
+
+
+def test_a_names_file_with_crlf_lines_finds_every_case(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_bytes(b'zebrawood\r\n')
+    stage(scratch_repo, 'a.md', 'one zebrawood\ntwo Zebrawood\nthree ZEBRAWOOD, four\nclean\n')
+    code, out, findings = check(capsys)
+    assert code == 1
+    assert verdict(out) == 'railform-verdict: private-refs fail private-name'
+    assert findings == [f'a.md:{n}: private name (names file line 1)' for n in (1, 2, 3)]
+    assert 'zebrawood' not in out.lower()
+
+
+# --- the switch for the names half -------------------------------------------------------------
+
+SWITCH_OFF = (
+    '[private_refs]\nnames_enabled = false\n'
+    '[[exceptions]]\nkey = "private_refs.names_enabled"\n'
+    'reason = "tracked files carry the listed names by design"\n'
+)
+BASE_FRAME = '[project]\ntype = "python-package"\n'
+
+
+@pytest.mark.parametrize('flags', [(), ('--require-names',)])
+def test_red_proof_a_reasoned_switch_turns_the_names_half_off(
+    flags: tuple[str, ...],
+    scratch_repo: Path,
+    names_file: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    names_file.write_bytes(b'zebrawood\r\n')
+    (scratch_repo / 'railform.toml').write_text(SWITCH_OFF, encoding='utf-8')
+    stage(scratch_repo, 'a.md', 'thanks to zebrawood\n')
+    code, out, findings = check(capsys, *flags, 'a.md')
+    assert (code, verdict(out)) == (0, 'railform-verdict: private-refs pass ok')
+    assert len(findings) == 1
+    assert 'private_refs.names_enabled' in findings[0]
+    assert 'zebrawood' not in out.lower()
+
+
+def test_with_the_switch_off_the_file_is_not_consulted_and_home_paths_are_still_judged(
+    scratch_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(NAMES_ENV, str(scratch_repo / 'no-such-file.txt'))
+    (scratch_repo / 'railform.toml').write_text(SWITCH_OFF, encoding='utf-8')
+    stage(scratch_repo, 'a.md', 'clean\n')
+    assert check(capsys, '--require-names')[0] == 0
+    stage(scratch_repo, 'b.md', home('linux') + '\n')
+    code, out, _ = check(capsys)
+    assert (code, verdict(out)) == (1, 'railform-verdict: private-refs fail home-path')
+
+
+def test_the_switch_without_a_row_fails_the_frame_check_and_with_one_passes(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (scratch_repo / 'railform.toml').write_text(
+        '[private_refs]\nnames_enabled = false\n', encoding='utf-8'
+    )
+    assert main(['frame', '--check']) == 1
+    assert capsys.readouterr().out.splitlines()[-1].endswith('fail unlisted-departure')
+    (scratch_repo / 'railform.toml').write_text(SWITCH_OFF, encoding='utf-8')
+    assert main(['frame', '--check']) == 0
+
+
+def test_red_proof_a_range_that_adds_the_switch_is_judged_by_the_merge_base(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_bytes(b'zebrawood\r\n')
+    stage(scratch_repo, 'railform.toml', BASE_FRAME)
+    base = commit(scratch_repo)
+    stage(scratch_repo, 'railform.toml', BASE_FRAME + SWITCH_OFF)
+    stage(scratch_repo, 'notes.md', 'thanks to zebrawood\n')
+    commit(scratch_repo)
+    code, out, findings = check(capsys, '--diff', f'{base}...HEAD')
+    assert (code, verdict(out)) == (1, 'railform-verdict: private-refs fail private-name')
+    assert any(line.startswith('notes.md:1: private name') for line in findings)
+    # The working tree, outside the range, honours its own frame.
+    assert check(capsys, 'notes.md')[0] == 0
+
+
+def test_red_proof_a_placeholder_added_by_the_range_does_not_hide_a_home_path(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, 'railform.toml', BASE_FRAME)
+    base = commit(scratch_repo)
+    stage(
+        scratch_repo,
+        'railform.toml',
+        BASE_FRAME + f'[private_refs]\nplaceholders = ["{STRANGER}"]\n',
+    )
+    stage(scratch_repo, 'notes.md', home('linux') + '\n')
+    commit(scratch_repo)
+    code, out, _ = check(capsys, '--diff', f'{base}...HEAD')
+    assert (code, verdict(out)) == (1, 'railform-verdict: private-refs fail home-path')
+    assert STRANGER not in out
+
+
+def test_a_placeholder_the_merge_base_already_has_still_passes_in_the_range(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(
+        scratch_repo,
+        'railform.toml',
+        BASE_FRAME + f'[private_refs]\nplaceholders = ["{STRANGER}"]\n',
+    )
+    base = commit(scratch_repo)
+    stage(scratch_repo, 'notes.md', home('linux') + '\n')
+    commit(scratch_repo)
+    assert check(capsys, '--diff', f'{base}...HEAD')[0] == 0
+
+
+def test_a_merge_base_without_a_frame_leaves_the_working_trees_frame_in_force(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_bytes(b'zebrawood\r\n')
+    stage(scratch_repo, 'a.txt', 'one\n')
+    base = commit(scratch_repo)
+    stage(scratch_repo, 'railform.toml', SWITCH_OFF)
+    stage(scratch_repo, 'notes.md', 'zebrawood\n')
+    commit(scratch_repo)
+    code, out, findings = check(capsys, '--diff', f'{base}...HEAD')
+    assert (code, verdict(out)) == (0, 'railform-verdict: private-refs pass ok')
+    assert any('names_enabled' in line for line in findings)
+
+
+def test_a_merge_base_frame_that_cannot_be_read_is_a_configuration_error(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, 'railform.toml', 'this is = = not toml')
+    base = commit(scratch_repo)
+    stage(scratch_repo, 'railform.toml', BASE_FRAME)
+    stage(scratch_repo, 'a.txt', 'two\n')
+    commit(scratch_repo)
+    code, out, _ = check(capsys, '--diff', f'{base}...HEAD')
+    assert (code, verdict(out)) == (2, 'railform-verdict: private-refs fail usage')
 
 
 # --- the scopes --------------------------------------------------------------------------------
@@ -925,6 +1114,53 @@ def test_outside_a_repository_the_event_alone_is_a_scope(
     )
     code, _, findings = check(capsys, '--event', str(event))
     assert (code, findings) == (1, ['pull request body:1: home path /home/<name>'])
+
+
+def test_outside_a_repository_a_stale_names_path_fails_closed_without_the_flag(
+    outside_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (outside_repo / 'report.md').write_text('clean\n', encoding='utf-8')
+    monkeypatch.setenv(NAMES_ENV, str(outside_repo / 'no-such-names.txt'))
+    code, out, _ = check(capsys, '--text', 'report.md')
+    assert (code, verdict(out)) == (1, 'railform-verdict: private-refs fail names-file-missing')
+
+
+def test_history_with_a_stale_names_path_fails_closed_without_the_flag(
+    scratch_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, 'a.md', 'clean\n')
+    commit(scratch_repo)
+    monkeypatch.setenv(NAMES_ENV, str(scratch_repo / 'no-such-names.txt'))
+    code, out, _ = check(capsys, '--history')
+    assert (code, verdict(out)) == (1, 'railform-verdict: private-refs fail names-file-missing')
+
+
+def test_history_goes_through_the_names_switch(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    stage(scratch_repo, 'a.md', 'thanks to quillfeather\n')
+    commit(scratch_repo)
+    stage(scratch_repo, 'a.md', 'clean\n')
+    commit(scratch_repo)
+    assert check(capsys, '--history')[0] == 1
+    (scratch_repo / 'railform.toml').write_text(SWITCH_OFF, encoding='utf-8')
+    code, out, findings = check(capsys, '--history')
+    assert (code, verdict(out)) == (0, 'railform-verdict: private-refs pass ok')
+    assert any('private_refs.names_enabled' in line for line in findings)
+
+
+def test_history_with_a_range_is_judged_by_the_merge_base_frame(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    stage(scratch_repo, 'railform.toml', BASE_FRAME)
+    base = commit(scratch_repo, 'chore: base')
+    stage(scratch_repo, 'railform.toml', BASE_FRAME + SWITCH_OFF)
+    stage(scratch_repo, 'a.md', 'thanks to quillfeather\n')
+    commit(scratch_repo, 'feat: switch off and a term')
+    code, out, _ = check(capsys, '--diff', f'{base}...HEAD', '--history')
+    assert (code, verdict(out)) == (1, 'railform-verdict: private-refs fail private-name')
 
 
 # --- the history scope (--history) -------------------------------------------------------------
