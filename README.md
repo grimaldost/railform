@@ -104,7 +104,7 @@ These departures loosen a check (`LOOSENING` in `src/railform/frame.py`):
 | Key | Loosens when |
 |---|---|
 | `python.test_command`, `python.type_check`, `branch.pattern`, `hooks.wrapper`, `changelog.trailer`, `release.pr_branch_prefix`, `release.pr_title_pattern`, `private_refs.names_file_env`, `ci.ruff_version`, `hooks.pre_commit_version` | the preset sets it and the repository changes it: railform cannot judge a command, a pattern, a variable name or a tool version, a blank or `true` command runs nothing, a trailer of `<reason>` alone declares every commit and so turns `changelog-gate` off, a broad release convention lets any pull request carrying the version count as the release, a variable CI does not set turns off the private-name half of `railform private-refs`, and an older ruff or pre-commit runs fewer rules (only the `plugin-marketplace` preset sets the two versions; a type that leaves one empty never reads it) |
-| `changelog.enabled`, `release.enabled` | it is `false` |
+| `changelog.enabled`, `release.enabled`, `private_refs.names_enabled` | it is `false` |
 | `ci.self_hosted` | it is `true` |
 | `ci.extra_workflows`, `changelog.unwatched`, `branch.allow`, `release.metadata_paths`, `commit.types`, `python.sync_args`, `ci.setup.extra_installs` | the list has an element the preset lacks: an argument after `uv sync --frozen` or a requirement installed after it changes the environment the checks run in |
 | `ci.os`, `commit.attribution_patterns`, `hooks.names`, `python.lint_paths` | the list leaves out an element the preset has |
@@ -405,11 +405,28 @@ names file in CI, the names half is silent there, as below.
   end of the line, so `cd C:\Users\<name>` is caught. `/home/` counts only where it is not
   preceded by a word character, `.` or `-`, so `src/home/views/` and the `/home/` of a URL pass.
 - **Private names.** The file that the variable named by `private_refs.names_file_env` (default
-  `RAILFORM_PRIVATE_NAMES`) points to lists one term per line; blank lines and lines starting
-  with `#` are ignored. A term matches case-insensitively as a whole token, so a term `alice`
-  matches `by alice.` and not `aliceworks`. Without the variable or the file this half is silent,
-  which is why it is silent in CI; `--require-names` turns a missing file into a failure
-  (`names-file-missing`). railform tracks no names list and ports none.
+  `RAILFORM_PRIVATE_NAMES`) points to lists one term per line (LF or CRLF line ends); blank lines
+  and lines starting with `#` are ignored. A term matches case-insensitively as a whole token, so
+  a term `alice` matches `by alice.` and not `aliceworks`. With the variable unset this half is
+  silent, which is why it is silent in CI. A variable set to a path that is not a file fails
+  (`names-file-missing`) whatever the flags say, so a stale path cannot turn the half off
+  unnoticed; a file that exists but cannot be read is a configuration error (exit 2).
+  `--require-names` also fails when the variable is unset. The `railform-private-refs` hook passes
+  no `--require-names`: it runs on every contributor's machine, and most hold no names file.
+  railform tracks no names list and ports none.
+- **Switching the names half off.** `private_refs.names_enabled = false` in `railform.toml` turns
+  this half off for a private repository whose tracked files carry the listed names by design,
+  on machines where the variable is set (where it is unset the half is already silent): the file
+  is not read, a stale variable and `--require-names` are no failure, and the run prints a line
+  saying the half is off. The home-path half stays on. The switch loosens the check, so
+  `railform frame --check` fails it as `unlisted-departure` unless an `exceptions` row names
+  `private_refs.names_enabled` with a reason.
+- **Which frame judges.** With `--diff`, the `private_refs` settings (the switch, the variable
+  name and the placeholders) are read from the `railform.toml` committed at the merge base of the
+  range, so a pull request cannot switch the names half off, or add a placeholder for the home
+  path it carries, in the change that is being judged. A merge base without a `railform.toml`
+  leaves the working tree's frame in force, as for `version-sites --base`. Without `--diff` the
+  working tree's frame judges.
 
 No output contains a matched name or the user segment of a matched home path: a home-path finding
 shows the shape with `<name>` in its place, and a private-name finding gives only the term's line
@@ -686,7 +703,7 @@ manifest:
 | `railform-commit-msg` | `commit-msg` | the message file |
 | `railform-branch-name` | `pre-push` | every push pre-commit runs hooks for (`always_run: true`, `pass_filenames: false`) |
 | `railform-hooks-check` | `pre-commit` | every commit (`always_run: true`, `pass_filenames: false`), since a commit that only deletes a wrapper stages no file a filter could match |
-| `railform-private-refs` | `pre-commit` | the staged files only |
+| `railform-private-refs` | `pre-commit` | the staged files only; no `--require-names`, see the private-reference check |
 
 The hygiene hooks (trailing whitespace, end of file, merge-conflict markers and the rest) are
 `pre-commit/pre-commit-hooks`, which `railform adopt` references beside these, pinned by commit.

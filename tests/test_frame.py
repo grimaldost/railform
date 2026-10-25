@@ -36,6 +36,7 @@ SPEC_KEYS = (
     'branch.allow',
     'session_loaded',
     'private_refs.names_file_env',
+    'private_refs.names_enabled',
     'private_refs.placeholders',
     'ci.os',
     'ci.setup',
@@ -165,7 +166,7 @@ def test_the_schema_of_each_preset(preset: str) -> None:
         value = _get(effective, key)
         assert isinstance(value, list), key
         assert all(isinstance(item, str) for item in value), key
-    for key in ('changelog.enabled', 'release.enabled'):
+    for key in ('changelog.enabled', 'release.enabled', 'private_refs.names_enabled'):
         assert isinstance(_get(effective, key), bool), key
     assert effective['changelog']['consumer_affecting'] in ('advisory', 'error')
     assert isinstance(effective['ci']['setup'], dict)
@@ -211,6 +212,7 @@ def test_the_default_frame_values_the_spec_names() -> None:
     assert effective['hooks']['dir'] == '.githooks'
     assert effective['hooks']['names'] == ['pre-commit', 'commit-msg', 'pre-push']
     assert effective['private_refs']['names_file_env'] == 'RAILFORM_PRIVATE_NAMES'
+    assert effective['private_refs']['names_enabled'] is True
     assert effective['private_refs']['placeholders'] == [
         'me',
         'x',
@@ -783,6 +785,12 @@ LOOSENING = [
         '[private_refs]\nnames_file_env = "UNSET_VARIABLE"\n',
         'private_refs.names_file_env',
         id='names-variable',
+    ),
+    # The names half of private-refs is the check a repository can only turn off with a reason.
+    pytest.param(
+        '[private_refs]\nnames_enabled = false\n',
+        'private_refs.names_enabled',
+        id='names-switch',
     ),
     # A bare `<reason>` template matches every commit message, which turns changelog-gate off.
     pytest.param('[changelog]\ntrailer = "<reason>"\n', 'changelog.trailer', id='trailer-bare'),

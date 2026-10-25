@@ -84,6 +84,7 @@ LOOSENING = {
     'ci.extra_workflows': ADDS,
     'commit.types': ADDS,
     'private_refs.names_file_env': REPLACED,
+    'private_refs.names_enabled': TURNED_OFF,
     'release.pr_branch_prefix': REPLACED,
     'release.pr_title_pattern': REPLACED,
     'ci.self_hosted': TURNED_ON,
@@ -303,7 +304,9 @@ SCHEMA = _Table(
             {'dir': _Str(), 'names': _STRINGS, 'wrapper': _Str(), 'pre_commit_version': _Str()}
         ),
         'branch': _Table({'pattern': _Str(regex=True), 'allow': _STRINGS}),
-        'private_refs': _Table({'names_file_env': _Str(), 'placeholders': _STRINGS}),
+        'private_refs': _Table(
+            {'names_file_env': _Str(), 'names_enabled': _Bool(), 'placeholders': _STRINGS}
+        ),
         'ci': _Table(
             {
                 'os': _STRINGS,
