@@ -98,21 +98,28 @@ reason = "the integration suite runs in a separate workflow during the migration
 A row matches its departure by key. It may also carry `value`, which must then equal the
 departed value; that is the form every row had before, and it still passes. A row whose key does
 not depart, or whose `value` is not the departed one, is a bad row (`bad-exception`).
+For `python.type_check` a string and an array that name the same paths are the same value, in the
+file and in a row.
 
 These departures loosen a check (`LOOSENING` in `src/railform/frame.py`):
 
 | Key | Loosens when |
 |---|---|
-| `python.test_command`, `python.type_check`, `branch.pattern`, `hooks.wrapper`, `changelog.trailer`, `release.pr_branch_prefix`, `release.pr_title_pattern`, `private_refs.names_file_env` | the preset sets it and the repository changes it: railform cannot judge a command, a pattern or a variable name, a blank or `true` command runs nothing, a trailer of `<reason>` alone declares every commit and so turns `changelog-gate` off, a broad release convention lets any pull request carrying the version count as the release, and a variable CI does not set turns off the private-name half of `railform private-refs` |
-| `changelog.enabled`, `release.enabled` | it is `false` |
+| `python.test_command`, `python.type_check`, `branch.pattern`, `hooks.wrapper`, `changelog.trailer`, `release.pr_branch_prefix`, `release.pr_title_pattern`, `private_refs.names_file_env`, `ci.ruff_version`, `hooks.pre_commit_version` | the preset sets it and the repository changes it: railform cannot judge a command, a pattern, a variable name or a tool version, a blank or `true` command runs nothing, a trailer of `<reason>` alone declares every commit and so turns `changelog-gate` off, a broad release convention lets any pull request carrying the version count as the release, a variable CI does not set turns off the private-name half of `railform private-refs`, and an older ruff or pre-commit runs fewer rules (only the `plugin-marketplace` preset sets the two versions; a type that leaves one empty never reads it) |
+| `changelog.enabled`, `release.enabled`, `private_refs.names_enabled` | it is `false` |
 | `ci.self_hosted` | it is `true` |
-| `ci.extra_workflows`, `changelog.unwatched`, `branch.allow`, `release.metadata_paths`, `commit.types` | the list has an element the preset lacks |
+| `ci.extra_workflows`, `changelog.unwatched`, `branch.allow`, `release.metadata_paths`, `commit.types`, `python.sync_args`, `ci.setup.extra_installs` | the list has an element the preset lacks: an argument after `uv sync --frozen` or a requirement installed after it changes the environment the checks run in |
 | `ci.os`, `commit.attribution_patterns`, `hooks.names`, `python.lint_paths` | the list leaves out an element the preset has |
 
 Any other departure, and these in the other direction, needs no row: a `ci.setup.fetch_depth`, a
-longer `ci.os`, an empty `changelog.unwatched`, `changelog.consumer_affecting = "error"`, or a
-shorter `commit.types`. A key of the first row needs a row for any change, a stricter one
-included.
+longer `ci.os`, an empty `changelog.unwatched`, `changelog.consumer_affecting = "error"`, a
+shorter `commit.types`, another `hooks.dir` or `python.newest`. A key of the first row needs a row
+for any change, a stricter one included.
+
+Every key of the frame is classified: in `LOOSENING`, in `NEUTRAL` (the keys above that loosen
+nothing, each with its reason), in `meta.parameter_keys` or one of the two guard lists, and in
+only one of them. A test fails on a key in none, so a key added to the frame is decided before it
+ships and `frame --check` never passes a departure nobody judged.
 
 The keys in `meta.parameter_keys` (the project type and layout, the Python versions and package,
 the version sites, the changelog records and contract surfaces, and the release start and tag
@@ -125,6 +132,25 @@ stale when a later pin adds a default element, and a list that leaves out a defa
 it. For example, `session_loaded = ["docs/prompts/**"]` keeps every default glob and adds one.
 `railform frame` and `railform frame --json` print the effective list.
 
+Adding to `session_loaded` guards more paths and needs no row. Adding to
+`private_refs.placeholders` loosens the scan, since a home path under an added name passes, so it
+needs an `exceptions` row for the key with a reason and no `drop`:
+
+```toml
+[private_refs]
+placeholders = ["example"]
+
+[[exceptions]]
+key = "private_refs.placeholders"
+reason = "the tests use example as the neutral user name in a home path"
+```
+
+The row may also give `value`, the elements it adds, which must then be exactly the ones the
+repository adds, in the order of its own list (`bad-exception` otherwise). Without the row
+`frame --check` fails with `unlisted-departure`. A row with a `drop` and no `value` does not cover
+an addition: a repository that drops one element and adds another gives `drop` and `value` in the
+one row. A default element already in the list is not an addition.
+
 A default element leaves a guard list only through an `exceptions` row that names it in `drop`,
 with a reason:
 
@@ -135,8 +161,9 @@ drop = ["shared"]
 reason = "no machine here has a shared profile, so a path under it is a real account"
 ```
 
-`drop` names default elements of that list and is not empty, and the row gives no `value`; a row
-that breaks this is `bad-exception` and drops nothing, not even its default elements. One row per
+`drop` names default elements of that list and is not empty, and the row gives no `value` unless
+it is the one for `private_refs.placeholders` and names what the repository adds; a row that breaks
+this is `bad-exception` and drops nothing, not even its default elements. One row per
 list: a second row for the same list is `bad-exception` too and drops nothing. Dropping a
 placeholder makes the private-reference check stricter. Dropping a `session_loaded` glob narrows
 the guard, so `railform session-paths` fails the pull request that adds the row with
@@ -162,6 +189,19 @@ Some keys hold rows rather than plain values:
   the records, the list is not a parameter key: a list with an entry the preset lacks leaves more
   unread and needs an `exceptions` row, and a shorter one needs none. A lock in a subdirectory
   (`plugins/a/uv.lock`) is not matched by `uv.lock`; list it.
+- `python.type_check` is the paths `ty check` runs over, from the repository root: an array
+  (`["claude_archive", "archive.py"]`) or a string of shell words (`"claude_archive archive.py"`),
+  each word one argument; `""` or `[]` runs no `ty`. A string and an array that name the same paths
+  are the same value, so `["src"]` is not a departure from the preset's `"src"`. The
+  `python-package` preset type-checks `src`; a repository with `project.layout = "flat"` and a
+  `python.package` type-checks that package instead, with no `type_check` and no `exceptions` row
+  of its own (a `type_check` that adds a path, such as a script beside the package, still departs
+  and needs the row). `frame --check` looks in the tree for what `railform.toml` sets: every
+  entry of its `python.type_check` must be `.` or an existing path inside the repository, and
+  its `python.package` `.` or a directory at the root, or under `src/` in the `src` layout. The
+  preset's own `src` is not looked for, and a row does not excuse a path that is not there. The
+  lookup uses the file system of the machine that runs it, so a name that differs from the one on
+  disk only in case passes on Windows and macOS and fails on a Linux runner: write the case as it is.
 - `version.sites` is an array of `{ path, pattern, authored }` rows: the pattern's first group is
   the version, and `authored` (default `false`) marks a site that is checked and never rewritten.
 - `release.metadata_paths` holds globs of the release metadata (the manifests). The release check
@@ -170,8 +210,10 @@ Some keys hold rows rather than plain values:
 
 - `railform frame` prints the effective frame as TOML, and `--json` prints it as one JSON object.
 - `railform frame --check` fails on an unknown key (`unknown-key`), a value of the wrong type
-  (`wrong-type`), an exceptions row with no key, an empty reason, matching no departure or with a
-  bad `drop` (`bad-exception`), and a departure that loosens a check and that no row lists
+  (`wrong-type`), a `python.type_check` entry or a `python.package` that `railform.toml` sets and
+  that is neither `.` nor a path in the tree (`missing-path`; see `python.type_check` above), an
+  exceptions row with no key, an empty reason, matching no departure or with a bad `drop`
+  (`bad-exception`), and a departure that loosens a check and that no row lists
   (`unlisted-departure`), naming the first in that order.
 - `railform frame --github-output` appends one `name=value` line per key to the file
   `$GITHUB_OUTPUT` names, as `<table>_<key>`; lists, tables, booleans and numbers are written as
@@ -228,14 +270,23 @@ The attribution rule applies to every message, merges and the pull request's tit
 included: no line may match a pattern of `commit.attribution_patterns` (Python regular
 expressions, matched case-insensitively per line). The default set is keel's. It rejects a trailer
 that names Claude, GPT, Anthropic or Copilot as author, co-author, signer or assistant, and a
-"generated with" stamp that names one of them anywhere later on the line (keel's stamp
-arm named Claude only, directly after the words; the wider reach comes from the mantis-research
-script and craft-collection's check). Each name is a whole word: ChatGPT and GitHub Copilot
-match, an address at `gptools.example` does not, and neither does the file `CLAUDE.md`, so
+"generated with" stamp that names one of them anywhere later on the line, provided the line
+opens with the stamp (keel's stamp arm named Claude only, directly after the words; the wider
+reach comes from the mantis-research script and craft-collection's check). Each name is a whole
+word: ChatGPT and GitHub Copilot match, an address at `gptools.example` does not, and neither
+does the file `CLAUDE.md`, so
 "Generated with the sync script from CLAUDE.md" passes while "Generated with Claude" does not.
-Dependabot bodies quote upstream release notes, and a line
-that opens "Generated with" and names one of the products later could, rarely, trip the stamp
-pattern.
+The stamp arm is anchored at the start of the line: only non-word characters (an emoji, a
+quote mark `>`, a bullet `-` or `*`, bold markers), a list number or a word and a colon
+(such as a subject's `type(scope): ` prefix) may come before "Generated with". Prose that
+describes the rule in the middle of a sentence, such as "the check rejects a line that says
+Generated with Claude Code", passes. The trade-off: a stamp placed after any word passes too
+(mid-sentence, or inside an HTML tag such as `<sub>`), since the real stamp always opens its line.
+The reverse holds as well: a line that opens with a quote mark or a code span and then says
+"Generated with" and a product name still fails, so wrap prose to keep such a phrase off the
+start of a line.
+Dependabot bodies quote upstream release notes, and a line that opens "Generated with" and names
+one of the products later could, rarely, trip the stamp pattern.
 
 When both rules fail, the verdict code is `subject`; a failure of the attribution rule alone is
 `attribution`. An unreadable message file, a bad range, a missing event payload and an invalid
@@ -358,13 +409,31 @@ change to files in its contents is not seen unless the submodule path itself is 
 
 ## The private-reference check
 
-`railform private-refs [PATH ...] [--diff BASE...HEAD] [--text FILE]... [--event PATH]
+`railform private-refs [PATH ...] [--diff BASE...HEAD] [--history] [--text FILE]... [--event PATH]
 [--require-names]` keeps two kinds of private reference out of a public repository. It checks the
 given paths; otherwise, with `--diff`, the files the range changes (read at its tip) and the
-range's commit messages; otherwise every tracked file. `--text FILE` (repeatable, one file per
-flag) adds a file to any scope. `--event PATH` adds the title and body of the pull request in a
-GitHub event payload, read as `pr-text` reads them and reported as `pull request title` and
-`pull request body`. Binary files are skipped.
+range's commit messages; otherwise every tracked file. `--history` adds to whichever of those
+applies: it checks every commit message reachable from `HEAD` and every line any of those commits
+added, including a line a later commit removed, which none of the other scopes can see (a term
+added in one commit and deleted in the next is still in the history that gets pushed). It does not
+replace the tracked files, because the history does not hold every line they hold: `git log -p`
+shows no line for a file marked `-diff` or binary, for the conflict resolution a merge commit
+makes (the lines of a merged branch are found in that branch's commits), or for a change not yet
+committed. A finding names the commit by its first 12 characters and the line in the file that
+commit wrote: `commit 0123456789ab notes.md:3: private name (names file line 2)`, or `commit
+0123456789ab:4: ...` for line 4 of a message. `--text FILE` (repeatable, one
+file per flag) adds a file to any scope. `--event PATH` adds the title and body of the pull
+request in a GitHub event payload, read as `pr-text` reads them and reported as `pull request
+title` and `pull request body`. Binary files are skipped.
+
+Outside a git repository the verb checks files the caller names: `PATH` files, `--text FILE` and
+`--event`, for instance `RAILFORM_PRIVATE_NAMES=names.txt railform private-refs --require-names
+--text report.md` on a report written in a plain directory. The frame is the default one (there
+is no `railform.toml` to read). The scopes that need a repository (the tracked files, `--diff`,
+`--history`, a directory given as a `PATH`) exit 2 with `not inside a git repository`, and so
+does a run that names nothing to check. A repository that git refuses to read (dubious
+ownership, the inside of `.git`) is not "no repository": the run exits 2 with git's own message
+instead of falling back to the default frame.
 
 In the reusable workflow, the `checks` job runs it over the tracked files, and the `commit-lane`
 job runs `private-refs --diff "origin/${BASE_REF}...HEAD" --event "$GITHUB_EVENT_PATH"` on pull
@@ -384,11 +453,28 @@ names file in CI, the names half is silent there, as below.
   end of the line, so `cd C:\Users\<name>` is caught. `/home/` counts only where it is not
   preceded by a word character, `.` or `-`, so `src/home/views/` and the `/home/` of a URL pass.
 - **Private names.** The file that the variable named by `private_refs.names_file_env` (default
-  `RAILFORM_PRIVATE_NAMES`) points to lists one term per line; blank lines and lines starting
-  with `#` are ignored. A term matches case-insensitively as a whole token, so a term `alice`
-  matches `by alice.` and not `aliceworks`. Without the variable or the file this half is silent,
-  which is why it is silent in CI; `--require-names` turns a missing file into a failure
-  (`names-file-missing`). railform tracks no names list and ports none.
+  `RAILFORM_PRIVATE_NAMES`) points to lists one term per line (LF or CRLF line ends); blank lines
+  and lines starting with `#` are ignored. A term matches case-insensitively as a whole token, so
+  a term `alice` matches `by alice.` and not `aliceworks`. With the variable unset this half is
+  silent, which is why it is silent in CI. A variable set to a path that is not a file fails
+  (`names-file-missing`) whatever the flags say, so a stale path cannot turn the half off
+  unnoticed; a file that exists but cannot be read is a configuration error (exit 2).
+  `--require-names` also fails when the variable is unset. The `railform-private-refs` hook passes
+  no `--require-names`: it runs on every contributor's machine, and most hold no names file.
+  railform tracks no names list and ports none.
+- **Switching the names half off.** `private_refs.names_enabled = false` in `railform.toml` turns
+  this half off for a private repository whose tracked files carry the listed names by design,
+  on machines where the variable is set (where it is unset the half is already silent): the file
+  is not read, a stale variable and `--require-names` are no failure, and the run prints a line
+  saying the half is off. The home-path half stays on. The switch loosens the check, so
+  `railform frame --check` fails it as `unlisted-departure` unless an `exceptions` row names
+  `private_refs.names_enabled` with a reason.
+- **Which frame judges.** With `--diff`, the `private_refs` settings (the switch, the variable
+  name and the placeholders) are read from the `railform.toml` committed at the merge base of the
+  range, so a pull request cannot switch the names half off, or add a placeholder for the home
+  path it carries, in the change that is being judged. A merge base without a `railform.toml`
+  leaves the working tree's frame in force, as for `version-sites --base`. Without `--diff` the
+  working tree's frame judges.
 
 No output contains a matched name or the user segment of a matched home path: a home-path finding
 shows the shape with `<name>` in its place, and a private-name finding gives only the term's line
@@ -483,18 +569,23 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
 - Whole files: the hook wrappers in `hooks.dir`, staged as their exact bytes and tracked as
   `100755` (so `core.autocrlf` and `core.safecrlf` never touch them), and
   `.github/workflows/railform-tag-watch.yml`, the caller of the reusable tag watch (see the
-  release check below). Adopt writes the caller when it is absent and `release.enabled` is
-  true; with the release check off (`release.enabled = false`) it writes none, and `--check`
-  does not ask for one. A caller that exists is kept either way: when it exists, adopt writes
-  only its two pin sites, the whole `uses:` value and the
-  `railform-sha` value, with the current mode's values (the pinned call and the pin, or the call
-  by local path and `${{ github.sha }}` when self-hosted), and leaves the rest as it is, line
-  endings included. A switch between pinned and self-hosted in either direction therefore needs
+  release check below). A hook already in `hooks.dir` under a wrapper's name is overwritten.
+  Adopt writes the caller when it is absent and `release.enabled` is true; with the release check
+  off (`release.enabled = false`) it writes none, and `--check` does not ask for one. A caller that
+  exists is kept either way: when it exists, adopt writes only its two pin sites, the whole
+  `uses:` value and the `railform-sha` value, with the current mode's values (the pinned call and
+  the pin, or the call by local path and `${{ github.sha }}` when self-hosted), and leaves the
+  rest as it is, line endings included. A switch between pinned and self-hosted in either direction therefore needs
   only another `railform adopt`. `--check` renders the template at the file's own `uses:` commit
   (or by local path, when self-hosted) and compares the whole file: a missing file or any other difference is `drift`, which
   deleting the file and running `railform adopt` clears; a pin site that differs from the others
   is `pin-mismatch`. A workflow of the
   repository's own, such as a `tag-watch.yml` it already had, is never touched.
+- In `.gitattributes`, one line for `hooks.dir`, `<hooks.dir>/** text eol=lf`, and one for the
+  directory where adopt writes stubs, when it writes any, between marker lines (`#` starts a comment
+  there too). The region goes after every other line, so it wins over a `* text=auto`. Without it,
+  a clone with `core.autocrlf=true` checks the wrappers and the stubs out with CRLF, and a new
+  worktree shows them as modified, though the index holds LF. The file is created when absent.
 - `railform.toml`, on the first run only, with the project type and `python.versions`. A `src/`
   layout is `python-package`, another `pyproject.toml` is `python-scripts`, and no
   `pyproject.toml` is `plugin-marketplace`; `--type` overrides the guess. The versions are the floor
@@ -505,7 +596,7 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
   first daily run of the tag watch stays green; a repository with other tag prefixes sets
   `since` itself. After the first run the file is the repository's.
 
-Each owned part of the three shared files sits between two marker lines:
+Each owned part of the four shared files sits between two marker lines:
 
 ```yaml
 # >>> railform: owned by `railform adopt`; `railform adopt --check` fails on any edit
@@ -531,10 +622,12 @@ nothing.
   would silence every railform hook.
 
   Wrappers are judged by their index entry, mode `100755` and the exact LF bytes, so a wrapper
-  committed with CRLF is `drift`. The check fails with `pin-mismatch` when the pins differ from
-  each other, and with `extra-pr-workflow` while another workflow file runs on `pull_request` or
-  `pull_request_target`, or cannot be parsed. A job's `needs:` cannot reach another workflow
-  file, so move such a job into `ci.yml` (the next adopt adds it to `gate`), or list the file in
+  committed with CRLF is `drift`. A `.gitattributes` that is missing, or has no region, or whose
+  first line is not the `hooks.dir` line, is `drift`; the check accepts further lines of the same
+  shape for the stub directory, which it does not work out again. The check fails with
+  `pin-mismatch` when the pins differ from each other, and with `extra-pr-workflow` while another
+  workflow file runs on `pull_request` or `pull_request_target`, or cannot be parsed. A job's
+  `needs:` cannot reach another workflow file, so move such a job into `ci.yml` (the next adopt adds it to `gate`), or list the file in
   `ci.extra_workflows`, by name or by path, with an `exceptions` row.
 
   A `paths`, `paths-ignore`, `branches` or `branches-ignore` filter on the `pull_request` trigger
@@ -545,9 +638,10 @@ nothing.
   `core.hooksPath` when it is not the same directory as `hooks.dir` (a subdirectory of it
   counts), or else the tracked directory, outside `hooks.dir` and outside every `session_loaded`
   glob, with the most `100755` files named after a hook. The stub prints the `railform arm`
-  command and fails, so a clone armed to the old directory cannot commit unchecked. The stub is
-  meant to be removed one release later: the first railform patch release after an adopter's
-  adoption leaves it.
+  command and the one-shot form, `git -c core.hooksPath=<hooks.dir> <command>`, which runs a single
+  git command with the hooks without arming the clone, and fails, so a clone armed to the old
+  directory cannot commit unchecked. The stub is meant to be removed one release later: the first
+  railform patch release after an adopter's adoption leaves it.
   - Directories are compared as Windows reads them: each segment without its trailing dots and
     spaces, then casefolded. The filesystem decides when both directories exist.
   - A `core.hooksPath` that differs from `hooks.dir` only that way (`.GitHooks`, `.githooks.`)
@@ -558,8 +652,11 @@ nothing.
     `.git`, or holds a character Windows forbids in a name (`<>:"|?*`) is not a directory adopt
     writes in; it is reported and gets no stub.
   - Every candidate passed over is reported in a finding line.
-  - A file there that is tracked but not `100755`, or not tracked at all, is reported and left
-    alone.
+  - A file there that is tracked as `100644` (an old hook that lost its mode, as in
+    mantis-research and fathom) is replaced by the stub, tracked as `100755`, and the finding line
+    names the replaced mode, unless the working copy differs from the index: then it is reported
+    and left alone. A file of another tracked mode (a symlink, a submodule), or one that is not
+    tracked at all, is reported and left alone.
 - Adopt refuses, before writing anything, a target path with a symlink or junction on the way, a
   `hooks.dir` inside `.git` (`.git.` and `.git ` included), starting with a `~` or `%(` that git
   expands, or holding a character Windows forbids,
@@ -605,7 +702,7 @@ checks that the input is 40 hexadecimal characters before anything is installed.
   parameters, and `checks` runs each line in bash, in order, stopping at the first that fails.
   For `python-package` it is `uv lock --check`, `uv sync --frozen` (plus `python.sync_args`),
   `uv pip install` of `ci.setup.extra_installs` when there are any, `ruff format --check` and
-  `ruff check` over `python.lint_paths`, `ty check` over `python.type_check`, and
+  `ruff check` over `python.lint_paths`, `ty check` over the paths of `python.type_check`, and
   `python.test_command`; `python-scripts` is the same without `ty` (its `python.type_check` is
   empty); `plugin-marketplace` runs ruff from `uvx` at `ci.ruff_version`, then
   `python.test_command`. A test command of several lines is one command per line. The lines run
@@ -665,7 +762,7 @@ manifest:
 | `railform-commit-msg` | `commit-msg` | the message file |
 | `railform-branch-name` | `pre-push` | every push pre-commit runs hooks for (`always_run: true`, `pass_filenames: false`) |
 | `railform-hooks-check` | `pre-commit` | every commit (`always_run: true`, `pass_filenames: false`), since a commit that only deletes a wrapper stages no file a filter could match |
-| `railform-private-refs` | `pre-commit` | the staged files only |
+| `railform-private-refs` | `pre-commit` | the staged files only; no `--require-names`, see the private-reference check |
 
 The hygiene hooks (trailing whitespace, end of file, merge-conflict markers and the rest) are
 `pre-commit/pre-commit-hooks`, which `railform adopt` references beside these, pinned by commit.
