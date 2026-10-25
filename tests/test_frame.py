@@ -522,6 +522,67 @@ def test_watching_more_paths_needs_no_row_and_watching_fewer_needs_one(
     assert _check(capsys) == (0, 'ok', [])
 
 
+# --- every key is classified ----------------------------------------------------------------------
+
+
+def _toml_leaves(table: dict[str, Any], prefix: str = '') -> set[str]:
+    """The dotted keys of a parsed TOML table whose value is not a table (an array of rows is a
+    leaf), read from the file as written and not from the schema in the module."""
+    found: set[str] = set()
+    for key, value in table.items():
+        dotted = f'{prefix}.{key}' if prefix else key
+        if isinstance(value, dict):
+            found |= _toml_leaves(value, dotted)
+        else:
+            found.add(dotted)
+    return found
+
+
+def _frame_file_keys() -> set[str]:
+    """Every leaf key of default_frame.toml and of each of its presets, and of the schema."""
+    data = tomllib.loads(frame.default_frame_text())
+    presets = data.pop('presets')
+    keys = _toml_leaves(data)
+    for preset in presets.values():
+        keys |= _toml_leaves(preset)
+    keys.discard('exceptions')
+    return keys | set(frame.leaf_keys())
+
+
+def test_every_frame_key_is_classified_exactly_once() -> None:
+    # A key that loosens a check needs a row; one that does not is named neutral, with the reason;
+    # a parameter key never departs; a guard list is joined to the default. A key in none of them
+    # is a departure nobody decided about, which `frame --check` lets through.
+    default = tomllib.loads(frame.default_frame_text())
+    classes: dict[str, set[str]] = {
+        'LOOSENING': set(frame.LOOSENING),
+        'NEUTRAL': set(getattr(frame, 'NEUTRAL', {})),
+        'meta.parameter_keys': set(default['meta']['parameter_keys']),
+        'guard lists': set(frame.EXTENDABLE_KEYS),
+    }
+    keys = _frame_file_keys()
+    unclassified = sorted(
+        key for key in keys if not any(key in names for names in classes.values())
+    )
+    assert unclassified == [], f'keys in no class: {unclassified}'
+    twice = sorted(key for key in keys if sum(key in names for names in classes.values()) > 1)
+    assert twice == [], f'keys in more than one class: {twice}'
+    named = set().union(*classes.values())
+    assert sorted(named - keys) == [], 'a class names a key the frame does not have'
+
+
+def test_every_neutral_key_says_why() -> None:
+    assert all(reason.strip() for reason in frame.NEUTRAL.values())
+
+
+def test_a_key_in_no_class_is_treated_as_loosening(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The completeness test keeps this from happening; if it does, the departure needs a row.
+    departure = frame.Departure('python.newest', '3.13', '3.12')
+    assert frame.loosens(departure) is None
+    monkeypatch.delitem(frame.NEUTRAL, 'python.newest')
+    assert frame.loosens(departure) == frame.UNCLASSIFIED
+
+
 # --- parameter keys and the guard lists ---------------------------------------------------------
 
 
@@ -542,14 +603,13 @@ def test_parameter_keys_are_never_departures(
     assert _check(capsys) == (0, 'ok', [])
 
 
-@pytest.mark.parametrize('key', ['session_loaded', 'private_refs.placeholders'])
-def test_a_guard_list_may_grow_without_an_exception(
-    key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+def test_session_loaded_may_grow_without_an_exception(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    default = _get(frame.effective_frame(None), key)
-    grown = json.dumps([*default, 'extra/**'])
-    table, _, leaf = key.rpartition('.')
-    _write(scratch_repo, f'[{table}]\n{leaf} = {grown}\n' if table else f'{leaf} = {grown}\n')
+    # An added glob guards more paths: stricter, so no row. An added placeholder does the
+    # opposite (below).
+    default = _get(frame.effective_frame(None), 'session_loaded')
+    _write(scratch_repo, f'session_loaded = {json.dumps([*default, "extra/**"])}\n')
     assert _check(capsys) == (0, 'ok', [])
 
 
@@ -557,6 +617,15 @@ def _guard_list_toml(key: str, items: list[str]) -> str:
     table, _, leaf = key.rpartition('.')
     value = json.dumps(items)
     return f'[{table}]\n{leaf} = {value}\n' if table else f'{leaf} = {value}\n'
+
+
+def _addition_row(key: str, items: list[str] | None = None) -> str:
+    """The row an addition to the guard list `key` needs: none for a list whose additions are
+    stricter."""
+    if key != 'private_refs.placeholders':
+        return ''
+    value = '' if items is None else f'value = {json.dumps(items)}\n'
+    return f'[[exceptions]]\nkey = "{key}"\n{value}reason = "measured"\n'
 
 
 @pytest.mark.parametrize('key', ['session_loaded', 'private_refs.placeholders'])
@@ -569,7 +638,7 @@ def test_red_proof_a_guard_list_with_one_extra_element_keeps_every_default_eleme
     default = _get(frame.effective_frame(None), key)
     config = tomllib.loads(_guard_list_toml(key, ['extra/**']))
     assert _get(frame.effective_frame(config), key) == [*default, 'extra/**']
-    _write(scratch_repo, _guard_list_toml(key, ['extra/**']))
+    _write(scratch_repo, _guard_list_toml(key, ['extra/**']) + _addition_row(key))
     assert _check(capsys) == (0, 'ok', [])
     assert main(['frame', '--json']) == 0
     printed = json.loads(capsys.readouterr().out.splitlines()[0])
@@ -586,10 +655,11 @@ def test_a_restated_guard_list_cannot_drop_a_default_element(
     listed = [*default[1:], 'extra/**', default[2], 'extra/**']
     config = tomllib.loads(_guard_list_toml(key, listed))
     assert _get(frame.effective_frame(config), key) == [*default, 'extra/**']
-    _write(scratch_repo, _guard_list_toml(key, listed))
+    _write(scratch_repo, _guard_list_toml(key, listed) + _addition_row(key))
     assert _check(capsys) == (0, 'ok', [])
-    # A guard list never departs, so a row that gives it a value is a bad row: a default element
-    # is left out only by a row's `drop` (below).
+    # A row's `value` names the elements the repository adds and nothing more, so a row that
+    # restates the whole list is a bad row: a default element is left out only by a row's `drop`
+    # (below).
     row = f'[[exceptions]]\nkey = "{key}"\nvalue = {json.dumps(listed)}\nreason = "measured"\n'
     _write(scratch_repo, _guard_list_toml(key, listed) + row)
     assert _check(capsys)[:2] == (1, 'bad-exception')
@@ -671,6 +741,7 @@ def test_a_tag_row_may_set_since_which_defaults_to_empty(
 
 # --- rows by key, and only for a departure that loosens a check ---------------------------------
 
+MARKETPLACE = '[project]\ntype = "plugin-marketplace"\n'
 LONG_COMMAND = 'uv run --frozen python -m pytest -q -p no:cacheprovider --durations=20 tests'
 TYPES = frame.effective_frame(None)['commit']['types']
 
@@ -718,6 +789,23 @@ LOOSENING = [
     pytest.param(
         '[changelog]\ntrailer = "No-changelog: <reason>"\n', 'changelog.trailer', id='trailer'
     ),
+    # The pinned tools and the sync: railform cannot judge a version or an argument, so a change
+    # of the preset's value (only the plugin-marketplace preset sets the version pins) and any
+    # added argument or installed requirement needs a row.
+    pytest.param(
+        f'{MARKETPLACE}[ci]\nruff_version = "0.1.0"\n', 'ci.ruff_version', id='ruff-version'
+    ),
+    pytest.param(
+        f'{MARKETPLACE}[hooks]\npre_commit_version = "1.0.0"\n',
+        'hooks.pre_commit_version',
+        id='pre-commit-version',
+    ),
+    pytest.param(
+        '[python]\nsync_args = ["--no-install-project"]\n', 'python.sync_args', id='sync-args'
+    ),
+    pytest.param(
+        '[ci.setup]\nextra_installs = ["hypothesis"]\n', 'ci.setup.extra_installs', id='installs'
+    ),
     pytest.param('[release]\npr_branch_prefix = ""\n', 'release.pr_branch_prefix', id='rel-branch'),
     pytest.param(
         '[release]\npr_branch_prefix = "rel/"\n', 'release.pr_branch_prefix', id='rel-branch-other'
@@ -737,7 +825,6 @@ STAMP = frame.effective_frame(None)['commit']['attribution_patterns']
 # Departures that are stricter or neutral: none needs a row.
 NOT_LOOSENING = [
     pytest.param('[ci.setup]\nfetch_depth = 0\n', id='fetch-depth'),
-    pytest.param('[ci.setup]\nextra_installs = ["hypothesis"]\n', id='extra-installs'),
     pytest.param('[ci]\nos = ["ubuntu-latest", "windows-latest", "macos-latest"]\n', id='more-os'),
     pytest.param(
         f'[commit]\nattribution_patterns = {json.dumps([*STAMP, "^Made-with: "])}\n',
@@ -746,7 +833,7 @@ NOT_LOOSENING = [
     pytest.param('[changelog]\nunwatched = []\n', id='watch-everything'),
     pytest.param('[changelog]\nconsumer_affecting = "error"\n', id='consumer-error'),
     pytest.param('[hooks]\ndir = ".hooks"\n', id='hooks-dir'),
-    pytest.param('[python]\nsync_args = ["--all-extras"]\n', id='sync-args'),
+    pytest.param('[python]\nnewest = "3.12"\n', id='newest'),
     pytest.param('[python]\nlint_paths = [".", "extra"]\n', id='more-lint-paths'),
     pytest.param('[release]\nmetadata_paths = ["pyproject.toml"]\n', id='less-metadata'),
     pytest.param('[commit]\ntypes = ["feat", "fix", "docs"]\n', id='fewer-types'),
@@ -943,6 +1030,131 @@ def test_a_dropped_placeholder_is_a_home_path_again(
     _write(scratch_repo, _drop_row('private_refs.placeholders', ['user']))
     assert main(['private-refs']) == 1
     assert 'railform-verdict: private-refs fail home-path' in capsys.readouterr().out
+
+
+# --- adding a placeholder ----------------------------------------------------------------------
+
+PLACEHOLDERS = 'private_refs.placeholders'
+ADD_BOB = _guard_list_toml(PLACEHOLDERS, ['bob'])
+
+
+def test_an_added_placeholder_without_a_row_fails(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A placeholder is a name the private-refs scan lets through in a home path, so adding one
+    # loosens the check: it needs a row, as a longer list of `changelog.unwatched` does.
+    _write(scratch_repo, ADD_BOB)
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'unlisted-departure')
+    assert len(findings) == 1
+    assert PLACEHOLDERS in findings[0]
+    assert 'bob' in findings[0]
+
+
+def test_an_added_placeholder_passes_with_a_row_that_names_the_key(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, ADD_BOB + _addition_row(PLACEHOLDERS))
+    assert _check(capsys) == (0, 'ok', [])
+    default = _get(frame.effective_frame(None), PLACEHOLDERS)
+    assert _get(frame.load(scratch_repo), PLACEHOLDERS) == [*default, 'bob']
+
+
+def test_a_row_may_list_the_placeholders_it_adds(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, ADD_BOB + _addition_row(PLACEHOLDERS, ['bob']))
+    assert _check(capsys) == (0, 'ok', [])
+    _write(scratch_repo, ADD_BOB + _addition_row(PLACEHOLDERS, ['carol']))
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'bad-exception')
+    assert any('"carol"' in finding and '"bob"' in finding for finding in findings), findings
+
+
+def test_a_placeholder_the_default_already_has_is_not_an_addition(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, _guard_list_toml(PLACEHOLDERS, ['user', 'me']))
+    assert _check(capsys) == (0, 'ok', [])
+
+
+def test_a_row_that_adds_nothing_and_drops_nothing_fails(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, _addition_row(PLACEHOLDERS))
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'bad-exception')
+    assert any('names no drop' in finding for finding in findings), findings
+    _write(scratch_repo, _addition_row(PLACEHOLDERS, ['bob']))
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'bad-exception')
+    assert any('adds no element' in finding for finding in findings), findings
+
+
+def test_a_row_that_only_drops_does_not_cover_an_added_placeholder(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    drop = _drop_row(PLACEHOLDERS, ['user'])
+    _write(scratch_repo, ADD_BOB + drop)
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'unlisted-departure')
+    assert any('bob' in finding for finding in findings), findings
+    # The row that drops and says what it adds covers both, and both take effect.
+    both = (
+        f'[[exceptions]]\nkey = "{PLACEHOLDERS}"\ndrop = ["user"]\nvalue = ["bob"]\n'
+        'reason = "measured"\n'
+    )
+    _write(scratch_repo, ADD_BOB + both)
+    assert _check(capsys) == (0, 'ok', [])
+    default = _get(frame.effective_frame(None), PLACEHOLDERS)
+    expected = [item for item in default if item != 'user'] + ['bob']
+    assert _get(frame.load(scratch_repo), PLACEHOLDERS) == expected
+
+
+def test_a_drop_row_alone_stays_stricter_and_passes(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, _drop_row(PLACEHOLDERS, ['user']))
+    assert _check(capsys) == (0, 'ok', [])
+
+
+def test_an_added_placeholder_is_a_name_the_scan_lets_through_only_with_its_row(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The scan reads the effective list, so the row is the one place the loosening is visible:
+    # `private-refs` itself passes with the addition, `frame --check` is what fails without a row.
+    path = '/'.join(['', 'home', 'bob', 'project'])
+    (scratch_repo / 'notes.md').write_text(path + '\n', encoding='utf-8')
+    subprocess.run(['git', 'add', 'notes.md'], cwd=scratch_repo, check=True)
+    assert main(['private-refs']) == 1
+    capsys.readouterr()
+    _write(scratch_repo, ADD_BOB)
+    assert main(['private-refs']) == 0
+    capsys.readouterr()
+    assert _check(capsys)[:2] == (1, 'unlisted-departure')
+
+
+def test_the_fathom_frame_lists_the_placeholders_it_adds(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fixture = Path(__file__).parent / 'fixtures' / 'adopter_frames' / 'fathom.toml'
+    text = fixture.read_text(encoding='utf-8')
+    _write(scratch_repo, text)
+    assert _check(capsys) == (0, 'ok', [])
+    own = _get(tomllib.loads(text), PLACEHOLDERS)
+    assert own, 'fathom adds placeholders'
+    # Without the row, the same additions fail.
+    rows = tomllib.loads(text)['exceptions']
+    kept = [row for row in rows if row['key'] != PLACEHOLDERS]
+    assert len(kept) == len(rows) - 1
+    _write(scratch_repo, text.split('[[exceptions]]')[0] + _fathom_rows(kept))
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'unlisted-departure')
+    assert all(PLACEHOLDERS in finding for finding in findings), findings
+
+
+def _fathom_rows(rows: list[dict[str, Any]]) -> str:
+    return ''.join(f'\n[[exceptions]]\n{frame.dumps_toml(row)}' for row in rows)
 
 
 # --- the release pull request convention ---------------------------------------------------------
