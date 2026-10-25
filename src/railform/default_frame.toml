@@ -142,6 +142,9 @@ package = ""
 sync_args = []
 test_command = ""
 lint_paths = ["."]
+# The paths `ty check` runs over, from the repository root: a string of shell words ("pkg tool.py")
+# or an array (["pkg", "tool.py"]); "" or [] runs no `ty`. `railform frame --check` fails an entry
+# a repository sets that is not "." or a path in the tree.
 type_check = ""
 
 [version]
@@ -188,6 +191,8 @@ os = ["ubuntu-latest", "windows-latest"]
 [presets.python-package.python]
 versions = ["3.11", "3.14"]
 test_command = "uv run --frozen python -m pytest -q"
+# `src` for the `src` layout; with `project.layout = "flat"` and a `python.package`, the package
+# itself (frame.py, `_layout_type_check`), so that repository states neither.
 type_check = "src"
 
 [presets.python-package.release]

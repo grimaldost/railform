@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,26 @@ def _git(root: Path, *args: str) -> str:
     return done.stdout.strip()
 
 
+def _lay_out_the_named_paths(root: Path, adopter: str) -> None:
+    """Create in `root` the package and the type-check paths the adopter's frame names.
+
+    `frame --check` also asks that these exist in the tree (`missing-path`); the scratch
+    repository is empty, so the paths the fixture names are made here, the fixture itself
+    staying as it was copied.
+    """
+    python = tomllib.loads((FIXTURES / f'{adopter}.toml').read_text(encoding='utf-8')).get(
+        'python', {}
+    )
+    entries = [python['package']] if python.get('package') else []
+    entries += frame.type_check_paths(python.get('type_check', []))
+    for entry in entries:
+        target = root / entry
+        if target.suffix:
+            target.touch()
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+
+
 def _verdict(capsys: pytest.CaptureFixture[str]) -> tuple[str, str, str]:
     captured = capsys.readouterr()
     return captured.out, captured.err, captured.out.splitlines()[-1]
@@ -65,6 +86,7 @@ def test_frame_check_passes_the_frame_of_each_adopter(
     adopter: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     shutil.copyfile(FIXTURES / f'{adopter}.toml', scratch_repo / 'railform.toml')
+    _lay_out_the_named_paths(scratch_repo, adopter)
     code = main(['frame', '--check'])
     out, err, last = _verdict(capsys)
     assert (code, last) == (0, 'railform-verdict: frame pass ok'), out + err
