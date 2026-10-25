@@ -507,6 +507,87 @@ def test_a_floor_that_does_not_map_or_a_repeated_prefix_exits_2(
     assert check(capsys)[:2] == (2, 'fail usage')
 
 
+def _adopted_with_older_tag(
+    root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> Repo:
+    """A repository with the annotated tag `v0.4.2` from before adoption, adopted for the first
+    time (which seeds `release.since = "v0.4.3"`), with an empty list of pull requests."""
+    repo = base(root)
+    tag(root, 'v0.4.2', repo.merge)
+    pulls_file(tmp_path, monkeypatch, [])
+    assert main(['adopt', '--pin', PIN]) == 0
+    capsys.readouterr()
+    frame = (root / 'railform.toml').read_text(encoding='utf-8')
+    assert 'since = "v0.4.3"' in frame
+    return repo
+
+
+def test_release_check_passes_after_adopt_with_the_seeded_floor(
+    scratch_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _adopted_with_older_tag(scratch_repo, tmp_path, monkeypatch, capsys)
+    code, verdict, findings = check(capsys)
+    assert (code, verdict) == (0, 'pass ok'), findings
+    assert findings == ['no release tag to judge']
+
+
+def test_a_row_added_after_adopt_without_since_is_told_to_set_it(
+    scratch_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _adopted_with_older_tag(scratch_repo, tmp_path, monkeypatch, capsys)
+    path = scratch_repo / 'railform.toml'
+    path.write_text(
+        path.read_text(encoding='utf-8')
+        + '\n[[release.tag_prefix]]\nprefix = "plugins/a/"\ntag = "a--v"\n',
+        encoding='utf-8',
+    )
+    code = main(['release-check'])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out.splitlines()[-1] == 'railform-verdict: release-check fail usage'
+    message = ' '.join(captured.err.split())
+    assert 'release.tag_prefix row "plugins/a/" (tag "a--v")' in message
+    assert 'release.since "v0.4.3" is not a tag of this row' in message
+    # The message names the fix: `since` on that row, to a tag of it.
+    assert 'set `since` on this row' in message
+    assert 'a--v' in message.split('set `since` on this row', 1)[1]
+
+
+def test_a_rows_own_wrong_since_is_told_to_name_a_tag_of_the_row(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_frame(
+        scratch_repo,
+        '[[release.tag_prefix]]\nprefix = "plugins/a/"\ntag = "a--v"\nsince = "v0.4.3"\n',
+    )
+    code = main(['release-check'])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out.splitlines()[-1] == 'railform-verdict: release-check fail usage'
+    message = ' '.join(captured.err.split())
+    assert 'its since "v0.4.3" is not a tag of this row' in message
+    assert 'set it to a tag of this row' in message
+
+
+def test_a_wrong_release_since_on_the_default_row_is_told_to_fix_release_since(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    write_frame(scratch_repo, '[release]\nsince = "x0.2.0"\n')
+    code = main(['release-check'])
+    captured = capsys.readouterr()
+    assert code == 2
+    message = ' '.join(captured.err.split())
+    assert 'release.since "x0.2.0" is not a tag of this row' in message
+    assert 'set release.since to a tag of this row' in message
+    assert 'set `since` on this row' not in message
+
+
 # --- the frame changes the verdict -------------------------------------------------------------
 
 DISABLED = (

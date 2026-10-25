@@ -5,6 +5,15 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+### Fixed
+
+- `railform release-check` now names the fix when a `release.tag_prefix` row without its own `since`
+  inherits a `release.since` that is not a tag of that row: it says to set `since` on the row (the
+  floor `railform adopt` seeds is a tag of the root row, the one with an empty prefix and `v` by
+  default, so a per-plugin row added after adoption hit this); for the root row it says to correct
+  `release.since` itself, and for a row's own wrong `since` to set it to a tag of the row. The exit
+  code (2) and the rule are unchanged.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added
