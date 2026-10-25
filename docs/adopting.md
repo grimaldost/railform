@@ -136,9 +136,10 @@ railform frame --check
 railform adopt --check
 ```
 
-`frame --check` fails with `unknown-key`, `wrong-type`, `bad-exception` (a row with no key, an
-empty reason, one that matches no departure, or a bad `drop`) or `unlisted-departure` (a
-departure that loosens a check and that no row lists). `adopt --check` writes nothing and fails with
+`frame --check` fails with `unknown-key`, `wrong-type`, `missing-path` (a `python.package` or a
+`python.type_check` entry that `railform.toml` sets and that is neither `.` nor a path in the tree),
+`bad-exception` (a row with no key, an empty reason, one that matches no departure, or a bad
+`drop`) or `unlisted-departure` (a departure that loosens a check and that no row lists). `adopt --check` writes nothing and fails with
 `drift` when an owned part differs from what adopt would write, `pin-mismatch` when the pin sites
 disagree, and `extra-pr-workflow` (step 5). The `frame` job of the shared workflow runs
 `frame --check` and the `hooks` job runs `adopt --check`, on every pull request, so a hand edit
@@ -335,7 +336,8 @@ uvx --from git+https://github.com/grimaldost/railform@<new 40-hex sha> railform 
 pre-commit `rev` and the tag-watch caller. Then run `railform frame --check` and
 `railform adopt --check`. A new default or preset can change what counts as a departure: an
 `exceptions` row for a key that no longer departs fails as `bad-exception` and is deleted, and a
-repository setting that the new frame rejects fails as `unknown-key` or `wrong-type`. A pin from
+repository setting that the new frame rejects fails as `unknown-key`, `wrong-type` or
+`missing-path`. A pin from
 before rows matched by key keeps its rows: each one that names its value still passes. Commit the
 result as one pull request that touches only the pin sites and, if needed, `railform.toml`.
 A stub left in a former hooks directory is deleted once every clone has run `railform arm`.

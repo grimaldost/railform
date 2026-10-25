@@ -528,6 +528,7 @@ def test_watching_more_paths_needs_no_row_and_watching_fewer_needs_one(
 def test_parameter_keys_are_never_departures(
     scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    (scratch_repo / 'something').mkdir()
     _write(
         scratch_repo,
         '[project]\ntype = "python-package"\nlayout = "flat"\n'
@@ -774,6 +775,7 @@ def test_a_departure_that_loosens_a_check_needs_a_row_that_names_its_key(
 def test_a_stricter_or_neutral_departure_needs_no_row(
     body: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    (scratch_repo / 'src').mkdir()
     _write(scratch_repo, body)
     assert _check(capsys) == (0, 'ok', [])
 
@@ -995,6 +997,10 @@ def test_an_unknown_key_at_any_depth_fails(
         '[python]\nversions = "3.11"\n',
         '[python]\nversions = [3.11]\n',
         '[python]\ntest_command = ["pytest"]\n',
+        '[python]\ntype_check = 1\n',
+        '[python]\ntype_check = [1]\n',
+        '[python]\ntype_check = [""]\n',
+        '[python]\ntype_check = "\'unclosed"\n',
         '[hooks]\ndir = 1\n',
         '[changelog]\nenabled = "yes"\n',
         '[changelog]\nconsumer_affecting = "loud"\n',
@@ -1353,3 +1359,195 @@ def test_the_default_frame_is_parsed_once_and_never_shared(
     assert 'mutated' not in second['commit']['types']
     assert second['changelog']['records'][0]['file'] == 'CHANGELOG.md'
     assert calls == []
+
+
+# --- the paths of the type check ---------------------------------------------------------------
+
+
+def _tree(repo: Path, *paths: str) -> None:
+    for name in paths:
+        target = repo / name
+        if name.endswith('/'):
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('', encoding='utf-8')
+
+
+_TYPE_CHECK_ROW = '[[exceptions]]\nkey = "python.type_check"\nreason = "measured"\n'
+
+
+@pytest.mark.parametrize(
+    'body',
+    [
+        '[python]\ntype_check = "pkg tool.py"\n',
+        '[python]\ntype_check = ["pkg", "tool.py"]\n',
+        '[python]\ntype_check = ["."]\n',
+        '[python]\ntype_check = "pkg/"\n',
+    ],
+)
+def test_a_type_check_path_that_is_in_the_tree_passes(
+    body: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _tree(scratch_repo, 'pkg/', 'tool.py')
+    _write(scratch_repo, body + _TYPE_CHECK_ROW)
+    assert _check(capsys) == (0, 'ok', [])
+
+
+@pytest.mark.parametrize(
+    ('body', 'missing'),
+    [
+        ('[python]\ntype_check = "pkg gone.py"\n', 'gone.py'),
+        ('[python]\ntype_check = ["pkg", "gone.py"]\n', 'gone.py'),
+        ('[python]\ntype_check = "nope"\n', 'nope'),
+        ('[python]\ntype_check = "../pkg"\n', '../pkg'),
+        ('[python]\ntype_check = ["pkg/../../x"]\n', 'pkg/../../x'),
+    ],
+)
+def test_a_type_check_path_that_is_not_in_the_tree_fails_before_anything_runs(
+    body: str, missing: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _tree(scratch_repo, 'pkg/', 'tool.py')
+    # Even with the row that declares the departure: the row excuses the value, not a typo.
+    _write(scratch_repo, body + _TYPE_CHECK_ROW)
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'missing-path')
+    assert [f for f in findings if 'python.type_check' in f and missing in f]
+
+
+def test_the_presets_type_check_is_not_asked_to_exist(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Only a path the repository's railform.toml sets is checked: the default `src` of the
+    # python-package preset names no file of this (empty) tree.
+    _write(scratch_repo, '[project]\ntype = "python-package"\n')
+    assert _check(capsys) == (0, 'ok', [])
+
+
+@pytest.mark.parametrize(
+    ('layout', 'tree', 'ok'),
+    [
+        ('flat', ('pkg/',), True),
+        ('flat', ('src/pkg/',), False),
+        ('src', ('src/pkg/',), True),
+        ('src', ('pkg/',), True),
+        ('src', (), False),
+        ('flat', (), False),
+        ('flat', ('pkg',), False),
+        ('src', ('src/pkg',), False),
+    ],
+)
+def test_a_package_that_is_not_in_the_tree_fails(
+    layout: str,
+    tree: tuple[str, ...],
+    ok: bool,
+    scratch_repo: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _tree(scratch_repo, *tree)
+    _write(scratch_repo, f'[project]\nlayout = "{layout}"\n[python]\npackage = "pkg"\n')
+    code, verdict, findings = _check(capsys)
+    if ok:
+        assert (code, verdict, findings) == (0, 'ok', [])
+    else:
+        assert (code, verdict) == (1, 'missing-path')
+        assert any('python.package' in finding and 'pkg' in finding for finding in findings)
+
+
+def test_a_package_of_dot_passes(scratch_repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write(scratch_repo, '[python]\npackage = "."\n')
+    assert _check(capsys) == (0, 'ok', [])
+
+
+def test_a_missing_path_comes_after_the_schema_errors_and_before_the_rows(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    both = '[python]\ntype_check = "nope"\ntest_command = "true"\n'
+    _write(scratch_repo, both)
+    code, verdict, findings = _check(capsys)
+    # The missing path is named first, and the unlisted test command is still reported.
+    assert (code, verdict) == (1, 'missing-path')
+    assert any('python.test_command' in finding for finding in findings)
+    _write(scratch_repo, both + '[python.nope]\nx = 1\n')
+    assert _check(capsys)[:2] == (1, 'unknown-key')
+
+
+def test_the_library_check_without_a_root_does_not_look_at_the_tree() -> None:
+    config = {
+        'python': {'type_check': 'nope'},
+        'exceptions': [{'key': 'python.type_check', 'reason': 'x'}],
+    }
+    assert frame.check(config) == ('ok', [])
+
+
+@pytest.mark.parametrize(
+    'body',
+    [
+        '[python]\ntype_check = ["src"]\n',
+        '[python]\ntype_check = "src"\n',
+        '[project]\nlayout = "flat"\n[python]\npackage = "pkg"\ntype_check = "pkg"\n',
+        '[project]\nlayout = "flat"\n[python]\npackage = "pkg"\ntype_check = ["pkg"]\n',
+        '[project]\nlayout = "flat"\n[python]\npackage = "pkg"\n',
+    ],
+)
+def test_a_type_check_equal_to_the_presets_needs_no_row(
+    body: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _tree(scratch_repo, 'src/', 'pkg/')
+    _write(scratch_repo, body)
+    assert _check(capsys) == (0, 'ok', [])
+
+
+def test_the_flat_layout_default_follows_the_package_and_a_row_for_it_is_bad(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _tree(scratch_repo, 'pkg/')
+    flat = '[project]\nlayout = "flat"\n[python]\npackage = "pkg"\n'
+    effective = _effective(scratch_repo, flat, capsys)
+    assert effective['python']['type_check'] == 'pkg'
+    _write(scratch_repo, flat + _TYPE_CHECK_ROW)
+    assert _check(capsys)[:2] == (1, 'bad-exception')
+
+
+def test_a_type_check_that_adds_a_path_to_the_package_needs_a_row(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _tree(scratch_repo, 'pkg/', 'tool.py')
+    body = (
+        '[project]\nlayout = "flat"\n[python]\npackage = "pkg"\ntype_check = ["pkg", "tool.py"]\n'
+    )
+    _write(scratch_repo, body)
+    assert _check(capsys)[:2] == (1, 'unlisted-departure')
+    _write(scratch_repo, body + _TYPE_CHECK_ROW)
+    assert _check(capsys) == (0, 'ok', [])
+
+
+@pytest.mark.parametrize(
+    ('type_check', 'row_value'),
+    [
+        ('"tests"', '"tests"'),
+        ('"tests"', '["tests"]'),
+        ('["tests"]', '"tests"'),
+        ('["a", "b"]', '"a b"'),
+        ('"a b"', '["a", "b"]'),
+        ('"a b"', '"a b"'),
+    ],
+)
+def test_a_row_value_for_type_check_matches_the_departure_in_either_form(
+    type_check: str, row_value: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A string and an array that name the same paths are one value, in the row as in the file.
+    _tree(scratch_repo, 'tests/', 'a/', 'b/')
+    row = f'[[exceptions]]\nkey = "python.type_check"\nvalue = {row_value}\nreason = "measured"\n'
+    _write(scratch_repo, f'[python]\ntype_check = {type_check}\n' + row)
+    assert _check(capsys) == (0, 'ok', [])
+
+
+@pytest.mark.parametrize('row_value', ['"other"', '["tests", "more"]', '"it\'s"', '7', '[1]'])
+def test_a_row_value_for_type_check_that_names_other_paths_is_bad(
+    row_value: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _tree(scratch_repo, 'tests/')
+    row = f'[[exceptions]]\nkey = "python.type_check"\nvalue = {row_value}\nreason = "measured"\n'
+    _write(scratch_repo, '[python]\ntype_check = "tests"\n' + row)
+    assert _check(capsys)[:2] == (1, 'bad-exception')

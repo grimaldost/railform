@@ -5,6 +5,24 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+### Fixed
+
+- `python.type_check` is the paths `ty check` runs over: an array of strings, or a string of
+  shell words that is split into one argument per word. At 0.2.0 `["claude_archive", "archive.py"]`
+  was `wrong-type`, and `"claude_archive archive.py"` became one quoted argument, so the
+  pipeline ran `ty check 'claude_archive archive.py'` on a path that does not exist. A string and
+  an array that name the same paths are one value (`["src"]` is not a departure from `"src"`).
+- `railform frame --check` fails a `python.type_check` entry, or a `python.package`, that
+  `railform.toml` sets and that is neither `.` nor a path in the tree, as the new verdict code
+  `missing-path` (after `wrong-type`, before `bad-exception`): it was a failed `ty` step late in
+  CI. The preset's own `src` is not looked for.
+- A `python-package` repository with `project.layout = "flat"` and a `python.package` and no
+  `python.type_check` type-checks its package (`ty check claude_archive`); it was `ty check src`,
+  and changing it needed an `exceptions` row for a path no row could justify. A `type_check` of
+  its own still departs and needs the row. A flat-layout repository whose `python.type_check` row
+  only restated its package must drop both the `type_check` and the row, or `frame --check` fails
+  `bad-exception`; a row is still needed when `type_check` adds a path, such as a script.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added

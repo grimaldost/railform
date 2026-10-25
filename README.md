@@ -98,6 +98,8 @@ reason = "the integration suite runs in a separate workflow during the migration
 A row matches its departure by key. It may also carry `value`, which must then equal the
 departed value; that is the form every row had before, and it still passes. A row whose key does
 not depart, or whose `value` is not the departed one, is a bad row (`bad-exception`).
+For `python.type_check` a string and an array that name the same paths are the same value, in the
+file and in a row.
 
 These departures loosen a check (`LOOSENING` in `src/railform/frame.py`):
 
@@ -162,6 +164,19 @@ Some keys hold rows rather than plain values:
   the records, the list is not a parameter key: a list with an entry the preset lacks leaves more
   unread and needs an `exceptions` row, and a shorter one needs none. A lock in a subdirectory
   (`plugins/a/uv.lock`) is not matched by `uv.lock`; list it.
+- `python.type_check` is the paths `ty check` runs over, from the repository root: an array
+  (`["claude_archive", "archive.py"]`) or a string of shell words (`"claude_archive archive.py"`),
+  each word one argument; `""` or `[]` runs no `ty`. A string and an array that name the same paths
+  are the same value, so `["src"]` is not a departure from the preset's `"src"`. The
+  `python-package` preset type-checks `src`; a repository with `project.layout = "flat"` and a
+  `python.package` type-checks that package instead, with no `type_check` and no `exceptions` row
+  of its own (a `type_check` that adds a path, such as a script beside the package, still departs
+  and needs the row). `frame --check` looks in the tree for what `railform.toml` sets: every
+  entry of its `python.type_check` must be `.` or an existing path inside the repository, and
+  its `python.package` `.` or a directory at the root, or under `src/` in the `src` layout. The
+  preset's own `src` is not looked for, and a row does not excuse a path that is not there. The
+  lookup uses the file system of the machine that runs it, so a name that differs from the one on
+  disk only in case passes on Windows and macOS and fails on a Linux runner: write the case as it is.
 - `version.sites` is an array of `{ path, pattern, authored }` rows: the pattern's first group is
   the version, and `authored` (default `false`) marks a site that is checked and never rewritten.
 - `release.metadata_paths` holds globs of the release metadata (the manifests). The release check
@@ -170,8 +185,10 @@ Some keys hold rows rather than plain values:
 
 - `railform frame` prints the effective frame as TOML, and `--json` prints it as one JSON object.
 - `railform frame --check` fails on an unknown key (`unknown-key`), a value of the wrong type
-  (`wrong-type`), an exceptions row with no key, an empty reason, matching no departure or with a
-  bad `drop` (`bad-exception`), and a departure that loosens a check and that no row lists
+  (`wrong-type`), a `python.type_check` entry or a `python.package` that `railform.toml` sets and
+  that is neither `.` nor a path in the tree (`missing-path`; see `python.type_check` above), an
+  exceptions row with no key, an empty reason, matching no departure or with a bad `drop`
+  (`bad-exception`), and a departure that loosens a check and that no row lists
   (`unlisted-departure`), naming the first in that order.
 - `railform frame --github-output` appends one `name=value` line per key to the file
   `$GITHUB_OUTPUT` names, as `<table>_<key>`; lists, tables, booleans and numbers are written as
@@ -601,7 +618,7 @@ checks that the input is 40 hexadecimal characters before anything is installed.
   parameters, and `checks` runs each line in bash, in order, stopping at the first that fails.
   For `python-package` it is `uv lock --check`, `uv sync --frozen` (plus `python.sync_args`),
   `uv pip install` of `ci.setup.extra_installs` when there are any, `ruff format --check` and
-  `ruff check` over `python.lint_paths`, `ty check` over `python.type_check`, and
+  `ruff check` over `python.lint_paths`, `ty check` over the paths of `python.type_check`, and
   `python.test_command`; `python-scripts` is the same without `ty` (its `python.type_check` is
   empty); `plugin-marketplace` runs ruff from `uvx` at `ci.ruff_version`, then
   `python.test_command`. A test command of several lines is one command per line. The lines run
