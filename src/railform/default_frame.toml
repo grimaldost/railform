@@ -71,10 +71,13 @@ types = [
 # the craft-collection pilot). Both branches name the same products, each as a whole word:
 # Claude (but not the file CLAUDE.md), GPT and ChatGPT, Anthropic, and Copilot (GitHub Copilot
 # included). A name inside a longer word, such as an address at gptools.example, is no
-# attribution.
+# attribution. The stamp branch holds only a line that opens with "Generated with": after
+# nothing but non-word characters (an emoji, a quote mark `>`, a bullet `-` or `*`, bold
+# markers), a list number or a word and a colon (a subject's `type(scope): ` prefix, for
+# one), so prose that describes the rule mid-sentence passes.
 attribution_patterns = [
     '^(Co-Authored-By|Signed-off-by|Assisted-by|Generated-by):.*\b(Claude\b(?!\.md\b)|(Chat)?GPT(?![A-Za-z])|Anthropic\b|Copilot\b)',
-    '\bGenerated with\b.*\b(Claude\b(?!\.md\b)|(Chat)?GPT(?![A-Za-z])|Anthropic\b|Copilot\b)',
+    '^(?:[a-z]+(?:\([^)]*\))?!?:\s+)?(?:\W|\d+[.)])*Generated with\b.*\b(Claude\b(?!\.md\b)|(Chat)?GPT(?![A-Za-z])|Anthropic\b|Copilot\b)',
 ]
 
 [changelog]

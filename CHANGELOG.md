@@ -5,6 +5,16 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+### Fixed
+
+- The default stamp arm of `commit.attribution_patterns` is anchored at the start of the line.
+  Before, `Generated with` matched anywhere, so prose that described the rule next to a product
+  name (a pull request body saying the check rejects a line that says Generated with Claude Code)
+  failed `pr-text`. Now the line must open with the stamp, after only non-word characters (an
+  emoji, `>`, `-`, `*`, bold markers), a list number or a word and a colon such as a
+  `type(scope): ` prefix. A stamp pasted mid-sentence or inside an HTML tag passes; the Claude Code stamp line, `Generated with Claude` and every trailer case
+  still fail.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added
