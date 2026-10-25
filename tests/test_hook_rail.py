@@ -103,7 +103,10 @@ def railform_under_test(
     if 'railform' not in _session_cache:
         snapshot = tmp_path_factory.mktemp('railform-under-test')
         listed = _run(ROOT, ['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'])
-        assert listed.returncode == 0, listed.stderr
+        if listed.returncode != 0:
+            pytest.skip(
+                f'not a git checkout, so the files git would track are unknown: {listed.stderr}'
+            )
         for name in sorted(set(filter(None, listed.stdout.split('\0')))):
             source = ROOT / name
             if source.is_file():
