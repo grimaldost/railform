@@ -5,6 +5,18 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+### Fixed
+
+- The test suite no longer depends on the runner's global git configuration. git reads a global
+  ignore file at `$XDG_CONFIG_HOME/git/ignore` (`~/.config/git/ignore` when that is unset), which
+  `GIT_CONFIG_GLOBAL` does not replace, so a runner that ignored `/.mcp.json` there failed
+  `test_every_default_glob_guards_its_path`. `tests/conftest.py` now runs every test with `HOME`,
+  `USERPROFILE`, `XDG_CONFIG_HOME`, `PRE_COMMIT_HOME` and the uv tool directories in temporary
+  directories, and `tests/test_suite_isolation.py` runs that test in a pytest subprocess whose
+  outer environment carries the ignore file. The tests that read the clone's tracked files through
+  git skip with a reason in a copy of the tree without `.git`.
+- `CONTRIBUTING.md` states the 4 GB memory floor of the test command.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added

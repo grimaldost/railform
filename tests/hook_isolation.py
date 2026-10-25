@@ -18,6 +18,8 @@ What still reaches the tests:
 - on Linux and macOS (derived from the tools' documented paths, not run), the swap stops the
   user-level pip and uv configuration and `~/.netrc` from reaching the hooks and the fixtures'
   `uv lock`; system-wide pip and uv configuration still reaches them.
+`tests/conftest.py` applies the same variables, plus `UV_TOOL_DIR` and `UV_TOOL_BIN_DIR`, to every
+test through `scratch_repo`, not only to those that run hooks.
 A developer behind a private package mirror sets `PIP_INDEX_URL` and `UV_INDEX_URL` in the
 environment.
 
