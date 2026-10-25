@@ -270,14 +270,23 @@ The attribution rule applies to every message, merges and the pull request's tit
 included: no line may match a pattern of `commit.attribution_patterns` (Python regular
 expressions, matched case-insensitively per line). The default set is keel's. It rejects a trailer
 that names Claude, GPT, Anthropic or Copilot as author, co-author, signer or assistant, and a
-"generated with" stamp that names one of them anywhere later on the line (keel's stamp
-arm named Claude only, directly after the words; the wider reach comes from the mantis-research
-script and craft-collection's check). Each name is a whole word: ChatGPT and GitHub Copilot
-match, an address at `gptools.example` does not, and neither does the file `CLAUDE.md`, so
+"generated with" stamp that names one of them anywhere later on the line, provided the line
+opens with the stamp (keel's stamp arm named Claude only, directly after the words; the wider
+reach comes from the mantis-research script and craft-collection's check). Each name is a whole
+word: ChatGPT and GitHub Copilot match, an address at `gptools.example` does not, and neither
+does the file `CLAUDE.md`, so
 "Generated with the sync script from CLAUDE.md" passes while "Generated with Claude" does not.
-Dependabot bodies quote upstream release notes, and a line
-that opens "Generated with" and names one of the products later could, rarely, trip the stamp
-pattern.
+The stamp arm is anchored at the start of the line: only non-word characters (an emoji, a
+quote mark `>`, a bullet `-` or `*`, bold markers), a list number or a word and a colon
+(such as a subject's `type(scope): ` prefix) may come before "Generated with". Prose that
+describes the rule in the middle of a sentence, such as "the check rejects a line that says
+Generated with Claude Code", passes. The trade-off: a stamp placed after any word passes too
+(mid-sentence, or inside an HTML tag such as `<sub>`), since the real stamp always opens its line.
+The reverse holds as well: a line that opens with a quote mark or a code span and then says
+"Generated with" and a product name still fails, so wrap prose to keep such a phrase off the
+start of a line.
+Dependabot bodies quote upstream release notes, and a line that opens "Generated with" and names
+one of the products later could, rarely, trip the stamp pattern.
 
 When both rules fail, the verdict code is `subject`; a failure of the attribution rule alone is
 `attribution`. An unreadable message file, a bad range, a missing event payload and an invalid
