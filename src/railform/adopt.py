@@ -10,6 +10,9 @@ Development-rails spec, §7, invented here; interface contract, section 9. Adopt
   marker lines;
 - in `.github/dependabot.yml`, the ignore entry for railform in the `github-actions` update,
   between marker lines (and that update block, when there is none);
+- in `.gitattributes`, between marker lines, `<hooks.dir>/** text eol=lf` and, when adopt writes
+  stubs, the same for the stub directory, so that `core.autocrlf` and `* text=auto` never turn the
+  hook files into CRLF in a checkout or a worktree (the region goes after every other line);
 - whole files: the hook wrappers in `hooks.dir` (staged as their exact bytes, 100755 in the git
   index), `.github/workflows/railform-tag-watch.yml` (the caller of the reusable `tag-watch.yml`,
   written from its template when absent and `release.enabled` is true, never when the release
@@ -20,13 +23,15 @@ Development-rails spec, §7, invented here; interface contract, section 9. Adopt
 
 Everything outside those parts is kept byte for byte, line endings included: files are read and
 written as bytes, and lines adopt adds take the file's own line ending. A stub replaces each hook
-in the previous hooks directory, so that a clone armed there fails until it runs `railform arm`;
-a tracked file there that is not 100755 is reported and left alone. Adopt refuses, before any
-write, a target path with a symlink or junction on the way and a hooks directory inside `.git`.
+in the previous hooks directory, so that a clone armed there fails until it runs `railform arm`
+(the message gives the one-shot form `git -c core.hooksPath=<dir> <command>` too); a tracked
+100644 file there is replaced and named, one with unstaged changes, another tracked mode or an
+untracked one is reported and left alone. Adopt refuses, before any write, a target path with a
+symlink or junction on the way and a hooks directory inside `.git`.
 
 `railform adopt --check` writes nothing. It fails with `drift` when an owned part differs from
-what adopt would write (a missing pin site included, and a missing tag-watch caller while
-`release.enabled` is true), or when a region does not hold its parts
+what adopt would write (a missing pin site included, a missing `.gitattributes` region, and a
+missing tag-watch caller while `release.enabled` is true), or when a region does not hold its parts
 structurally: the jobs `railform` and `gate` under `jobs:`, exactly the two entries of `repos:`,
 the railform element of a github-actions `ignore:` list. Wrappers are judged by their index
 entry: mode 100755 and the exact LF bytes. It fails with `pin-mismatch` when the pins differ
@@ -78,6 +83,8 @@ END = '# <<< railform'
 CI_PATH = '.github/workflows/ci.yml'
 PRE_COMMIT_PATH = '.pre-commit-config.yaml'
 DEPENDABOT_PATH = '.github/dependabot.yml'
+GITATTRIBUTES_PATH = '.gitattributes'
+REGULAR = '100644'
 WORKFLOWS_DIR = '.github/workflows'
 TAG_WATCH_NAME = 'railform-tag-watch.yml'
 TAG_WATCH_PATH = f'{WORKFLOWS_DIR}/{TAG_WATCH_NAME}'
@@ -116,6 +123,8 @@ _TAG_WATCH_INPUT = re.compile(r'^([ \t]*railform-sha:[ \t]*)([^\r\n]*?)([ \t]*\r
 _TAG_WATCH_USES_LINE = re.compile(r'^([ \t]*uses:[ \t]*)([^\r\n]*?)([ \t]*\r?)$', re.MULTILINE)
 # How an edited caller is cleared: adopt never writes over it.
 _TAG_WATCH_RESTORE = '; to restore it, delete the file and run railform adopt'
+# A line of the owned region in `.gitattributes` that pins a stub directory to LF.
+_STUB_ATTRIBUTE = re.compile(r'"?[^\s"].*/\*\*"? text eol=lf')
 _TOKEN = re.compile(r'__([A-Z][A-Z_]*)__')
 _OTHER_BREAKS = re.compile('\r(?!\n)|[\x85\u2028\u2029]')
 _PLAIN_JOB_ID = re.compile(r'[A-Za-z_][A-Za-z0-9_-]*')
@@ -1048,11 +1057,46 @@ def _refuse_links(root: Path, paths: list[str]) -> None:
 
 
 def _stub(directory: str) -> str:
+    quoted = shlex.quote(directory)
     message = (
         f'railform: the git hooks of this repository moved to {directory}; arm this clone with '
-        f'`railform arm` (or: git config core.hooksPath {directory})'
+        f'`railform arm` (or: git config core.hooksPath {quoted}); to run one command without '
+        f'arming: git -c core.hooksPath={quoted} <command>'
     )
     return '\n'.join(_fill('hook-stub.sh', MESSAGE=shlex.quote(message))) + '\n'
+
+
+def _has_unstaged_changes(root: Path, path: str) -> bool:
+    """Whether the working copy of a tracked file differs from the index."""
+    done = git(root, 'diff', '--quiet', '--no-ext-diff', '--', path)
+    if done.returncode not in (0, 1):
+        raise GitError(f'git diff failed: {done.stderr.decode("utf-8", "replace").strip()}')
+    return done.returncode == 1
+
+
+def _attribute_line(directory: str) -> str:
+    """The `.gitattributes` line that pins the files under `directory` to LF: a `[` in the name
+    escaped, and the pattern quoted when it holds white space."""
+    escaped = directory.replace('\\', '\\\\').replace('[', '\\[')
+    if escaped[:1] in ('#', '!'):
+        escaped = '\\' + escaped
+    pattern = f'{escaped}/**'
+    if re.search(r'\s', pattern):
+        pattern = '"' + pattern.replace('\\', '\\\\') + '"'
+    return _fill('gitattributes', PATTERN=pattern)[0]
+
+
+def _plan_gitattributes(text: str | None, lines: list[str]) -> str:
+    """The text of `.gitattributes` as adopt writes it: the owned region holds `lines`, replaced
+    in place when the file has one, else appended after every other line (the last line that
+    matches a file decides its attributes, so the region follows any `* text=auto`)."""
+    doc = _doc(GITATTRIBUTES_PATH, text or '')
+    region = _find_region(doc)
+    if region is None:
+        edit = _Edit(len(doc.lines), len(doc.lines), _region_lines(lines, 0))
+    else:
+        edit = _Edit(region.begin, region.end + 1, _region_lines(lines, region.indent))
+    return _apply(doc, [edit])
 
 
 PR_EVENTS = ('pull_request', 'pull_request_target')
@@ -1256,15 +1300,26 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
     previous, skipped = _previous_hooks_dir(root, frame, directory, entries)
     notes += skipped
     stubs: dict[str, str] = {}
+    replaced: dict[str, str] = {}
     for hook in names if previous else []:
         path = f'{previous}/{hook}'
         mode = entries.get(path)
-        if mode is not None and mode != EXECUTABLE:
-            notes.append(f'{path}: tracked as {mode}, not a hook wrapper; left as it is, no stub')
+        if mode == REGULAR:
+            # A tracked 100644 file named after a hook is an old hook that lost its mode, as in
+            # mantis-research and fathom; the stub takes its place and the output names it.
+            if _has_unstaged_changes(root, path):
+                notes.append(
+                    f'{path}: tracked as {mode} with unstaged changes; left as it is, no stub'
+                )
+                continue
+            replaced[path] = mode
+        elif mode is not None and mode != EXECUTABLE:
+            notes.append(f'{path}: tracked as {mode}, not a hook file; left as it is, no stub')
+            continue
         elif mode is None and (root / path).exists():
             notes.append(f'{path}: exists and is not tracked; left as it is, no stub')
-        else:
-            stubs[path] = _stub(directory)
+            continue
+        stubs[path] = _stub(directory)
     # Defensive: the choice above passes over any directory that folds to hooks.dir, a
     # core.hooksPath spelled differently included (reported, not taken), so no stub lands on a
     # wrapper today; this stops it before any write if that ever changes.
@@ -1274,6 +1329,14 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
             f'a stub in {previous} would land on a wrapper in {directory}; the two directories '
             'are one as Windows reads them'
         )
+    # The wrappers and the stubs are pinned to LF, whatever `core.autocrlf` and a `* text=auto`
+    # line say, so that a checkout or a worktree holds the bytes the index does.
+    pinned = [directory, *([previous] if stubs and previous else [])]
+    attributes_text = _read(root, GITATTRIBUTES_PATH)
+    attribute_lines = [_attribute_line(name) for name in pinned]
+    planned.append(
+        (GITATTRIBUTES_PATH, attributes_text, _plan_gitattributes(attributes_text, attribute_lines))
+    )
     writes = [(path, new) for path, old, new in planned if new is not None and new != old]
     targets = [path for path, _ in writes] + list(wrappers) + list(stubs)
     _refuse_links(root, [frame_module.CONFIG_NAME, *targets] if seed is not None else targets)
@@ -1289,7 +1352,10 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
             findings.append(f'{path}: written, 100755 in the git index')
     for path, text in stubs.items():
         if _put_executable(root, path, text):
-            findings.append(f'{path}: stub written; it fails until the clone runs railform arm')
+            was = f' (it replaces the file tracked as {replaced[path]})' if path in replaced else ''
+            findings.append(
+                f'{path}: stub written{was}; it fails until the clone runs railform arm'
+            )
     if not findings:
         findings.append('nothing to change')
     findings += notes
@@ -1402,6 +1468,31 @@ def _check(root: Path) -> Verdict:
             region = _find_region(_doc(DEPENDABOT_PATH, dependabot_text))
             for message in _differences(DEPENDABOT_PATH, dependabot_text, expected, region):
                 drift(message)
+        except AdoptError as exc:
+            drift(str(exc))
+
+    attributes_text = _read(root, GITATTRIBUTES_PATH)
+    if attributes_text is None:
+        drift(f'{GITATTRIBUTES_PATH}: missing; run railform adopt')
+    else:
+        try:
+            attributes = _doc(GITATTRIBUTES_PATH, attributes_text)
+            attributes_region = _find_region(attributes)
+            if attributes_region is None:
+                drift(_NO_REGION.format(path=GITATTRIBUTES_PATH))
+            else:
+                # The stub directory depends on the clone's local configuration, so it is not
+                # worked out again: a line of the same shape after the first is accepted.
+                inside = attributes.lines[attributes_region.begin + 1 : attributes_region.end]
+                held = [line.rstrip('\r\n') for line in inside]
+                stub_lines = [line for line in held[1:] if _STUB_ATTRIBUTE.fullmatch(line)]
+                expected = _plan_gitattributes(
+                    attributes_text, [_attribute_line(directory), *stub_lines]
+                )
+                for message in _differences(
+                    GITATTRIBUTES_PATH, attributes_text, expected, attributes_region
+                ):
+                    drift(message)
         except AdoptError as exc:
             drift(str(exc))
 
