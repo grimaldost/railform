@@ -22,9 +22,24 @@ stops and ellipsis characters (`...`, `…`).
 
 The names half reads a private list of terms from the one file that the variable named by
 `private_refs.names_file_env` points to, and nowhere else. It matches whole tokens, case
--insensitively: the characters on either side of a term are not letters or digits. Without the
-variable or the file it is silent, which is why it is silent in CI; `--require-names` makes a
-missing file a failure. No list of names is part of this package.
+-insensitively: the characters on either side of a term are not letters or digits. With the
+variable unset it is silent, which is why it is silent in CI; `--require-names` makes an unset
+variable a failure. A variable set to a path that is not a file fails without the flag
+(`names-file-missing`): a stale path would otherwise turn the half off unnoticed on the very
+machine meant to be checking; a file that exists but cannot be read is a usage error (exit 2).
+No list of names is part of this package.
+
+`private_refs.names_enabled = false` in the frame turns the names half off, for a private
+repository whose tracked files carry the listed names by design, on machines where the variable is
+set (where it is unset the half is already silent); the frame check lists it as a loosening that
+needs an `exceptions` row with a reason. The paths half stays on, and a finding line says the
+names half is off.
+
+With `--diff`, the private-reference settings (the switch, the variable name and the
+placeholders) are read from the `railform.toml` committed at the merge base of the range, so the
+range cannot switch the names half off or add a placeholder for the path it carries. A merge base
+without a `railform.toml` leaves the working tree's frame in force. Without `--diff` the working
+tree's frame judges.
 
 `--event PATH` adds the title and body of the pull request in a GitHub event payload, read as
 `railform pr-text` reads them (a `null` or absent value is empty text) and labelled
@@ -43,7 +58,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from railform import commit_lane, frame, pr_text
 from railform.verdict import Verdict
@@ -56,6 +71,7 @@ VERB = 'private-refs'
 HOME_PATH = 'home-path'
 PRIVATE_NAME = 'private-name'
 NAMES_FILE_MISSING = 'names-file-missing'
+NAMES_OFF_NOTE = 'private_refs.names_enabled is false: the names half is off'
 
 REDACTED = '<name>'
 # A user segment containing one of these is a placeholder, whatever the list says.
@@ -299,8 +315,8 @@ def _tracked_sources(root: Path, *pathspec: str) -> list[Source]:
     return found
 
 
-def sources_for_diff(root: Path, spec: str) -> list[Source]:
-    """The files a range changes, read at its tip, and the range's commit messages."""
+def split_range(spec: str) -> tuple[str, str]:
+    """The base and the tip (default HEAD) of a `BASE...TIP` or `BASE..TIP` range."""
     if '...' in spec:
         base, _, tip = spec.partition('...')
     elif '..' in spec:
@@ -309,7 +325,12 @@ def sources_for_diff(root: Path, spec: str) -> list[Source]:
         raise UsageError(f'--diff expects BASE...HEAD, not {spec!r}')
     if not base:
         raise UsageError(f'--diff expects BASE...HEAD, not {spec!r}')
-    tip = tip or 'HEAD'
+    return base, tip or 'HEAD'
+
+
+def sources_for_diff(root: Path, spec: str) -> list[Source]:
+    """The files a range changes, read at its tip, and the range's commit messages."""
+    base, tip = split_range(spec)
     diff = ['diff', '--no-renames', '--name-only', '-z', '--diff-filter=d', spec]
     changed = _git(root, '-c', 'core.quotepath=off', *diff)
     found: list[Source] = []
@@ -364,9 +385,13 @@ def sources_for_text(files: list[str]) -> list[Source]:
 # --- the verb ----------------------------------------------------------------------------------
 
 
+def _variable_value(variable: str) -> str:
+    return os.environ.get(variable, '') if variable else ''
+
+
 def _read_names(variable: str) -> Names | None:
-    """The compiled names file, or None when the variable or the file is missing."""
-    value = os.environ.get(variable, '') if variable else ''
+    """The compiled names file, or None when the variable is unset or does not name a file."""
+    value = _variable_value(variable)
     if not value:
         return None
     path = Path(value)
@@ -405,7 +430,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         '--require-names',
         action='store_true',
-        help='fail with names-file-missing when the names file cannot be read',
+        help='also fail with names-file-missing when the names variable is unset',
     )
 
 
@@ -419,12 +444,20 @@ def run(args: argparse.Namespace) -> Verdict:
             VERB, f'{VERB}: {Checker(frozenset(), Names(None, ())).label(str(exc))}'
         )
     settings = effective['private_refs']
+    try:
+        if args.diff:
+            settings = _settings_at_merge_base(root, args.diff, settings)
+    except (UsageError, frame.FrameError) as exc:
+        return Verdict.usage(
+            VERB, f'{VERB}: {Checker(frozenset(), Names(None, ())).label(str(exc))}'
+        )
     placeholders = frozenset(str(name).lower() for name in settings['placeholders'])
     variable = str(settings['names_file_env'])
+    names_enabled = bool(settings['names_enabled'])
     names: Names | None = None
     checker = Checker(placeholders, Names(None, ()))
     try:
-        names = _read_names(variable)
+        names = _read_names(variable) if names_enabled else None
         checker = Checker(placeholders, names or Names(None, ()))
         if args.paths:
             sources = sources_for_paths(root, list(args.paths))
@@ -438,14 +471,28 @@ def run(args: argparse.Namespace) -> Verdict:
         # A message may carry a path the user gave: it is redacted like a finding's label.
         return Verdict.usage(VERB, f'{VERB}: {checker.label(str(exc))}')
     findings: list[tuple[str, str]] = []
-    if names is None and args.require_names:
+    notes: list[str] = []
+    if not names_enabled:
+        notes.append(NAMES_OFF_NOTE)
+    elif names is None and (args.require_names or _variable_value(variable)):
+        # Unset: only --require-names asks for the file. Set to a path that is not a file: a
+        # stale path fails closed, whatever the flags say.
         shown = f'${variable}' if variable else 'private_refs.names_file_env'
         findings.append((NAMES_FILE_MISSING, f'the names file named by {shown} is not readable'))
     for source in sources:
         findings.extend(checker.scan(source))
     if not findings:
-        return Verdict.ok(VERB)
+        return Verdict.ok(VERB, tuple(notes))
     for code in (NAMES_FILE_MISSING, HOME_PATH, PRIVATE_NAME):
         if any(found == code for found, _ in findings):
-            return Verdict.fail(VERB, code, tuple(line for _, line in findings))
+            return Verdict.fail(VERB, code, (*notes, *(line for _, line in findings)))
     raise AssertionError('unreachable: every finding carries one of the three codes')
+
+
+def _settings_at_merge_base(root: Path, spec: str, current: dict[str, Any]) -> dict[str, Any]:
+    """The `private_refs` settings that judge the range `spec`: the merge base's, so the range
+    cannot loosen the check it is judged by; `current` when that commit has no `railform.toml`."""
+    base, tip = split_range(spec)
+    commit = frame.merge_base(root, base, tip)
+    at_base = frame.effective_frame_at(root, commit)
+    return current if at_base is None else at_base['private_refs']
