@@ -187,16 +187,16 @@ def _ty(**tables: dict[str, Any]) -> list[str]:
 
 
 def test_a_type_check_of_two_paths_in_one_string_is_two_arguments() -> None:
-    # The value claude-archive wrote before the move to railform: it must not become one quoted
+    # The value acme-tool wrote before the move to railform: it must not become one quoted
     # argument, which `ty` would take for a single path that does not exist.
-    assert _ty(python={'type_check': 'claude_archive archive.py'}) == [
-        'uv run --frozen ty check claude_archive archive.py'
+    assert _ty(python={'type_check': 'acme_tool tool.py'}) == [
+        'uv run --frozen ty check acme_tool tool.py'
     ]
 
 
 def test_a_type_check_list_is_one_argument_per_path() -> None:
-    assert _ty(python={'type_check': ['claude_archive', 'archive.py']}) == [
-        'uv run --frozen ty check claude_archive archive.py'
+    assert _ty(python={'type_check': ['acme_tool', 'tool.py']}) == [
+        'uv run --frozen ty check acme_tool tool.py'
     ]
     assert _ty(python={'type_check': ['my pkg', 'x.py']}) == [
         "uv run --frozen ty check 'my pkg' x.py"
@@ -214,30 +214,29 @@ def test_an_empty_type_check_list_runs_no_ty() -> None:
 
 
 def test_a_flat_layout_python_package_type_checks_its_package() -> None:
-    flat = {'project': {'layout': 'flat'}, 'python': {'package': 'claude_archive'}}
-    assert _ty(**flat) == ['uv run --frozen ty check claude_archive']
+    flat = {'project': {'layout': 'flat'}, 'python': {'package': 'acme_tool'}}
+    assert _ty(**flat) == ['uv run --frozen ty check acme_tool']
     # Red proof: without the layout the preset's src stays.
-    assert _ty(python={'package': 'claude_archive'}) == ['uv run --frozen ty check src']
+    assert _ty(python={'package': 'acme_tool'}) == ['uv run --frozen ty check src']
     # A flat layout with no package has nothing to follow.
     assert _ty(project={'layout': 'flat'}) == ['uv run --frozen ty check src']
     # An explicit type_check is never overridden by the package.
-    explicit = {'package': 'claude_archive', 'type_check': 'x'}
+    explicit = {'package': 'acme_tool', 'type_check': 'x'}
     assert _ty(project={'layout': 'flat'}, python=explicit) == ['uv run --frozen ty check x']
 
 
-def test_claude_archive_frame_end_to_end(
+def test_acme_tool_frame_end_to_end(
     scratch_repo: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # The acceptance of the move: claude-archive's own value, through the verb the workflow runs.
-    (scratch_repo / 'claude_archive').mkdir()
-    (scratch_repo / 'claude_archive' / '__init__.py').write_text('', encoding='utf-8')
-    (scratch_repo / 'archive.py').write_text('', encoding='utf-8')
+    # The acceptance of the move: acme-tool's own value, through the verb the workflow runs.
+    (scratch_repo / 'acme_tool').mkdir()
+    (scratch_repo / 'acme_tool' / '__init__.py').write_text('', encoding='utf-8')
+    (scratch_repo / 'tool.py').write_text('', encoding='utf-8')
     config = (
-        '[project]\ntype = "python-package"\nlayout = "flat"\n'
-        '[python]\npackage = "claude_archive"\n'
+        '[project]\ntype = "python-package"\nlayout = "flat"\n[python]\npackage = "acme_tool"\n'
     )
     row = '[[exceptions]]\nkey = "python.type_check"\nreason = "a script beside the package"\n'
     target = tmp_path / 'github_output'
@@ -252,12 +251,10 @@ def test_claude_archive_frame_end_to_end(
         return [s for s in _outputs(target)['pipeline'].splitlines() if 'ty check' in s]
 
     # No type_check and no exceptions row: the package is followed.
-    assert run(config) == ['uv run --frozen ty check claude_archive']
+    assert run(config) == ['uv run --frozen ty check acme_tool']
     # The original string value, with the row that declares it, and the list form.
-    both = 'uv run --frozen ty check claude_archive archive.py'
-    string = config.replace('[python]\n', '[python]\ntype_check = "claude_archive archive.py"\n')
+    both = 'uv run --frozen ty check acme_tool tool.py'
+    string = config.replace('[python]\n', '[python]\ntype_check = "acme_tool tool.py"\n')
     assert run(string + row) == [both]
-    listed = config.replace(
-        '[python]\n', '[python]\ntype_check = ["claude_archive", "archive.py"]\n'
-    )
+    listed = config.replace('[python]\n', '[python]\ntype_check = ["acme_tool", "tool.py"]\n')
     assert run(listed + row) == [both]
