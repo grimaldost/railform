@@ -89,6 +89,15 @@ def rules() -> commit_lane.Rules:
 
 # --- the attribution patterns, ported from keel -------------------------------------------------
 
+# The two body lines of craft-collection #165 that failed pr-text, verbatim.
+CRAFT_COLLECTION_165_LINES = (
+    '  - The local `no-ai-attribution` hook stays, because it also rejects a "Generated with"'
+    ' stamp that names GPT or Anthropic.',
+    '5. **The default `commit.attribution_patterns` names only Claude in its "Generated with"'
+    ' stamp arm.** Adding the GPT and Anthropic arm would let craft-collection retire'
+    ' `scripts/check_commit_msg.py`.',
+)
+
 REJECTED = (
     'Co-Authored-By: Claude <noreply@anthropic.com>',
     'Signed-off-by: Claude',
@@ -104,6 +113,13 @@ REJECTED = (
     'Co-authored-by: GitHub Copilot <copilot@github.com>',
     'Co-authored-by: ChatGPT <noreply@openai.com>',
     'Assisted-by: Anthropic',
+    '🤖 Generated with [Claude Code](https://claude.com/claude-code)',
+    '> Generated with Claude',
+    '- Generated with Claude',
+    '* Generated with [Claude Code](https://claude.com/claude-code)',
+    '> - Generated with Copilot',
+    '**Generated with Claude**',
+    '1. Generated with Claude',
 )
 ORDINARY = (
     'fix(release): hold the tag to its section',
@@ -115,6 +131,10 @@ ORDINARY = (
     'Signed-off-by: Alice Example (reviewed CLAUDE.md)',
     'Co-authored-by: Bob Example <bob@gptools.example>',
     'Generated with gptools',
+    'The stamp rule rejects a line that says Generated with followed by Claude Code.',
+    'A line such as "Generated with Claude" is what the stamp arm looks for; Copilot too.',
+    'The arm that matches Generated with and a product name (Anthropic, GPT) is anchored.',
+    *CRAFT_COLLECTION_165_LINES,
 )
 
 
@@ -596,6 +616,32 @@ def test_the_stamp_in_the_plain_words_of_the_spec_fails_too(
 ) -> None:
     event = write_event(tmp_path / 'e.json', {'title': 't', 'body': 'Generated with Claude Code'})
     assert run_verb(capsys, 'pr-text', '--event', str(event))[2] == ('fail', 'attribution')
+
+
+PROSE_ABOUT_THE_RULE = (
+    *CRAFT_COLLECTION_165_LINES,
+    'The stamp rule rejects a line that says Generated with followed by Claude Code.',
+    'A line such as "Generated with Claude" is what the stamp arm looks for; Copilot too.',
+)
+
+
+def test_red_proof_a_body_describing_the_stamp_rule_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    body = '## Summary\n\n' + '\n'.join(PROSE_ABOUT_THE_RULE) + '\n'
+    event = write_event(tmp_path / 'e.json', {'title': 'fix: anchor the arm', 'body': body})
+    assert run_verb(capsys, 'pr-text', '--event', str(event)) == (0, [], ('pass', 'ok'))
+
+
+@pytest.mark.parametrize('prefix', ['', '🤖 ', '> ', '- ', '* '])
+def test_the_stamp_line_fails_pr_text_behind_a_marker(
+    prefix: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    line = f'{prefix}Generated with [Claude Code](https://claude.com/claude-code)'
+    event = write_event(tmp_path / 'e.json', {'title': 't', 'body': f'Done.\n\n{line}\n'})
+    code, findings, verdict = run_verb(capsys, 'pr-text', '--event', str(event))
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+    assert findings == [f'pull request body:3: attribution line: {line}']
 
 
 def test_an_attributed_title_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

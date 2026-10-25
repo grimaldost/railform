@@ -177,3 +177,87 @@ def test_github_output_exits_2_when_the_pipeline_cannot_be_written(
     assert 'ci.ruff_version' in captured.err
     # Nothing is written when the pipeline cannot be.
     assert not target.exists() or target.read_text(encoding='utf-8') == ''
+
+
+# --- the paths of the type check ---------------------------------------------------------------
+
+
+def _ty(**tables: dict[str, Any]) -> list[str]:
+    return [step for step in _pipeline(**tables) if 'ty check' in step]
+
+
+def test_a_type_check_of_two_paths_in_one_string_is_two_arguments() -> None:
+    # The value claude-archive wrote before the move to railform: it must not become one quoted
+    # argument, which `ty` would take for a single path that does not exist.
+    assert _ty(python={'type_check': 'claude_archive archive.py'}) == [
+        'uv run --frozen ty check claude_archive archive.py'
+    ]
+
+
+def test_a_type_check_list_is_one_argument_per_path() -> None:
+    assert _ty(python={'type_check': ['claude_archive', 'archive.py']}) == [
+        'uv run --frozen ty check claude_archive archive.py'
+    ]
+    assert _ty(python={'type_check': ['my pkg', 'x.py']}) == [
+        "uv run --frozen ty check 'my pkg' x.py"
+    ]
+
+
+@pytest.mark.parametrize('value', ['src', '.', ['src'], ['.']])
+def test_the_string_and_list_forms_of_one_path_give_one_line(value: str | list[str]) -> None:
+    path = value if isinstance(value, str) else value[0]
+    assert _ty(python={'type_check': value}) == [f'uv run --frozen ty check {path}']
+
+
+def test_an_empty_type_check_list_runs_no_ty() -> None:
+    assert _ty(python={'type_check': []}) == []
+
+
+def test_a_flat_layout_python_package_type_checks_its_package() -> None:
+    flat = {'project': {'layout': 'flat'}, 'python': {'package': 'claude_archive'}}
+    assert _ty(**flat) == ['uv run --frozen ty check claude_archive']
+    # Red proof: without the layout the preset's src stays.
+    assert _ty(python={'package': 'claude_archive'}) == ['uv run --frozen ty check src']
+    # A flat layout with no package has nothing to follow.
+    assert _ty(project={'layout': 'flat'}) == ['uv run --frozen ty check src']
+    # An explicit type_check is never overridden by the package.
+    explicit = {'package': 'claude_archive', 'type_check': 'x'}
+    assert _ty(project={'layout': 'flat'}, python=explicit) == ['uv run --frozen ty check x']
+
+
+def test_claude_archive_frame_end_to_end(
+    scratch_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The acceptance of the move: claude-archive's own value, through the verb the workflow runs.
+    (scratch_repo / 'claude_archive').mkdir()
+    (scratch_repo / 'claude_archive' / '__init__.py').write_text('', encoding='utf-8')
+    (scratch_repo / 'archive.py').write_text('', encoding='utf-8')
+    config = (
+        '[project]\ntype = "python-package"\nlayout = "flat"\n'
+        '[python]\npackage = "claude_archive"\n'
+    )
+    row = '[[exceptions]]\nkey = "python.type_check"\nreason = "a script beside the package"\n'
+    target = tmp_path / 'github_output'
+    monkeypatch.setenv('GITHUB_OUTPUT', str(target))
+
+    def run(text: str) -> list[str]:
+        (scratch_repo / 'railform.toml').write_text(text, encoding='utf-8')
+        target.unlink(missing_ok=True)
+        assert main(['frame', '--check']) == 0
+        assert main(['frame', '--github-output']) == 0
+        capsys.readouterr()
+        return [s for s in _outputs(target)['pipeline'].splitlines() if 'ty check' in s]
+
+    # No type_check and no exceptions row: the package is followed.
+    assert run(config) == ['uv run --frozen ty check claude_archive']
+    # The original string value, with the row that declares it, and the list form.
+    both = 'uv run --frozen ty check claude_archive archive.py'
+    string = config.replace('[python]\n', '[python]\ntype_check = "claude_archive archive.py"\n')
+    assert run(string + row) == [both]
+    listed = config.replace(
+        '[python]\n', '[python]\ntype_check = ["claude_archive", "archive.py"]\n'
+    )
+    assert run(listed + row) == [both]
