@@ -354,13 +354,31 @@ change to files in its contents is not seen unless the submodule path itself is 
 
 ## The private-reference check
 
-`railform private-refs [PATH ...] [--diff BASE...HEAD] [--text FILE]... [--event PATH]
+`railform private-refs [PATH ...] [--diff BASE...HEAD] [--history] [--text FILE]... [--event PATH]
 [--require-names]` keeps two kinds of private reference out of a public repository. It checks the
 given paths; otherwise, with `--diff`, the files the range changes (read at its tip) and the
-range's commit messages; otherwise every tracked file. `--text FILE` (repeatable, one file per
-flag) adds a file to any scope. `--event PATH` adds the title and body of the pull request in a
-GitHub event payload, read as `pr-text` reads them and reported as `pull request title` and
-`pull request body`. Binary files are skipped.
+range's commit messages; otherwise every tracked file. `--history` adds to whichever of those
+applies: it checks every commit message reachable from `HEAD` and every line any of those commits
+added, including a line a later commit removed, which none of the other scopes can see (a term
+added in one commit and deleted in the next is still in the history that gets pushed). It does not
+replace the tracked files, because the history does not hold every line they hold: `git log -p`
+shows no line for a file marked `-diff` or binary, for the conflict resolution a merge commit
+makes (the lines of a merged branch are found in that branch's commits), or for a change not yet
+committed. A finding names the commit by its first 12 characters and the line in the file that
+commit wrote: `commit 0123456789ab notes.md:3: private name (names file line 2)`, or `commit
+0123456789ab:4: ...` for line 4 of a message. `--text FILE` (repeatable, one
+file per flag) adds a file to any scope. `--event PATH` adds the title and body of the pull
+request in a GitHub event payload, read as `pr-text` reads them and reported as `pull request
+title` and `pull request body`. Binary files are skipped.
+
+Outside a git repository the verb checks files the caller names: `PATH` files, `--text FILE` and
+`--event`, for instance `RAILFORM_PRIVATE_NAMES=names.txt railform private-refs --require-names
+--text report.md` on a report written in a plain directory. The frame is the default one (there
+is no `railform.toml` to read). The scopes that need a repository (the tracked files, `--diff`,
+`--history`, a directory given as a `PATH`) exit 2 with `not inside a git repository`, and so
+does a run that names nothing to check. A repository that git refuses to read (dubious
+ownership, the inside of `.git`) is not "no repository": the run exits 2 with git's own message
+instead of falling back to the default frame.
 
 In the reusable workflow, the `checks` job runs it over the tracked files, and the `commit-lane`
 job runs `private-refs --diff "origin/${BASE_REF}...HEAD" --event "$GITHUB_EVENT_PATH"` on pull

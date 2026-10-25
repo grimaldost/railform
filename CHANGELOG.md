@@ -5,6 +5,27 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+### Added
+
+- `railform private-refs --history` checks every commit message reachable from `HEAD` and every
+  line any of those commits added, so a private name or home path that one commit added and a
+  later one removed, or that only a commit message carries, now fails. A finding names the commit
+  by its first 12 characters and the line, never the term. It adds to the scope the other
+  arguments choose (`PATH`, `--diff`, else the tracked files) and does not replace it, since the
+  patches of the history show no line for a `-diff` or binary file, a merge commit's conflict
+  resolution or an uncommitted change.
+
+### Changed
+
+- `railform private-refs` now checks files outside a git repository: with `PATH` files, `--text
+  FILE` or `--event`, it runs under the default frame, so
+  `RAILFORM_PRIVATE_NAMES=names.txt railform private-refs --require-names --text report.md` works
+  on a report in a plain directory. Before, it exited 2 with `not inside a git repository`; that
+  still holds for the tracked files, `--diff`, `--history` and a directory given as a `PATH`.
+  Only "there is no repository" takes this path: a repository that git refuses to read (dubious
+  ownership, the inside of `.git`) exits 2 with git's own message, in every verb that finds the
+  repository, instead of `not inside a git repository`.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added

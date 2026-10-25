@@ -823,3 +823,340 @@ def test_railforms_own_tracked_files_pass_the_check(
     monkeypatch.chdir(ROOT)
     code, out, findings = check(capsys)
     assert (code, findings) == (0, []), out
+
+
+# --- explicit files outside a repository -------------------------------------------------------
+
+
+@pytest.fixture
+def outside_repo(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A plain directory under no repository, entered."""
+    outside = tmp_path_factory.mktemp('plain')
+    monkeypatch.chdir(outside)
+    monkeypatch.setenv('GIT_CEILING_DIRECTORIES', str(outside.parent))
+    return outside
+
+
+def test_a_text_file_outside_a_repository_is_checked_against_the_names_file(
+    outside_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('# the private names\nquillfeather\n', encoding='utf-8')
+    (outside_repo / 'report.md').write_text('a clean report\n', encoding='utf-8')
+    code, out, findings = check(capsys, '--require-names', '--text', 'report.md')
+    assert (code, findings) == (0, []), out
+    (outside_repo / 'report.md').write_text('clean\nthanks, Quillfeather\n', encoding='utf-8')
+    code, out, findings = check(capsys, '--require-names', '--text', 'report.md')
+    assert code == 1
+    assert verdict(out) == 'railform-verdict: private-refs fail private-name'
+    assert findings == ['report.md:2: private name (names file line 2)']
+    assert 'quillfeather' not in out.lower()
+
+
+def test_outside_a_repository_a_missing_names_file_still_fails_when_required(
+    outside_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (outside_repo / 'report.md').write_text('clean\n', encoding='utf-8')
+    code, out, _ = check(capsys, '--require-names', '--text', 'report.md')
+    assert (code, verdict(out)) == (1, 'railform-verdict: private-refs fail names-file-missing')
+
+
+def test_outside_a_repository_the_default_frame_judges_home_paths(
+    outside_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (outside_repo / 'ok.md').write_text(f'at {home("linux", name="me")}\n', encoding='utf-8')
+    (outside_repo / 'bad.md').write_text(f'at {home("linux")}\n', encoding='utf-8')
+    assert check(capsys, '--text', 'ok.md')[0] == 0
+    code, out, findings = check(capsys, '--text', 'bad.md')
+    assert code == 1
+    assert findings == ['bad.md:1: home path /home/<name>']
+    assert STRANGER not in out
+
+
+def test_outside_a_repository_a_file_given_as_a_path_is_checked(
+    outside_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    (outside_repo / 'a.md').write_text('clean\n', encoding='utf-8')
+    (outside_repo / 'b.md').write_text('quillfeather\n', encoding='utf-8')
+    assert check(capsys, 'a.md')[0] == 0
+    code, _, findings = check(capsys, 'a.md', 'b.md')
+    assert (code, findings) == (1, ['b.md:1: private name (names file line 1)'])
+
+
+@pytest.mark.parametrize(
+    'args',
+    [[], ['--diff', 'main...HEAD'], ['--history'], ['.']],
+    ids=['tracked-files', 'diff', 'history', 'directory'],
+)
+def test_outside_a_repository_a_scope_that_needs_one_exits_2(
+    args: list[str], outside_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out, _ = check(capsys, *args)
+    assert (code, verdict(out)) == (2, 'railform-verdict: private-refs fail usage')
+
+
+@pytest.mark.parametrize('how', ['inside-git-dir', 'dubious-owner'])
+def test_a_repository_git_refuses_to_read_is_a_usage_error_not_no_repository(
+    how: str,
+    scratch_repo: Path,
+    names_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The frame must not fall back to the default when a repository exists but cannot be read:
+    # the names variable of its railform.toml would be skipped and the check would pass.
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    report = scratch_repo / 'rep.md'
+    report.write_text('thanks, quillfeather\n', encoding='utf-8')
+    if how == 'inside-git-dir':
+        monkeypatch.chdir(scratch_repo / '.git')
+    else:
+        monkeypatch.setenv('GIT_TEST_ASSUME_DIFFERENT_OWNER', '1')
+    code, out, _ = check(capsys, '--require-names', '--text', str(report))
+    assert (code, verdict(out)) == (2, 'railform-verdict: private-refs fail usage')
+
+
+def test_outside_a_repository_the_event_alone_is_a_scope(
+    outside_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    event = tmp_path / 'event.json'
+    event.write_text(
+        json.dumps({'pull_request': {'title': 'feat: x', 'body': home('linux')}}), encoding='utf-8'
+    )
+    code, _, findings = check(capsys, '--event', str(event))
+    assert (code, findings) == (1, ['pull request body:1: home path /home/<name>'])
+
+
+# --- the history scope (--history) -------------------------------------------------------------
+
+
+def short(sha: str) -> str:
+    return sha[:12]
+
+
+def test_history_names_the_commits_that_added_a_term_or_carry_it_in_the_message(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('# the private names\nquillfeather\n', encoding='utf-8')
+    stage(scratch_repo, 'notes.md', 'first\nsecond\n')
+    commit(scratch_repo, 'docs: notes')
+    stage(scratch_repo, 'notes.md', 'first\nsecond\nthanks to quillfeather\n')
+    added = commit(scratch_repo, 'docs: thanks')
+    stage(scratch_repo, 'notes.md', 'first\nsecond\n')
+    removed = commit(scratch_repo, 'docs: drop the thanks')
+    stage(scratch_repo, 'other.md', 'fine\n')
+    messaged = commit(scratch_repo, 'chore: other\n\nbody\nbody mentions Quillfeather\n')
+    # The tip is clean and so is the range of the last commit: only the history sees the term.
+    assert check(capsys)[0] == 0
+    code, out, findings = check(capsys, '--history')
+    assert code == 1
+    assert verdict(out) == 'railform-verdict: private-refs fail private-name'
+    assert findings == [
+        f'commit {short(messaged)}:4: private name (names file line 2)',
+        f'commit {short(added)} notes.md:3: private name (names file line 2)',
+    ]
+    assert short(removed) not in out
+    assert 'quillfeather' not in out.lower()
+
+
+def test_history_checks_home_paths_in_lines_that_were_later_removed(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, 'a.md', f'one\n{home("macos")}\nthree\n')
+    added = commit(scratch_repo)
+    stage(scratch_repo, 'a.md', 'one\nthree\n')
+    commit(scratch_repo)
+    assert check(capsys)[0] == 0
+    code, out, findings = check(capsys, '--history')
+    assert code == 1
+    assert verdict(out) == 'railform-verdict: private-refs fail home-path'
+    assert findings == [f'commit {short(added)} a.md:2: home path /Users/<name>']
+    assert STRANGER not in out
+
+
+def test_history_gives_the_line_of_each_hunk_in_the_new_file(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    body = [f'line {n}' for n in range(1, 31)]
+    stage(scratch_repo, 'long.txt', '\n'.join(body) + '\n')
+    commit(scratch_repo)
+    body[1] = 'quillfeather early'
+    body.insert(10, 'new line')
+    body[25] = '++ quillfeather late'  # an added line that reads like a diff header
+    body[29] = '-- not a removal'
+    stage(scratch_repo, 'long.txt', '\n'.join(body) + '\n')
+    changed = commit(scratch_repo)
+    code, out, findings = check(capsys, '--history')
+    assert code == 1
+    assert verdict(out) == 'railform-verdict: private-refs fail private-name'
+    # The tip file is read too: its lines come first, then the lines the commit wrote.
+    assert findings == [
+        'long.txt:2: private name (names file line 1)',
+        'long.txt:26: private name (names file line 1)',
+        f'commit {short(changed)} long.txt:2: private name (names file line 1)',
+        f'commit {short(changed)} long.txt:26: private name (names file line 1)',
+    ]
+
+
+def test_history_ignores_a_config_that_merges_hunks_with_context_lines(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    git(scratch_repo, 'config', 'diff.interHunkContext', '5')
+    stage(scratch_repo, 'f.md', 'one\ntwo\nthree\nfour\nfive\nsix\n')
+    commit(scratch_repo)
+    stage(scratch_repo, 'f.md', 'one\nTWO\nthree\nfour\nthanks to quillfeather\nsix\n')
+    added = commit(scratch_repo)
+    stage(scratch_repo, 'f.md', 'one\ntwo\nthree\nfour\nfive\nsix\n')
+    commit(scratch_repo)
+    code, _, findings = check(capsys, '--history')
+    assert (code, findings) == (
+        1,
+        [f'commit {short(added)} f.md:5: private name (names file line 1)'],
+    )
+
+
+def test_history_sees_the_root_commit_when_the_config_hides_it(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    git(scratch_repo, 'config', 'log.showRoot', 'false')
+    stage(scratch_repo, 'f.md', 'thanks to quillfeather\n')
+    root = commit(scratch_repo)
+    stage(scratch_repo, 'f.md', 'clean\n')
+    commit(scratch_repo)
+    code, _, findings = check(capsys, '--history')
+    assert (code, findings) == (
+        1,
+        [f'commit {short(root)} f.md:1: private name (names file line 1)'],
+    )
+
+
+def test_history_with_diff_reports_a_range_message_once(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    stage(scratch_repo, 'a.md', 'one\n')
+    commit(scratch_repo)
+    stage(scratch_repo, 'b.md', 'two\n')
+    messaged = commit(scratch_repo, 'chore: b\n\nmentions quillfeather\n')
+    code, _, findings = check(capsys, '--history', '--diff', 'HEAD~1...HEAD')
+    assert (code, findings) == (
+        1,
+        [f'commit {short(messaged)}:3: private name (names file line 1)'],
+    )
+
+
+def test_history_keeps_two_identical_findings_on_one_added_line(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    line = f'{home("linux")} and {home("linux")}'
+    stage(scratch_repo, 'a.md', f'{line}\n')
+    added = commit(scratch_repo)
+    stage(scratch_repo, 'a.md', 'clean\n')
+    commit(scratch_repo)
+    code, _, findings = check(capsys, '--history')
+    assert (code, findings) == (1, [f'commit {short(added)} a.md:1: home path /home/<name>'] * 2)
+
+
+def test_history_covers_every_commit_reachable_from_the_tip_including_merged_branches(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    stage(scratch_repo, 'a.md', 'one\n')
+    commit(scratch_repo)
+    git(scratch_repo, 'checkout', '-q', '-b', 'side')
+    stage(scratch_repo, 'side.md', 'quillfeather\n')
+    side = commit(scratch_repo, 'feat: side')
+    git(scratch_repo, 'checkout', '-q', '-')
+    stage(scratch_repo, 'b.md', 'two\n')
+    commit(scratch_repo)
+    git(scratch_repo, '-c', 'commit.gpgsign=false', 'merge', '-q', '--no-ff', 'side', '-m', 'merge')
+    _, _, findings = check(capsys, '--history')
+    assert findings == [
+        'side.md:1: private name (names file line 1)',
+        f'commit {short(side)} side.md:1: private name (names file line 1)',
+    ]
+
+
+def test_history_skips_binary_files_and_deleted_files(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    (scratch_repo / 'blob.bin').write_bytes(b'\0\1quillfeather')
+    git(scratch_repo, 'add', 'blob.bin')
+    commit(scratch_repo)
+    git(scratch_repo, 'rm', '-q', 'blob.bin')
+    commit(scratch_repo)
+    assert check(capsys, '--history')[0] == 0
+
+
+def test_history_of_a_repository_without_commits_passes(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, out, findings = check(capsys, '--history')
+    assert (code, findings) == (0, []), out
+
+
+def test_history_adds_to_the_tracked_files_and_to_the_other_scopes(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    stage(scratch_repo, 'a.md', 'quillfeather\n')
+    old = commit(scratch_repo)
+    stage(scratch_repo, 'a.md', 'clean\n')
+    commit(scratch_repo)
+    stage(scratch_repo, 'staged.md', 'quillfeather\n')  # tracked, not committed
+    # Alone it reads the tracked files and the history, so it is never weaker than the default.
+    assert check(capsys, '--history')[2] == [
+        'staged.md:1: private name (names file line 1)',
+        f'commit {short(old)} a.md:1: private name (names file line 1)',
+    ]
+    # With a path, only that path is read besides the history.
+    stage(scratch_repo, 'other.md', 'quillfeather\n')
+    _, _, findings = check(capsys, '--history', 'staged.md')
+    assert findings == [
+        'staged.md:1: private name (names file line 1)',
+        f'commit {short(old)} a.md:1: private name (names file line 1)',
+    ]
+
+
+def test_history_is_never_weaker_than_the_default_for_a_file_git_does_not_diff(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    stage(scratch_repo, '.gitattributes', 'data.txt -diff\n')
+    stage(scratch_repo, 'data.txt', 'thanks to quillfeather\n')
+    commit(scratch_repo)
+    # git log -p prints "Binary files differ" for the file, so only the tracked files show it.
+    code, _, findings = check(capsys)
+    assert (code, findings) == (1, ['data.txt:1: private name (names file line 1)'])
+    code, out, findings = check(capsys, '--history')
+    assert (code, findings) == (1, ['data.txt:1: private name (names file line 1)'])
+    assert verdict(out) == 'railform-verdict: private-refs fail private-name'
+
+
+def test_history_redacts_a_home_path_in_a_file_name(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stage(scratch_repo, f'{home("slug")}.md', f'at {home("linux")}\n')
+    commit(scratch_repo)
+    _, out, findings = check(capsys, '--history')
+    assert len(findings) == 2  # the tip file, then the commit that wrote it
+    assert all('<name>' in finding.split(':1:')[0] for finding in findings)
+    assert findings[1].startswith('commit ')
+    assert STRANGER not in out
+
+
+def test_history_reads_non_ascii_lines_and_paths(
+    scratch_repo: Path, names_file: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names_file.write_text('quillfeather\n', encoding='utf-8')
+    stage(scratch_repo, 'café.md', 'éé quillfeather\n')
+    sha = commit(scratch_repo)
+    _, _, findings = check(capsys, '--history')
+    assert findings == [
+        'café.md:1: private name (names file line 1)',
+        f'commit {short(sha)} café.md:1: private name (names file line 1)',
+    ]
