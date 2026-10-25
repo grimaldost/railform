@@ -79,6 +79,19 @@ def test_private_refs_judges_the_staged_files_only(hooks: dict[str, dict[str, An
     assert 'files' not in hook
 
 
+def test_private_refs_hook_does_not_require_the_names_file(
+    hooks: dict[str, dict[str, Any]],
+) -> None:
+    # The hook runs on every contributor's machine, and most hold no names file: with the variable
+    # unset the names half is silent there, and `--require-names` would turn that silence into a
+    # failure that blocks a commit nobody could fix. A variable set to a path that does not exist
+    # already fails without the flag (`names-file-missing`), which is the case the hook can judge.
+    hook = hooks['railform-private-refs']
+    assert hook['entry'] == 'railform private-refs'
+    assert '--require-names' not in hook.get('args', [])
+    assert '--require-names' not in hook['entry']
+
+
 def test_red_proof_hooks_check_always_runs_and_takes_no_file_names(
     hooks: dict[str, dict[str, Any]],
 ) -> None:

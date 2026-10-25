@@ -1,0 +1,44 @@
+# Copied from github.com/grimaldost/mantis-research at commit da71b8c (origin/main on 2026-10-25), unchanged
+# below this header. railform.toml of a public adopter; tests/test_adopter_frames.py keeps it
+# readable by every verb that reads a frame.
+# This repository's frame for railform: `railform frame` prints the effective frame and
+# `railform frame --check` judges this file.
+[project]
+type = "python-package"
+
+[python]
+# The one interpreter the previous CI ran (.python-version); the project supports 3.14 as well,
+# which a second leg can add later. Lint and format run over the whole tree, the preset's scope:
+# `scripts/` is format-checked too, and is lint-exempt in pyproject.toml.
+versions = ["3.13"]
+
+[changelog]
+# What ships to a consumer: the package, the repo-local gate scripts and the skill surface.
+records = [
+  { prefix = "src/", file = "CHANGELOG.md" },
+  { prefix = "scripts/", file = "CHANGELOG.md" },
+  { prefix = "skills/", file = "CHANGELOG.md" },
+]
+
+[release]
+# The first tag the release check judges: the tags up to v0.7.1 predate adoption.
+since = "v0.7.2"
+
+# The four places a release version is written (CONTRIBUTING, Releases). The changelog heading
+# is authored: a release brings its section along, so it is checked and never rewritten.
+[[version.sites]]
+path = "pyproject.toml"
+pattern = '(?m)^version = "([0-9.]+)"'
+
+[[version.sites]]
+path = ".claude-plugin/plugin.json"
+pattern = '"version": "([0-9.]+)"'
+
+[[version.sites]]
+path = "uv.lock"
+pattern = '(?m)^name = "mantis-research"\r?\nversion = "([0-9.]+)"'
+
+[[version.sites]]
+path = "CHANGELOG.md"
+pattern = '(?m)^## \[([0-9]+\.[0-9]+\.[0-9]+)\]'
+authored = true

@@ -23,6 +23,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import textwrap
@@ -1729,17 +1730,32 @@ def test_a_session_loaded_match_alone_gives_no_stub(
     assert read(scratch_repo, 'plugins/x/hooks/pre-commit') == '#!/bin/sh\n'
 
 
-def test_a_tracked_non_executable_file_in_the_previous_directory_is_reported_and_left(
+def test_a_tracked_non_executable_file_in_the_previous_directory_is_replaced_and_named(
     scratch_repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     build(scratch_repo, 'python-scripts')
     _track(scratch_repo, '.hooks/commit-msg', 'notes about the hooks\n', executable=False)
     code, _, out = run_adopt(capsys, '--pin', PIN)
     assert code == 0
-    assert '.hooks/commit-msg: tracked as 100644, not a hook wrapper; left as it is' in out
-    assert read(scratch_repo, '.hooks/commit-msg') == 'notes about the hooks\n'
-    assert git(scratch_repo, 'ls-files', '-s', '--', '.hooks/commit-msg').startswith('100644')
+    assert '.hooks/commit-msg: stub written (it replaces the file tracked as 100644)' in out
+    assert 'railform arm' in read(scratch_repo, '.hooks/commit-msg')
+    assert git(scratch_repo, 'ls-files', '-s', '--', '.hooks/commit-msg').startswith('100755')
     assert 'railform arm' in read(scratch_repo, '.hooks/pre-commit')
+
+
+def test_a_tracked_non_executable_hook_file_with_unstaged_changes_is_left(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-scripts')
+    _track(scratch_repo, '.hooks/commit-msg', 'notes about the hooks\n', executable=False)
+    write(scratch_repo, '.hooks/commit-msg', 'notes, edited since the last add\n')
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0
+    assert (
+        '.hooks/commit-msg: tracked as 100644 with unstaged changes; left as it is, no stub' in out
+    )
+    assert read(scratch_repo, '.hooks/commit-msg') == 'notes, edited since the last add\n'
+    assert git(scratch_repo, 'ls-files', '-s', '--', '.hooks/commit-msg').startswith('100644')
 
 
 def test_no_stub_without_a_previous_directory(adopted: Fixture) -> None:
@@ -1877,6 +1893,178 @@ def test_red_proof_a_local_path_call_without_ci_self_hosted_is_drift(
     assert 'needs ci.self_hosted = true' in out
     # Without the key adopt does not treat the local call as self-hosting: it wants a pin.
     assert run_adopt(capsys)[1] == f'{VERDICT} fail usage'
+
+
+# --- the old hook files of mantis-research and fathom, and the LF pin -------------------------
+
+
+def _commit_all(root: Path) -> None:
+    git(root, 'add', '-A')
+    git(
+        root,
+        '-c',
+        'user.name=someone',
+        '-c',
+        'user.email=someone@example.invalid',
+        'commit',
+        '-q',
+        '-m',
+        'test: adopt',
+    )
+
+
+def _hooks_in_old_directory(root: Path) -> None:
+    """The shape of mantis-research and fathom: tracked 100644 hook files, and core.hooksPath on
+    their directory."""
+    for hook in ('pre-commit', 'commit-msg'):
+        _track(root, f'scripts/git-hooks/{hook}', '#!/bin/sh\necho old\n', executable=False)
+    git(root, 'config', '--local', 'core.hooksPath', 'scripts/git-hooks')
+
+
+def test_red_proof_tracked_100644_hook_files_in_the_old_directory_become_100755_stubs(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    _hooks_in_old_directory(scratch_repo)
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0
+    assert 'left as it is, no stub' not in out
+    for hook in ('pre-commit', 'commit-msg'):
+        path = f'scripts/git-hooks/{hook}'
+        assert f'{path}: stub written (it replaces the file tracked as 100644)' in out
+        assert 'railform arm' in read(scratch_repo, path)
+        assert git(scratch_repo, 'ls-files', '-s', '--', path).split()[0] == '100755'
+    pre_push = git(scratch_repo, 'ls-files', '-s', '--', 'scripts/git-hooks/pre-push')
+    assert pre_push.startswith('100755')
+    before = snapshot(scratch_repo)
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+    assert run_adopt(capsys)[0] == 0
+    assert snapshot(scratch_repo) == before
+
+
+def test_red_proof_the_stub_message_gives_the_one_shot_form(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-scripts')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    assert 'git -c core.hooksPath=.githooks <command>' in read(scratch_repo, '.hooks/pre-commit')
+
+
+def test_the_stub_quotes_a_hooks_directory_with_white_space_in_the_commands() -> None:
+    line = next(x for x in adopt_module._stub('my hooks').splitlines() if x.startswith('printf'))
+    message = shlex.split(line)[2]
+    assert "git -c core.hooksPath='my hooks' <command>" in message
+    assert "git config core.hooksPath 'my hooks')" in message
+
+
+def test_red_proof_hook_files_check_out_as_lf_and_clean_under_autocrlf(
+    scratch_repo: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The shape of fathom and craft-collection: core.autocrlf and `* text=auto`.
+    build(scratch_repo, 'python-scripts')
+    git(scratch_repo, 'config', '--local', 'core.autocrlf', 'true')
+    write(scratch_repo, '.gitattributes', '* text=auto\n')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    _commit_all(scratch_repo)
+    worktree = tmp_path_factory.mktemp('worktree') / 'checkout'
+    git(scratch_repo, 'worktree', 'add', '-q', str(worktree))
+    effective = frame.load(scratch_repo)
+    for hook in HOOKS:
+        wanted = wrapper.render(effective, hook).encode('utf-8')
+        assert (worktree / f'.githooks/{hook}').read_bytes() == wanted
+        assert b'\r' not in (worktree / f'.hooks/{hook}').read_bytes()
+    assert git(worktree, 'status', '--porcelain') == ''
+
+
+GITATTRIBUTES = '.gitattributes'
+
+
+def test_the_marked_region_pins_the_hook_directories_and_keeps_the_other_lines(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-scripts')
+    mine = '* text=auto\n*.png binary\n# my own line'
+    write(scratch_repo, GITATTRIBUTES, mine)
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    text = read(scratch_repo, GITATTRIBUTES)
+    assert outside_region(text) == mine + '\n'
+    assert region(text).splitlines()[1:-1] == ['.githooks/** text eol=lf', '.hooks/** text eol=lf']
+    before = snapshot(scratch_repo)
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+    assert run_adopt(capsys)[0] == 0
+    assert snapshot(scratch_repo) == before
+
+
+def test_the_region_is_written_to_a_new_file_and_names_no_stub_directory_without_stubs(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    assert not (scratch_repo / GITATTRIBUTES).exists()
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    assert region(read(scratch_repo, GITATTRIBUTES)).splitlines()[1:-1] == [
+        '.githooks/** text eol=lf'
+    ]
+
+
+def test_the_region_keeps_the_crlf_of_a_file_that_has_them(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    write(scratch_repo, GITATTRIBUTES, '* text=auto\r\n')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    data = (scratch_repo / GITATTRIBUTES).read_bytes()
+    assert data.count(b'\n') == data.count(b'\r\n')
+    assert b'.githooks/** text eol=lf' in data
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+
+
+def test_red_proof_check_fails_drift_when_the_region_is_removed_or_missing(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    (scratch_repo / GITATTRIBUTES).write_bytes(b'* text=auto\n')
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{GITATTRIBUTES}: has no region owned by railform' in out
+    (scratch_repo / GITATTRIBUTES).unlink()
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{GITATTRIBUTES}: missing; run railform adopt' in out
+    assert run_adopt(capsys)[0] == 0
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+
+
+def test_check_fails_drift_when_the_region_names_another_hooks_directory(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    path = scratch_repo / GITATTRIBUTES
+    path.write_bytes(path.read_bytes().replace(b'.githooks/**', b'.elsewhere/**'))
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift')
+    assert f'{GITATTRIBUTES}:2: differs from what railform adopt writes' in out
+    assert run_adopt(capsys)[0] == 0
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+
+
+def test_a_hooks_directory_with_a_space_or_a_bracket_is_pinned_to_lf(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    write(
+        scratch_repo,
+        'railform.toml',
+        '[project]\ntype = "python-package"\n\n[hooks]\ndir = "my [hooks]"\n\n'
+        '[[exceptions]]\nkey = "hooks.dir"\nvalue = "my [hooks]"\nreason = "a test directory"\n',
+    )
+    assert run_adopt(capsys, '--pin', PIN)[0] == 0
+    out = git(scratch_repo, 'check-attr', 'eol', '--', 'my [hooks]/pre-commit')
+    assert out.strip().endswith('eol: lf')
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
 
 
 # --- the stub runs where a shell exists --------------------------------------------------------

@@ -8,8 +8,12 @@ default (default first, each element once), so they grow, and shrink only by an 
 row that drops a default element with a reason. A value that departs from the preset and
 loosens a check (`LOOSENING`) is legal only when an `exceptions` row names its key with a
 reason, and `railform frame --check` fails an unlisted one; a stricter or neutral departure
-needs no row. The keys in `meta.parameter_keys` are per repository and never depart, nor do the
-two guard lists.
+needs no row. Every key of the frame is in exactly one of `LOOSENING`, `NEUTRAL`,
+`meta.parameter_keys` or the two guard lists, which a test checks, so a key added later is
+classified before it ships (one that slips through reads as loosening). The keys in
+`meta.parameter_keys` are per repository and never depart. A guard list is never a departure
+either, but an element a repository adds to `private_refs.placeholders` loosens the scan
+(`LOOSENING_ADDITIONS`) and needs a row.
 
 `commit.attribution_patterns` in the default frame is keel's set
 (https://github.com/grimaldost/keel, `.pre-commit-config.yaml` at c3313fd), and its test cases
@@ -51,16 +55,23 @@ GITHUB_OUTPUT_ENV = 'GITHUB_OUTPUT'
 # leaves the list only through an `exceptions` row that names it in `drop` with a reason, which
 # `railform session-paths` reports as `guard-narrowed` in the pull request that adds it.
 EXTENDABLE_KEYS = ('session_loaded', 'private_refs.placeholders')
+# The guard lists whose added elements loosen a check, so they need a row too. A glob added to
+# `session_loaded` guards more paths; a name added to `private_refs.placeholders` is one the scan
+# passes in a home path. The row has no `drop`, or gives `value`, the elements it adds.
+LOOSENING_ADDITIONS = ('private_refs.placeholders',)
 
 # How a departure of a key loosens a check, and so needs an `exceptions` row. A departure of a
 # key not listed here, or in the other direction, is stricter or neutral and needs none.
 # A string the preset sets (non-empty) is changed: railform cannot judge a command, a pattern or
-# the name of a variable, so any change, stricter or not, needs a row.
+# the name of a variable, so any change, stricter or not, needs a row. That holds for the two
+# version pins too, which only the plugin-marketplace preset sets: a type that leaves one empty
+# never reads it, so a value there changes nothing.
 REPLACED = 'replaced'
 TURNED_OFF = 'turned off'  # a boolean the preset has true is false
 TURNED_ON = 'turned on'  # a boolean the preset has false is true
 DROPS = 'drops an element'  # a list leaves out an element the preset has
 ADDS = 'adds an element'  # a list has an element the preset lacks
+UNCLASSIFIED = 'unclassified key, treated as loosening'  # in no table: a test should have failed
 LOOSENING = {
     'python.test_command': REPLACED,
     'python.type_check': REPLACED,
@@ -73,6 +84,7 @@ LOOSENING = {
     'ci.extra_workflows': ADDS,
     'commit.types': ADDS,
     'private_refs.names_file_env': REPLACED,
+    'private_refs.names_enabled': TURNED_OFF,
     'release.pr_branch_prefix': REPLACED,
     'release.pr_title_pattern': REPLACED,
     'ci.self_hosted': TURNED_ON,
@@ -82,21 +94,57 @@ LOOSENING = {
     'branch.allow': ADDS,
     'hooks.names': DROPS,
     'hooks.wrapper': REPLACED,
+    'ci.ruff_version': REPLACED,
+    'hooks.pre_commit_version': REPLACED,
+    'python.sync_args': ADDS,
+    'ci.setup.extra_installs': ADDS,
 }
+
+# The keys whose departure loosens nothing, each with the reason. Every key of the frame is in
+# `LOOSENING`, here, `meta.parameter_keys` or a guard list (`EXTENDABLE_KEYS`), and in only one of
+# them: a test fails on a key in none, so adding a key means deciding which.
+NEUTRAL = {
+    'ci.setup.fetch_depth': 'a deeper checkout only adds history; the preset is the shallowest, 1',
+    'changelog.consumer_affecting': (
+        'the preset is "advisory", the lax value, so the only departure is the stricter "error"'
+    ),
+    'hooks.dir': (
+        'it moves the directory the wrappers live in; hooks-check judges whatever it names, '
+        'and which hooks run is hooks.names'
+    ),
+    'python.newest': (
+        'it names the interpreter the hooks job runs pre-commit on, only when python.versions '
+        'is empty; it changes where the checks run, not which'
+    ),
+    'meta.parameter_keys': (
+        "a departure is judged against the preset's list, so a repository's value changes nothing"
+    ),
+}
+
+# Keys whose value is paths: a string of shell words and an array of strings are the same value.
+PATH_KEYS = ('python.type_check',)
 
 # Replaced in `hooks.wrapper` by the value of `hooks.pre_commit_version`.
 WRAPPER_VERSION_FIELD = '{hooks.pre_commit_version}'
 
 UNKNOWN_KEY = 'unknown-key'
 WRONG_TYPE = 'wrong-type'
+MISSING_PATH = 'missing-path'
 BAD_EXCEPTION = 'bad-exception'
 UNLISTED_DEPARTURE = 'unlisted-departure'
 # When several rules fail, the verdict names the first in this order.
-CODE_ORDER = (UNKNOWN_KEY, WRONG_TYPE, BAD_EXCEPTION, UNLISTED_DEPARTURE)
+CODE_ORDER = (UNKNOWN_KEY, WRONG_TYPE, MISSING_PATH, BAD_EXCEPTION, UNLISTED_DEPARTURE)
+
+
+NO_REPOSITORY = 'not inside a git repository'
 
 
 class FrameError(Exception):
     """A usage or configuration error: no repository, or a `railform.toml` that cannot be read."""
+
+
+class NoRepositoryError(FrameError):
+    """The current directory is not inside a git repository."""
 
 
 @dataclass(frozen=True)
@@ -166,6 +214,31 @@ class _Str(_Node):
             except re.error as exc:
                 return [Problem(WRONG_TYPE, f'{path}: not a regular expression ({exc})')]
         return []
+
+
+class _Paths(_Node):
+    """The paths a tool is run over: a string of shell words, or an array of strings."""
+
+    def check(self, value: object, path: str, complete: bool) -> list[Problem]:
+        if isinstance(value, str):
+            try:
+                shlex.split(value)
+            except ValueError as exc:
+                return [Problem(WRONG_TYPE, f'{path}: not a list of shell words ({exc})')]
+            return []
+        if not isinstance(value, list):
+            return [
+                Problem(WRONG_TYPE, f'{path}: expected a string or an array, got {_kind(value)}')
+            ]
+        problems: list[Problem] = []
+        for index, item in enumerate(value):
+            if not isinstance(item, str):
+                problems.append(
+                    Problem(WRONG_TYPE, f'{path}[{index}]: expected a string, got {_kind(item)}')
+                )
+            elif not item.strip():
+                problems.append(Problem(WRONG_TYPE, f'{path}[{index}]: expected a path, got ""'))
+        return problems
 
 
 class _Bool(_Node):
@@ -267,7 +340,9 @@ SCHEMA = _Table(
             {'dir': _Str(), 'names': _STRINGS, 'wrapper': _Str(), 'pre_commit_version': _Str()}
         ),
         'branch': _Table({'pattern': _Str(regex=True), 'allow': _STRINGS}),
-        'private_refs': _Table({'names_file_env': _Str(), 'placeholders': _STRINGS}),
+        'private_refs': _Table(
+            {'names_file_env': _Str(), 'names_enabled': _Bool(), 'placeholders': _STRINGS}
+        ),
         'ci': _Table(
             {
                 'os': _STRINGS,
@@ -285,7 +360,7 @@ SCHEMA = _Table(
                 'sync_args': _STRINGS,
                 'test_command': _Str(),
                 'lint_paths': _STRINGS,
-                'type_check': _Str(),
+                'type_check': _Paths(),
             }
         ),
         'version': _Table(
@@ -416,16 +491,22 @@ def _union(default: list[Any], own: list[Any]) -> list[Any]:
     return joined
 
 
-def _drops(config: dict[str, Any], key: str, default: list[Any]) -> list[Any]:
+def _additions(default: list[Any], own: list[Any]) -> list[Any]:
+    """The elements of a repository's guard list that the default lacks, each once."""
+    return [item for item in _union([], own) if not any(_same(item, d) for d in default)]
+
+
+def _drops(config: dict[str, Any], key: str, default: list[Any], added: list[Any]) -> list[Any]:
     """The default elements of the guard list `key` that the `exceptions` rows of a schema-valid
     `config` drop: those of the first row for `key` that `frame --check` accepts (a non-blank
-    reason, no value, and a `drop` that is not empty and names only default elements). A row
-    that check fails, and a later row for the same key (a duplicate), drop nothing."""
+    reason and the fields `_guard_row_problem` allows, a `drop` that is not empty and names only
+    default elements among them). A row that check fails, and a later row for the same key (a
+    duplicate), drop nothing."""
     for row in config.get('exceptions', []):
         if row.get('key') != key or not str(row.get('reason', '')).strip():
             continue
-        if not _drop_problem(row, key, default):
-            return list(row['drop'])
+        if not _guard_row_problem(row, key, default, added):
+            return list(row.get('drop', []))
     return []
 
 
@@ -435,13 +516,15 @@ def _unrendered(config: dict[str, Any]) -> dict[str, Any]:
         raise FrameSchemaError(problems)
     preset = preset_frame(_project_type(config))
     frame = _merge(preset, config)
+    if 'type_check' not in config.get('python', {}):
+        frame['python'] = {**frame['python'], 'type_check': _layout_type_check(preset, config)}
     for key in EXTENDABLE_KEYS:
         *tables, leaf = key.split('.')
         target, default = frame, preset
         for table in tables:
             target[table] = dict(target[table])
             target, default = target[table], default[table]
-        dropped = _drops(config, key, default[leaf])
+        dropped = _drops(config, key, default[leaf], _additions(default[leaf], target[leaf]))
         joined = _union(default[leaf], target[leaf])
         target[leaf] = [item for item in joined if not any(_same(item, d) for d in dropped)]
     return frame
@@ -566,12 +649,20 @@ def repository_root() -> Path:
             text=True,
             encoding='utf-8',
             errors='surrogateescape',
+            env={**os.environ, 'LC_ALL': 'C'},  # the check below reads git's English message
             check=False,
         )
     except OSError as exc:
         raise FrameError(f'cannot run git: {exc}') from exc
-    if done.returncode != 0 or not done.stdout.strip():
-        raise FrameError('not inside a git repository')
+    if done.returncode != 0:
+        # Only "there is no repository" is NoRepositoryError; a repository git refuses to read
+        # (dubious ownership, the inside of .git) is a plain error with git's own words.
+        detail = done.stderr.strip().splitlines()
+        if not detail or 'not a git repository' in detail[0]:
+            raise NoRepositoryError(NO_REPOSITORY)
+        raise FrameError(detail[0])
+    if not done.stdout.strip():
+        raise NoRepositoryError(NO_REPOSITORY)
     return Path(done.stdout.strip())
 
 
@@ -598,6 +689,41 @@ def _same(a: object, b: object) -> bool:
     return a == b
 
 
+def type_check_paths(value: str | list[str]) -> list[str]:
+    """The paths `python.type_check` names: a string is split into shell words, so
+    "pkg tool.py" is two paths; an array is one path per element (a path may hold a space)."""
+    return shlex.split(value) if isinstance(value, str) else list(value)
+
+
+def _comparable(key: str, value: object) -> object:
+    """`value` as `departures` stores it: a path key's string or array as a list of paths. A
+    value that is not paths (an exceptions row may hold anything) stays as it is."""
+    if key in PATH_KEYS and (
+        isinstance(value, str)
+        or (isinstance(value, list) and all(isinstance(v, str) for v in value))
+    ):
+        try:
+            return type_check_paths(value)
+        except ValueError:
+            return value
+    return value
+
+
+def _layout_type_check(preset: dict[str, Any], config: dict[str, Any]) -> str | list[str]:
+    """The `python.type_check` the preset gives a repository with this `config`.
+
+    The `python-package` preset type-checks `src`. A package that sits at the top level (the
+    layout `flat`) has no `src`: its default is the package itself, so a repository that sets
+    `project.layout = "flat"` and `python.package` needs no row and no `type_check` of its own.
+    """
+    project = {**preset['project'], **config.get('project', {})}
+    package = config.get('python', {}).get('package', preset['python']['package'])
+    if project['type'] == 'python-package' and project['layout'] == 'flat' and package:
+        return shlex.join([package])
+    default: str | list[str] = preset['python']['type_check']
+    return default
+
+
 def _is_parameter(key: str, parameter_keys: list[str]) -> bool:
     return any(key == p or key.startswith(p + '.') for p in parameter_keys)
 
@@ -609,6 +735,7 @@ def departures(config: dict[str, Any]) -> list[Departure]:
     that key alone.
     """
     preset = preset_frame(_project_type(config))
+    preset['python'] = {**preset['python'], 'type_check': _layout_type_check(preset, config)}
     frame = _unrendered(config)
     parameter_keys = preset['meta']['parameter_keys']
     found: list[Departure] = []
@@ -617,6 +744,9 @@ def departures(config: dict[str, Any]) -> list[Departure]:
         if _is_parameter(key, parameter_keys) or key in EXTENDABLE_KEYS:
             continue
         expected, value = _get(preset, key), _get(frame, key)
+        if key in PATH_KEYS:
+            # "src" and ["src"] name the same path.
+            expected, value = type_check_paths(expected), type_check_paths(value)
         if not _same(expected, value):
             found.append(Departure(key, expected, value))
     return found
@@ -626,8 +756,12 @@ def loosens(departure: Departure) -> str | None:
     """How `departure` loosens a check (one of the `LOOSENING` words), or None when it does
     not."""
     how = LOOSENING.get(departure.key)
+    if how is None and departure.key not in NEUTRAL:
+        return UNCLASSIFIED
     preset, value = departure.preset, departure.value
-    if how == REPLACED and isinstance(preset, str) and preset.strip():
+    if how == REPLACED and (
+        (isinstance(preset, str) and preset.strip()) or (isinstance(preset, list) and preset)
+    ):
         return how
     if how == TURNED_OFF and preset is True and value is False:
         return how
@@ -644,13 +778,64 @@ def _show(value: object) -> str:
     return json.dumps(value, ensure_ascii=True)
 
 
-def check(config: dict[str, Any] | None) -> tuple[str, list[str]]:
+def _in_tree(root: Path, entry: str, *, directory: bool = False) -> bool:
+    """Whether `entry` is "." or a path inside the tree at `root` that exists (a directory, when
+    `directory` is set)."""
+    if entry == '.':
+        return True
+    if Path(entry).is_absolute():
+        return False
+    top = root.resolve()
+    target = (top / entry).resolve()
+    return target.is_relative_to(top) and (target.is_dir() if directory else target.exists())
+
+
+def _path_problems(config: dict[str, Any], root: Path) -> list[Problem]:
+    """The `python.type_check` entries and the `python.package` that `config` sets and that are
+    neither "." nor a path in the tree at `root`: `ty` and the package are named from the
+    repository root, so a path that is not there fails the pipeline late and with a worse
+    message. The package is a directory at the root, or under `src/` in the `src` layout.
+    Judged on a schema-valid `config`, and on what the repository sets: the preset's own
+    `src` is not asked to exist."""
+    python = config.get('python', {})
+    problems = [
+        Problem(
+            MISSING_PATH,
+            f'python.type_check: {_show(entry)} is neither "." nor a path in the tree',
+        )
+        for entry in type_check_paths(python.get('type_check', []))
+        if not _in_tree(root, entry)
+    ]
+    package = python.get('package', '')
+    if package:
+        layout = {**preset_frame(_project_type(config))['project'], **config.get('project', {})}[
+            'layout'
+        ]
+        homes = [package, f'src/{package}'] if layout == 'src' else [package]
+        if not any(_in_tree(root, home, directory=True) for home in homes):
+            problems.append(
+                Problem(
+                    MISSING_PATH,
+                    f'python.package: {_show(package)} is neither "." nor a directory of the '
+                    f'tree ({" or ".join(homes)})',
+                )
+            )
+    return problems
+
+
+def check(config: dict[str, Any] | None, root: Path | None = None) -> tuple[str, list[str]]:
     """Validate a parsed `railform.toml`: the verdict code (`ok` or the first rule that failed)
-    and the findings, each prefixed with the file name."""
+    and the findings, each prefixed with the file name.
+
+    With `root`, the top of the repository, the paths the file names must also exist there
+    (`missing-path`); without it the tree is not looked at.
+    """
     config = config or {}
     problems = validate(config)
     if not problems:
         problems = _exception_problems(config)
+        if root is not None:
+            problems += _path_problems(config, root)
     if not problems:
         return 'ok', []
     problems.sort(key=lambda problem: CODE_ORDER.index(problem.code))
@@ -661,8 +846,10 @@ def _exception_problems(config: dict[str, Any]) -> list[Problem]:
     found = {departure.key: departure for departure in departures(config)}
     project_type = _project_type(config)
     preset = preset_frame(project_type)
+    added = _added(config, preset)
     problems: list[Problem] = []
     covered: set[str] = set()
+    addition_rows: set[str] = set()
     for index, row in enumerate(config.get('exceptions', [])):
         where = f'exceptions[{index}]'
         missing = [field for field in ('key', 'reason') if field not in row]
@@ -677,7 +864,7 @@ def _exception_problems(config: dict[str, Any]) -> list[Problem]:
             )
             continue
         if key in EXTENDABLE_KEYS:
-            wrong = _drop_problem(row, key, _get(preset, key))
+            wrong = _guard_row_problem(row, key, _get(preset, key), added[key])
         else:
             wrong = _row_problem(row, found.get(key), project_type)
         if wrong:
@@ -692,6 +879,18 @@ def _exception_problems(config: dict[str, Any]) -> list[Problem]:
             )
             continue
         covered.add(key)
+        if key in LOOSENING_ADDITIONS and ('value' in row or 'drop' not in row):
+            addition_rows.add(key)
+    for key in LOOSENING_ADDITIONS:
+        if added[key] and key not in addition_rows:
+            problems.append(
+                Problem(
+                    UNLISTED_DEPARTURE,
+                    f'{key} adds {_show(added[key])} to the default list and loosens a check '
+                    f'({ADDS}), and no exceptions row lists it (a row that names no drop, or '
+                    'gives value, covers an addition)',
+                )
+            )
     for departure in found.values():
         how = loosens(departure)
         if how is None or departure.key in covered:
@@ -719,7 +918,7 @@ def _row_problem(row: dict[str, Any], departure: Departure | None, project_type:
         if departure is None:
             return f'matches no departure ({key} does not depart from the {project_type} preset)'
         return ''
-    if departure is None or not _same(departure.value, row['value']):
+    if departure is None or not _same(departure.value, _comparable(key, row['value'])):
         return (
             f'matches no departure (no key departs from the {project_type} preset with the '
             f'value {_show(row["value"])})'
@@ -727,15 +926,43 @@ def _row_problem(row: dict[str, Any], departure: Departure | None, project_type:
     return ''
 
 
-def _drop_problem(row: dict[str, Any], key: str, default: list[Any]) -> str:
-    """Why a row for the guard list `key` is bad, or "" when it is good."""
+def _added(config: dict[str, Any], preset: dict[str, Any]) -> dict[str, list[Any]]:
+    """The elements a schema-valid `config` adds to each guard list, by key."""
+    merged = _merge(preset, config)
+    return {key: _additions(_get(preset, key), _get(merged, key)) for key in EXTENDABLE_KEYS}
+
+
+def _guard_row_problem(row: dict[str, Any], key: str, default: list[Any], added: list[Any]) -> str:
+    """Why a row for the guard list `key` is bad, or "" when it is good.
+
+    A row names the default elements it leaves out in `drop`. For a list whose additions loosen a
+    check (`LOOSENING_ADDITIONS`) it may give `value` instead, or as well: the elements the
+    repository adds, which must be exactly those. A row with neither covers the additions too,
+    as a row for any key covers its departure.
+    """
     if 'value' in row:
-        return (
-            f'{key} never departs, so a row gives it no value; it names the default elements it '
-            'leaves out in drop'
-        )
+        if key not in LOOSENING_ADDITIONS:
+            return (
+                f'{key} never departs, so a row gives it no value; it names the default '
+                'elements it leaves out in drop'
+            )
+        if not added:
+            return (
+                f'{key} adds no element to the default list, so a row gives it no value; '
+                'it names the default elements it leaves out in drop'
+            )
+        if not _same(row['value'], added):
+            return (
+                f'value {_show(row["value"])} is not the elements the repository adds '
+                f'({_show(added)})'
+            )
+    elif 'drop' not in row:
+        if key in LOOSENING_ADDITIONS and added:
+            return ''
+        also = ', or covers the elements the repository adds' if key in LOOSENING_ADDITIONS else ''
+        return f'names no drop: a row for {key} names the default elements it leaves out{also}'
     if 'drop' not in row:
-        return f'names no drop: a row for {key} names the default elements it leaves out'
+        return ''
     if not row['drop']:
         return 'drop is empty'
     for item in row['drop']:
@@ -863,8 +1090,9 @@ def pipeline(frame: dict[str, Any]) -> list[str]:
             f'uv run --frozen ruff format --check {lint}',
             f'uv run --frozen ruff check {lint}',
         ]
-        if python['type_check']:
-            steps.append(shlex.join(['uv', 'run', '--frozen', 'ty', 'check', python['type_check']]))
+        type_check = type_check_paths(python['type_check'])
+        if type_check:
+            steps.append(shlex.join(['uv', 'run', '--frozen', 'ty', 'check', *type_check]))
     steps += [line for line in python['test_command'].splitlines() if line.strip()]
     return [step.rstrip() for step in steps]
 
@@ -962,11 +1190,12 @@ def run(args: argparse.Namespace) -> Verdict:
     if args.github_output and not target:
         return Verdict.usage(VERB, f'{VERB}: ${GITHUB_OUTPUT_ENV} is not set')
     try:
-        config = read_config(repository_root())
+        root = repository_root()
+        config = read_config(root)
     except FrameError as exc:
         return Verdict.usage(VERB, f'{VERB}: {exc}')
     if args.check:
-        code, findings = check(config)
+        code, findings = check(config, root)
         if code == 'ok':
             return Verdict.ok(VERB)
         return Verdict.fail(VERB, code, tuple(findings))
