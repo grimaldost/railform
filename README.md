@@ -326,8 +326,12 @@ merge base to HEAD. In CI the `changelog` job runs it on pull requests as
   ASCII digits. A side with no readable three-part version, such as `0.1.0.dev0`, is not
   compared; a line with no such site skips the rule and says so.
 - **Contract surfaces** (`consumer-affecting`). When the range changes a path of
-  `changelog.contract_surfaces` and no record's added lines say `(consumer-affecting)`, the rule
-  fires once per surface. By default (`changelog.consumer_affecting = "advisory"`) a firing is a
+  `changelog.contract_surfaces` and no record carries `(consumer-affecting)` on an added entry,
+  the rule fires once per surface. An entry is an added `- ` line of the record file at HEAD, or
+  an added indented line continuing an entry (a wrapped entry), under the `## [Unreleased]`
+  heading or the newest `## [X.Y.Z]` heading, the first one in the file; the marker in added
+  prose, in a heading, or in the section of an older release marks nothing. By default
+  (`changelog.consumer_affecting = "advisory"`) a firing is a
   `::warning::<path>: consumer-affecting (advisory): ...` line and the verdict stays a pass;
   `"error"`, which is stricter and needs no `exceptions` row, makes it fail.
 

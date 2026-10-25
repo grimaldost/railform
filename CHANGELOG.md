@@ -109,6 +109,13 @@ All notable changes to this project are recorded here, in the
   line. A repository that adopted earlier runs `railform adopt` and commits `.gitattributes`.
 - `docs/adopting.md` says that adopt overwrites a file already in `hooks.dir` under a wrapper's
   name, lists `.gitattributes` among the files adopt writes, and gives the one-shot form in step 7.
+- `changelog-gate` counts `(consumer-affecting)` only on an added entry (an added `- ` line, or an
+  indented line continuing an entry) under `## [Unreleased]` or the newest `## [X.Y.Z]` heading of a
+  record file. Before, the text anywhere in a record's added lines silenced the rule, so a sentence
+  of prose, a heading or a note in an older release's section passed a range that changed a
+  contract surface under `changelog.consumer_affecting = "error"`. The advisory mode prints the
+  same finding as a `::warning::` line. A range whose entry carries the marker in the usual place
+  passes as before.
 
 ## [0.2.0] - 2026-10-24
 
