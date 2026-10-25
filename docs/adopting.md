@@ -37,6 +37,12 @@ the rulesets, and `gh api repos/<owner>/<repo>/rulesets/<id>` shows the `require
 rule of one. A repository on branch protection reads
 `gh api repos/<owner>/<repo>/branches/main/protection`.
 
+On a private repository on a free plan these reads fail: GitHub offers neither rulesets nor branch
+protection there, and answers each `gh api` call with `gh: Upgrade to GitHub Pro or make this
+repository public to enable this feature. (HTTP 403)`. The 403 is not a missing permission and
+retrying or changing the token does not help; it means the repository has no required checks, so
+write that in the inventory (step 6 explains what `gate` is then).
+
 ## 2. Run `railform adopt`
 
 A pin is the full 40-hexadecimal commit of a railform release, never a branch or a version. The tag
@@ -165,22 +171,60 @@ or `value`) or `unlisted-departure` (a departure that loosens a check and that n
 `drift` when an owned part differs from what adopt would write, `pin-mismatch` when the pin sites
 disagree, and `extra-pr-workflow` (step 5). The `frame` job of the shared workflow runs
 `frame --check` and the `hooks` job runs `adopt --check`, on every pull request, so a hand edit
-inside a marker line fails CI. Before opening the pull request,
-run the checks that CI will run on it:
+inside a marker line fails CI.
+
+Edits outside the marker lines are the repository's: adopt keeps them byte for byte, and
+`adopt --check` does not compare them with what adopt would write. A hygiene hook that trips on a
+file the repository has (a data fixture over the 500 KB limit of `check-added-large-files`, a
+generated file with trailing spaces) is dealt with there, by the top-level `exclude:` of
+`.pre-commit-config.yaml`. An edit to the hygiene entry between the marker lines, such as
+`args: [--maxkb=2048]`, fails the next `adopt --check` as `drift`, and a second
+`check-added-large-files` entry outside the markers does not raise the limit, since the marked one
+still runs. Both `adopt` and `adopt --check` refuse a top-level `files:` or `exclude:` that drops a
+hook wrapper or the commit message file (`adopt --check` reports it as `drift`).
+
+Before opening the pull request, run the checks that CI will run on it. Every check the jobs of the
+shared workflow run is in this step (`frame --github-output` only writes the job outputs), with the
+history of `origin/main` fetched:
 
 ```
 railform hooks-check
 railform private-refs
+railform version-sites
 railform private-refs --diff origin/main...HEAD
 railform commit-range origin/main...HEAD
 railform branch-name
+railform changelog-gate origin/main...HEAD
+railform version-sites --base origin/main
 ```
 
-The second `private-refs` reads the branch's commit messages as well as the files it changes; in
-CI the `commit-lane` job also passes the pull request's title and body (`--event`).
+The second `private-refs` reads the branch's commit messages as well as the files it changes. The
+`changelog-gate` line is the `changelog` job: every commit of the range that touches a watched path
+needs a line added to the record file it is charged to, or the trailer `Changelog: none (<reason>)`
+(`changelog.trailer`). A `Changelog: none (<reason>)` trailer declares its own commit only, so
+each commit of the range that needs one carries its own. In a marketplace with a changelog per
+plugin, a plugin's README is charged to that plugin's changelog, because it sits under the plugin's
+prefix, and a README edit in a plugin needs a line in that plugin's `CHANGELOG.md`. The
+`version-sites --base` line reads `version.sites` from the frame of the merge base (see "Changing
+the frame after adoption").
+
+Two commands of the `commit-lane` job read the title and body of the pull request, which exist
+only once it is open: `pr-text` judges them for attribution, and `private-refs --event` adds them
+to the scan. In CI both read the event payload; locally a file of the same shape, kept outside the
+repository, stands in:
+
+```json
+{"pull_request": {"title": "ci: adopt the shared rails", "body": "Pins the shared workflow at v0.2.0."}}
+```
+
+```
+railform pr-text --event ../pr-event.json
+railform private-refs --diff origin/main...HEAD --event ../pr-event.json
+```
 
 A repository with files a coding-assistant session loads (`session_loaded` in the frame) also runs
-`railform session-paths --diff origin/main...HEAD --frame-from origin/main`.
+`railform session-paths --diff origin/main...HEAD --frame-from origin/main`. CI does not run
+`railform session-paths`; run it by hand, since nothing else will notice a change to those files.
 
 ## 5. Put every pull request workflow under `gate`
 
@@ -248,6 +292,27 @@ git -c core.hooksPath=.githooks commit -m "chore: a change"
 ```
 
 The stub in a former hooks directory prints this form with `<command>` in place of `commit ...`.
+
+## Release tags
+
+A repository that tags releases is watched by the daily tag watch (`release-check`). A release tag
+goes on the merge commit of the release pull request, and is annotated:
+`git tag -a vX.Y.Z <merge commit> -m "..."`. A tag laid on the `release:` commit inside the pull
+request, or on a later commit of the branch, fails with `tag-placement` the next day, and a
+lightweight tag fails with `lightweight-tag`. The release pull request is the merged one whose head
+branch starts with `release/` or whose title is a `release:` subject, and which names the version,
+so name the branch `release/X.Y.Z`. The README's section on the release check has the rest.
+
+## Reading a stale or empty check
+
+- **A body edit starts a new run.** The `pull_request` trigger adopt writes includes `edited`, so
+  editing the title or body of a pull request starts a new run of `ci.yml`, which judges the new
+  text with `pr-text` and `private-refs --event`. The earlier run's red check-run can be ignored:
+  it judged the old text and stays in the list, and rerunning it judges the old text again. The new
+  run reports a fresh `gate`.
+- **Jobs that fail in under three seconds with no log** never started, so railform did not run.
+  Check the Actions billing of the account (the payment method and the spending limit) before
+  reading anything else. A railform check that ran prints a `railform-verdict:` line.
 
 ## How the type is detected
 

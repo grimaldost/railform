@@ -63,6 +63,23 @@ All notable changes to this project are recorded here, in the
   Only "there is no repository" takes this path: a repository that git refuses to read (dubious
   ownership, the inside of `.git`) exits 2 with git's own message, in every verb that finds the
   repository, instead of `not inside a git repository`.
+- `docs/adopting.md` closes the gaps the first adoptions and the 0.2.0 release met. Step 4 lists
+  every check the jobs of `python-ci.yml` run (`frame --github-output` only writes the job
+  outputs), so `changelog-gate`, `version-sites` and `version-sites --base` are no longer missing
+  from the checks run before opening a pull request, and shows `pr-text --event` and `private-refs --event` with a stand-in
+  payload. The guide now says that `railform session-paths` is run by hand (CI does not run it),
+  that a `Changelog: none (<reason>)` trailer declares its own commit only and that a plugin's
+  README is charged to that plugin's changelog, that edits outside the marker lines (a hygiene
+  `exclude:` for a file over the size limit) are the repository's while an edit inside them is
+  `drift`, what the HTTP 403 of the rulesets and branch protection reads looks like on a free-plan
+  private repository, that a release tag goes on the merge commit of the release pull request,
+  that a body edit starts a new run so the old red check-run can be ignored, and that jobs failing
+  in under three seconds with no log call for a look at the Actions billing first.
+- `tests/test_adopting_guide.py` fails on more: `~~~` fences, spans that start with a verb and no
+  `railform` (`adopt --check`), `railform <verb> --flag` in plain prose, and flag combinations the
+  command rejects (`adopt --pin <sha> --check`, `frame --check --json`, `version-sites --base`
+  with `--bump`), the run-level ones from a table that a test runs through the command. It also
+  fails when step 4 leaves out a `railform` command that the workflow runs.
 
 ### Fixed
 
