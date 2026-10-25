@@ -112,11 +112,24 @@ def floored_lines(frame: dict[str, Any]) -> list[Floored]:
     for line, row in zip(lines, frame['release']['tag_prefix'], strict=True):
         floor = row.get('since') or frame['release']['since']
         if floor and version_of(line, floor) is None:
-            where = 'its since' if row.get('since') else 'release.since'
             prefix, tag = json.dumps(line.prefix), json.dumps(line.tag)
+            if row.get('since'):
+                where = 'its since'
+                fix = 'set it to a tag of this row'
+            elif not line.prefix:
+                where = 'release.since'
+                fix = 'set release.since to a tag of this row'
+            else:
+                where = 'release.since'
+                # `release.since` is a tag of the root row (empty prefix), which `railform adopt`
+                # seeds, so a row with another tag inherits a floor that cannot be one of its tags.
+                fix = (
+                    'set `since` on this row to the first tag of it to judge, for example '
+                    f'since = {json.dumps(line.tag + "0.0.0")} judges every tag of the row'
+                )
             raise ConfigError(
                 f'release.tag_prefix row {prefix} (tag {tag}): {where} {json.dumps(floor)} is '
-                f'not a tag of this row ({line.tag}X.Y.Z)'
+                f'not a tag of this row ({line.tag}X.Y.Z); {fix}'
             )
         floored.append(Floored(line, floor))
     return floored
