@@ -5,6 +5,8 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-25
+
 ### Added
 
 - `tests/test_adopter_frames.py` and `tests/fixtures/adopter_frames/`: the `railform.toml` of the
