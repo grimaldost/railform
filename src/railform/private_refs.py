@@ -444,13 +444,33 @@ def _added_lines(root: Path) -> Iterator[tuple[str, str, list[tuple[int, str]]]]
         '--format=%x01%H',
         'HEAD',
     ]
-    with tempfile.TemporaryFile() as errors:
+    return _patch_added_lines(root, command)
+
+
+def _patch_added_lines(
+    root: Path, command: list[str], given: bytes | None = None
+) -> Iterator[tuple[str, str, list[tuple[int, str]]]]:
+    """The lines a patch printed by `command` adds, as (full sha, path, [(number, text)]).
+
+    `command` prints `-U0` hunks, each commit introduced by `%x01%H` (none for a plain diff,
+    whose sha is then empty); `given` is written to its standard input.
+    """
+    with tempfile.TemporaryFile() as errors, tempfile.TemporaryFile() as feed:
+        if given is not None:
+            feed.write(given)
+            feed.seek(0)
         try:
-            proc = subprocess.Popen(command, cwd=root, stdout=subprocess.PIPE, stderr=errors)
+            proc = subprocess.Popen(
+                command,
+                cwd=root,
+                stdin=feed if given is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=errors,
+            )
         except OSError as exc:
             raise UsageError(f'cannot run git: {exc}') from exc
         if proc.stdout is None:
-            raise UsageError('cannot read the output of git log')
+            raise UsageError(f'cannot read the output of git {command[3]}')
         sha = ''
         path: str | None = None
         lines: list[tuple[int, str]] = []
@@ -498,7 +518,7 @@ def _added_lines(root: Path) -> Iterator[tuple[str, str, list[tuple[int, str]]]]
         if proc.returncode != 0:
             errors.seek(0)
             detail = errors.read().decode('utf-8', 'replace').strip().splitlines()
-            raise UsageError(f'git log failed: {detail[0] if detail else "no output"}')
+            raise UsageError(f'git {command[3]} failed: {detail[0] if detail else "no output"}')
 
 
 def _has_commits(root: Path) -> bool:
