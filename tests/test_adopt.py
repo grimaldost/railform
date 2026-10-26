@@ -144,6 +144,12 @@ def test_the_wrappers_are_the_frame_wrappers_and_100755_in_the_index(adopted: Fi
         path = f'.githooks/{hook}'
         assert read(adopted.root, path) == wrapper.render(effective, hook)
         assert git(adopted.root, 'ls-files', '-s', '--', path).split()[0] == '100755'
+    # The pre-push and pre-commit wrappers carry the egress extension point; commit-msg does not.
+    for hook in ('pre-push', 'pre-commit'):
+        text = read(adopted.root, f'.githooks/{hook}')
+        assert '$RAILFORM_EGRESS_HOOK' in text, hook
+        assert 'git config --get railform.egressHook' in text, hook
+    assert 'egress' not in read(adopted.root, '.githooks/commit-msg').lower()
 
 
 def test_each_region_names_the_repository_once_and_the_pin_once_per_site(adopted: Fixture) -> None:

@@ -244,6 +244,32 @@ application-control policy may refuse to launch.
 - A frame whose `hooks.wrapper` pins a requirement to no version (the `{hooks.pre_commit_version}`
   placeholder with `hooks.pre_commit_version` empty) is a configuration error, exit 2.
 
+### The egress extension point
+
+The `pre-push` and `pre-commit` wrappers can run an egress hook that the environment names, never
+the project: a Python script, named by the variable `RAILFORM_EGRESS_HOOK` when it is set and not
+empty, else by the git configuration key `railform.egressHook` (normally in the user's global
+file: `git config --global railform.egressHook <path>`). The path is used as given, and a relative
+one is read from the top of the working tree. railform ships no egress hook. The script always
+runs as `uv run --no-project python <path> <mode> ...`, never launched directly, so it runs the
+same way on Windows.
+
+- **`pre-push` mode.** The wrapper saves git's input (one line per pushed ref:
+  `<local ref> <local sha> <remote ref> <remote sha>`) to a temporary file and runs the script
+  with `pre-push <remote name> <remote URL>` and that input. When the script exits 0, pre-commit's
+  `pre-push` stage runs with the same input. When it exits non-zero, the push is refused: the
+  wrapper prints `railform: egress hook <path> refused the push (exit <n>)`, runs no pre-commit
+  stage and exits with the script's status. A path that is not a file refuses the push with exit
+  2 and the line `railform: egress hook <path> is not a file`.
+- **`pre-commit` mode.** The wrapper runs the script with `pre-commit` and no input, ignores its
+  exit status, and then runs pre-commit's stage as usual, so a commit is never refused by it. A
+  path that is not a file is reported in one line
+  (`railform: egress hook <path> is not a file; the commit goes on`) and the commit goes on.
+
+With neither the variable nor the key set, the wrappers run pre-commit exactly as before and print
+nothing of their own. The `commit-msg` wrapper has no egress step. `git push --no-verify` skips
+the `pre-push` wrapper, egress hook included.
+
 ## The commit lane
 
 Three verbs judge commit text, with the rules read from the frame (`commit.types` and
