@@ -1,9 +1,10 @@
-"""The verb `pr-text [--event PATH]`: judge a pull request's title and body for attribution.
+"""The verb `pr-text [--event PATH]`: judge a pull request's title and body.
 
-Development-rails spec, §4; the rules live in `railform.commit_lane`. The text is read from the
-event payload: `pull_request.title` and `pull_request.body`, a `null` or absent value being empty
-text (GitHub sends `null` for an empty body). Only the attribution rule applies: a title is not a
-commit subject until a squash merge makes it one.
+The rules live in `railform.commit_lane`. The text is read from the event payload:
+`pull_request.title` and `pull_request.body`, a `null` or absent value being empty text (GitHub
+sends `null` for an empty body). The attribution rule applies to both. A title is not a commit
+subject until a squash merge makes it one, so the subject rule does not apply; and a title is one
+line, so only the body is judged for its form (`unclosed-fence`, `carriage-return`).
 """
 
 from __future__ import annotations
@@ -26,7 +27,9 @@ EVENT_ENV = 'GITHUB_EVENT_PATH'
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.description = (
         'Check that no line of the pull request title or body attributes authorship to an AI '
-        f'tool. Reads the event payload at --event, else at ${EVENT_ENV}.'
+        'tool, and that the body does not end inside a code fence it opened (unclosed-fence) or '
+        'hold a carriage return that no line feed follows (carriage-return). Reads the event '
+        f'payload at --event, else at ${EVENT_ENV}.'
     )
     parser.add_argument('--event', metavar='PATH', help=f'the event payload (default ${EVENT_ENV})')
 
@@ -68,4 +71,7 @@ def run(args: argparse.Namespace) -> Verdict:
         return Verdict.usage(VERB, f'{VERB}: {exc}')
     _, in_title = commit_lane.check_message('pull request title', title, rules, subject_exempt=True)
     _, in_body = commit_lane.check_message('pull request body', body, rules, subject_exempt=True)
-    return commit_lane.verdict(VERB, [], [*in_title, *in_body])
+    fences, carriage_returns = commit_lane.check_body_form('pull request body', body)
+    return commit_lane.verdict(
+        VERB, [], [*in_title, *in_body], fences=fences, carriage_returns=carriage_returns
+    )

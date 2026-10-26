@@ -9,7 +9,7 @@ Development-rails spec, §4. It ports two public sources into frame-driven check
   `scripts/check_commit_message.py` at bbcbc6c, the script form that reads a message file and
   names each offending line.
 
-Two rules:
+The rules:
 
 - **Subject.** The first line of a commit message reads `type(scope)!: description`, the scope
   and the `!` optional, the type one of `commit.types`. A commit with more than one parent is
@@ -20,6 +20,12 @@ Two rules:
 - **Attribution.** No line of any message, merges included, matches a pattern of
   `commit.attribution_patterns` (Python `re`, case-insensitive, per line). The pull request's
   title and body are held to the same patterns.
+- **Form of a pull request body** (`pr-text` only; the title is one line and gets neither).
+  `unclosed-fence`: the body ends inside a fenced code block, as CommonMark reads fences, and the
+  finding names the opening line. `carriage-return`: the body holds a carriage return that no line
+  feed follows; a CRLF line end passes, since GitHub's web editor submits bodies that way. Both
+  name lines counted in line feeds, and both read the raw body, because `str.splitlines` ends a
+  line at a lone carriage return and would never show one.
 
 The verb modules (`commit_msg`, `commit_range`, `pr_text`) only parse arguments and call this one.
 """
@@ -40,11 +46,22 @@ if TYPE_CHECKING:
 
 SUBJECT = 'subject'
 ATTRIBUTION = 'attribution'
+UNCLOSED_FENCE = 'unclosed-fence'
+CARRIAGE_RETURN = 'carriage-return'
 # What follows the comment character in the line `git commit -v` writes before the diff it
 # appends to the message template.
 SCISSORS_TAIL = ' ------------------------ >8 ------------------------'
 DEFAULT_COMMENT_CHAR = '#'
 SUBJECT_MESSAGE = 'the subject is not "type(scope)!: description" with a type of the frame'
+UNCLOSED_FENCE_MESSAGE = 'a code fence opens on this line and is never closed'
+CARRIAGE_RETURN_MESSAGE = 'a carriage return not followed by a line feed'
+# A fence opens with at most three spaces of indent and a run of three or more backticks (whose
+# info string holds no backtick) or of three or more tildes. A closer is such a run with nothing
+# but spaces or tabs after it.
+_BACKTICK_OPENER = re.compile(r' {0,3}(`{3,})[^`]*')
+_TILDE_OPENER = re.compile(r' {0,3}(~{3,}).*')
+_CLOSER = re.compile(r' {0,3}(`{3,}|~{3,})[ \t]*')
+_LONE_CARRIAGE_RETURN = re.compile(r'\r(?!\n)')
 # What `git commit --fixup`, `--squash` and `--fixup=amend:` put before the subject they target.
 AUTOSQUASH_PREFIXES = ('fixup! ', 'squash! ', 'amend! ')
 
@@ -149,6 +166,55 @@ def attribution_findings(lines: Iterable[tuple[int, str]], rules: Rules) -> list
     ]
 
 
+def _body_lines(body: str) -> list[str]:
+    """The lines of `body` split at line feeds, each without its line end, LF or CRLF.
+
+    A carriage return that no line feed follows is part of its line, not a line end.
+    """
+    lines = body.split('\n')
+    return [line.removesuffix('\r') for line in lines[:-1]] + lines[-1:]
+
+
+def unclosed_fence_findings(body: str) -> list[tuple[int, str]]:
+    """The opening line of a fenced code block still open when `body` ends, as a list of one
+    (line number, message), else empty. Lines are numbered in line feeds.
+
+    Follows CommonMark: a block inside a block quote or a list item is not judged, and a line
+    indented four or more spaces outside a block is indented code and opens nothing.
+    """
+    opened: tuple[int, str, int] | None = None  # line number, marker character, marker length
+    for number, line in enumerate(_body_lines(body), start=1):
+        if opened is None:
+            found = _BACKTICK_OPENER.fullmatch(line) or _TILDE_OPENER.fullmatch(line)
+            if found:
+                opened = (number, found[1][0], len(found[1]))
+            continue
+        closer = _CLOSER.fullmatch(line)
+        if closer and closer[1][0] == opened[1] and len(closer[1]) >= opened[2]:
+            opened = None
+    return [] if opened is None else [(opened[0], UNCLOSED_FENCE_MESSAGE)]
+
+
+def carriage_return_findings(body: str) -> list[tuple[int, str]]:
+    """The lines of `body` that hold a carriage return no line feed follows, with their numbers
+    counted in line feeds. Reads the raw body: `splitlines` ends a line at a lone carriage return.
+    """
+    numbers = sorted(
+        {body.count('\n', 0, found.start()) + 1 for found in _LONE_CARRIAGE_RETURN.finditer(body)}
+    )
+    return [(number, CARRIAGE_RETURN_MESSAGE) for number in numbers]
+
+
+def check_body_form(label: str, body: str) -> tuple[list[str], list[str]]:
+    """Judge the form of a pull request body; returns its fence findings and its
+    carriage-return findings, each reading `<label>:<line>: <code>: <message>`."""
+    fences = [f'{label}:{n}: {UNCLOSED_FENCE}: {text}' for n, text in unclosed_fence_findings(body)]
+    returns = [
+        f'{label}:{n}: {CARRIAGE_RETURN}: {text}' for n, text in carriage_return_findings(body)
+    ]
+    return fences, returns
+
+
 def check_message(
     label: str,
     message: str,
@@ -173,13 +239,25 @@ def check_message(
     return subject, attribution
 
 
-def verdict(verb: str, subject: Sequence[str], attribution: Sequence[str]) -> Verdict:
-    """The verdict of a verb: the subject rule is named before the attribution rule."""
-    findings = (*subject, *attribution)
+def verdict(
+    verb: str,
+    subject: Sequence[str],
+    attribution: Sequence[str],
+    *,
+    fences: Sequence[str] = (),
+    carriage_returns: Sequence[str] = (),
+) -> Verdict:
+    """The verdict of a verb. It names the first rule that has a finding, in the order subject,
+    attribution, unclosed-fence, carriage-return, and lists every finding in that order."""
+    findings = (*subject, *attribution, *fences, *carriage_returns)
     if subject:
         return Verdict.fail(verb, SUBJECT, findings)
     if attribution:
         return Verdict.fail(verb, ATTRIBUTION, findings)
+    if fences:
+        return Verdict.fail(verb, UNCLOSED_FENCE, findings)
+    if carriage_returns:
+        return Verdict.fail(verb, CARRIAGE_RETURN, findings)
     return Verdict.ok(verb)
 
 

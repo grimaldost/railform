@@ -820,3 +820,205 @@ def test_without_a_comment_character_in_the_configuration_hash_is_the_marker(
     assert commit_lane.comment_char(scratch_repo) == '#'
     path = message_file(f'feat: add a thing\n\n# {ATTRIBUTED_TRAILER}\n')
     assert run_verb(capsys, 'commit-msg', path) == (0, [], ('pass', 'ok'))
+
+
+# --- pr-text: the form of the body -------------------------------------------------------------
+
+UNCLOSED_FENCE_MESSAGE = 'a code fence opens on this line and is never closed'
+CARRIAGE_RETURN_MESSAGE = 'a carriage return not followed by a line feed'
+
+
+def body_verdict(
+    body: str, tmp_path: Path, capsys: pytest.CaptureFixture[str], title: str = 'feat: x'
+) -> tuple[int, list[str], tuple[str, str]]:
+    event = write_event(tmp_path / 'event.json', {'title': title, 'body': body})
+    return run_verb(capsys, 'pr-text', '--event', str(event))
+
+
+def test_red_proof_a_body_that_opens_a_fence_on_its_first_line_and_never_closes_it_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, findings, verdict = body_verdict('```python\nprint(1)\n\nDone.\n', tmp_path, capsys)
+    assert (code, verdict) == (1, ('fail', 'unclosed-fence'))
+    assert findings == [f'pull request body:1: unclosed-fence: {UNCLOSED_FENCE_MESSAGE}']
+
+
+def test_red_proof_a_tilde_fence_followed_only_by_a_backtick_line_of_its_length_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, findings, verdict = body_verdict('~~~\ncode\n```\n', tmp_path, capsys)
+    assert (code, verdict) == (1, ('fail', 'unclosed-fence'))
+    assert findings == [f'pull request body:1: unclosed-fence: {UNCLOSED_FENCE_MESSAGE}']
+
+
+def test_red_proof_a_lone_carriage_return_inside_a_table_cell_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    body = '| name | note |\n|---|---|\n| a | first\rsecond |\n'
+    code, findings, verdict = body_verdict(body, tmp_path, capsys)
+    assert (code, verdict) == (1, ('fail', 'carriage-return'))
+    assert findings == [f'pull request body:3: carriage-return: {CARRIAGE_RETURN_MESSAGE}']
+
+
+def test_red_proof_a_body_with_both_defects_fails_as_unclosed_fence_and_lists_both(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    body = '```\nprint(1)\n| a | b\rc |\n'
+    code, findings, verdict = body_verdict(body, tmp_path, capsys)
+    assert (code, verdict) == (1, ('fail', 'unclosed-fence'))
+    assert findings == [
+        f'pull request body:1: unclosed-fence: {UNCLOSED_FENCE_MESSAGE}',
+        f'pull request body:3: carriage-return: {CARRIAGE_RETURN_MESSAGE}',
+    ]
+
+
+@pytest.mark.parametrize(
+    'body',
+    [
+        pytest.param('```\ncode\n```\n', id='closed-backticks'),
+        pytest.param('~~~\ncode\n~~~\n', id='closed-tildes'),
+        pytest.param('```python\ncode\n```\t\n', id='closer-followed-by-a-tab'),
+        pytest.param('```\ncode\n```  \t \n', id='closer-followed-by-spaces-and-tabs'),
+        pytest.param('````\n```\ninner\n```\n````\n', id='fence-inside-a-longer-fence'),
+        pytest.param('~~~~\n~~~\ninner\n~~~\n~~~~\n', id='tilde-fence-inside-a-longer-fence'),
+        pytest.param('````\ncode\n``````\n', id='closer-longer-than-the-opener'),
+        pytest.param('```\ncode\n   ```\n', id='closer-indented-three-spaces'),
+        pytest.param('   ```\ncode\n```\n', id='opener-indented-three-spaces'),
+        pytest.param('```x```\n', id='inline-code-line'),
+        pytest.param('Use ```x``` here.\n', id='inline-code-in-prose'),
+        pytest.param('    ```\ncode\n', id='opener-indented-four-spaces'),
+        pytest.param('\t```\ncode\n', id='opener-indented-by-a-tab'),
+        pytest.param('```\n    ```\n```\n', id='indented-line-inside-a-block-is-content'),
+        pytest.param('```\n~~~\n```\n', id='other-marker-inside-a-block-is-content'),
+        pytest.param('> ```\n> code\n', id='fence-in-a-block-quote-is-not-judged'),
+        pytest.param('- ```\n  code\n', id='fence-in-a-list-item-is-not-judged'),
+        pytest.param('1. ```\n   code\n', id='fence-in-an-ordered-list-item-is-not-judged'),
+        pytest.param('``\ncode\n', id='two-backticks-open-nothing'),
+        pytest.param('~~\ncode\n', id='two-tildes-open-nothing'),
+        pytest.param('```\na\n```\n\n```\nb\n```\n', id='two-closed-blocks'),
+        pytest.param('## Summary\n\nDone.\nno fences here, only LF\n', id='line-feeds-only'),
+        pytest.param('', id='empty-body'),
+    ],
+)
+def test_a_well_formed_body_passes(
+    body: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert body_verdict(body, tmp_path, capsys) == (0, [], ('pass', 'ok'))
+
+
+def test_a_crlf_body_with_a_closed_fence_and_a_table_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    body = '## Summary\r\n\r\n| a | b |\r\n|---|---|\r\n| 1 | 2 |\r\n\r\n```sh\r\nmake\r\n```\r\n'
+    assert body_verdict(body, tmp_path, capsys) == (0, [], ('pass', 'ok'))
+
+
+def test_a_crlf_closer_followed_by_spaces_is_a_closer(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert body_verdict('```\r\ncode\r\n``` \t\r\n', tmp_path, capsys)[2] == ('pass', 'ok')
+
+
+@pytest.mark.parametrize(
+    ('body', 'opening'),
+    [
+        pytest.param('```\ncode\n', 1, id='backticks'),
+        pytest.param('~~~\ncode\n', 1, id='tildes'),
+        pytest.param('Intro\n\n```sh\nmake\n', 3, id='after-prose'),
+        pytest.param('```\na\n```\n\n```\nb\n', 5, id='second-block-open'),
+        pytest.param('  ```\ncode\n', 1, id='opener-indented-two-spaces'),
+        pytest.param('~~~ a `tick`\ncode\n', 1, id='tilde-info-string-may-hold-a-backtick'),
+        pytest.param('```\ncode\n``` text\n', 1, id='closer-with-text-after-it'),
+        pytest.param('````\ncode\n```\n', 1, id='closer-shorter-than-the-opener'),
+        pytest.param('```\ncode\n~~~\n', 1, id='closer-of-the-other-character'),
+        pytest.param('```\ncode\n    ```\n', 1, id='closer-indented-four-spaces'),
+        pytest.param('```\ncode\n> ```\n', 1, id='closer-in-a-block-quote'),
+        pytest.param('```\r\ncode\r\n', 1, id='crlf-body'),
+        pytest.param('```', 1, id='opener-is-the-last-byte'),
+    ],
+)
+def test_a_block_still_open_at_the_end_names_the_opening_line(body: str, opening: int) -> None:
+    assert commit_lane.unclosed_fence_findings(body) == [(opening, UNCLOSED_FENCE_MESSAGE)]
+
+
+def test_lines_are_numbered_in_line_feeds_not_in_carriage_returns() -> None:
+    body = 'a\rb\rc\n```\ncode\n'
+    assert commit_lane.unclosed_fence_findings(body) == [(2, UNCLOSED_FENCE_MESSAGE)]
+    assert commit_lane.carriage_return_findings(body) == [(1, CARRIAGE_RETURN_MESSAGE)]
+
+
+def test_a_line_with_several_lone_carriage_returns_is_one_finding() -> None:
+    body = 'ok\na\rb\rc\n\r\rd\nfine\r\n'
+    assert commit_lane.carriage_return_findings(body) == [
+        (2, CARRIAGE_RETURN_MESSAGE),
+        (3, CARRIAGE_RETURN_MESSAGE),
+    ]
+
+
+@pytest.mark.parametrize(
+    ('body', 'lines'),
+    [
+        pytest.param('', [], id='empty'),
+        pytest.param('a\nb\n', [], id='line-feeds'),
+        pytest.param('a\r\nb\r\n', [], id='crlf'),
+        pytest.param('a\r', [1], id='carriage-return-at-the-end'),
+        pytest.param('a\r\r\nb', [1], id='lone-before-a-crlf'),
+        pytest.param('a\r\n\rb\r\n', [2], id='lone-after-a-crlf'),
+        pytest.param('\r', [1], id='only-a-carriage-return'),
+    ],
+)
+def test_a_carriage_return_passes_only_when_a_line_feed_follows_it(
+    body: str, lines: list[int]
+) -> None:
+    found = commit_lane.carriage_return_findings(body)
+    assert [number for number, _ in found] == lines
+
+
+def test_the_title_is_not_judged_for_form(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert body_verdict('fine', tmp_path, capsys, title='```x\ry') == (0, [], ('pass', 'ok'))
+
+
+def test_attribution_is_named_before_the_form_findings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    body = f'```\n{GENERATION_STAMP}\nx\ry\n'
+    code, findings, verdict = body_verdict(body, tmp_path, capsys)
+    assert (code, verdict) == (1, ('fail', 'attribution'))
+    assert [line.split(': ')[1] for line in findings] == [
+        'attribution line',
+        'unclosed-fence',
+        'carriage-return',
+    ]
+
+
+def test_a_body_with_only_a_carriage_return_and_a_closed_fence_names_the_carriage_return(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code, _, verdict = body_verdict('```\nx\n```\na\rb\n', tmp_path, capsys)
+    assert (code, verdict) == (1, ('fail', 'carriage-return'))
+
+
+def test_verdict_takes_the_form_findings_as_keyword_sequences_after_attribution() -> None:
+    fence, cr = 'body:1: unclosed-fence: m', 'body:2: carriage-return: m'
+    assert commit_lane.verdict('v', [], []).line == 'railform-verdict: v pass ok'
+    both = commit_lane.verdict('v', [], [], fences=[fence], carriage_returns=[cr])
+    assert both.line == 'railform-verdict: v fail unclosed-fence'
+    assert both.findings == (fence, cr)
+    only = commit_lane.verdict('v', [], [], carriage_returns=[cr])
+    assert only.line == 'railform-verdict: v fail carriage-return'
+    named = commit_lane.verdict('v', ['s'], ['a'], fences=[fence], carriage_returns=[cr])
+    assert named.line == 'railform-verdict: v fail subject'
+    assert named.findings == ('s', 'a', fence, cr)
+    attributed = commit_lane.verdict('v', [], ['a'], fences=[fence])
+    assert attributed.line == 'railform-verdict: v fail attribution'
+
+
+def test_the_commit_message_verbs_apply_no_form_findings(
+    history: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    message = 'feat: add a thing\n\n```\nunclosed\nand a\rlone return\n'
+    assert run_verb(capsys, 'commit-msg', message_file(message)) == (0, [], ('pass', 'ok'))
+    commit(message)
+    assert run_verb(capsys, 'commit-range', 'base...HEAD') == (0, [], ('pass', 'ok'))
