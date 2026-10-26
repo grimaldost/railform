@@ -44,7 +44,9 @@ All notable changes to this project are recorded here, in the
   default as its `drift` example.
 - `railform pr-text` judges the form of a pull request body with two more findings, after
   `subject` and `attribution` in the rule order: `unclosed-fence` (the body ends inside a fenced
-  code block, as CommonMark reads fences; the finding names the opening line) and
+  code block that no block quote or list item holds, its block structure read as CommonMark
+  reads it, so a fence line inside an HTML block or an indented code block does not count; where
+  CommonMark parsers differ, as markdown-it reads it; the finding names the opening line) and
   `carriage-return` (the body holds a carriage return that no line feed follows, which splits a
   table row on GitHub). Each names its line, counted in line feeds. A CRLF line end passes, since
   GitHub's web editor submits bodies that way, and the title, which is one line, gets neither.

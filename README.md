@@ -285,16 +285,33 @@ Three verbs judge commit text, with the rules read from the frame (`commit.types
   payload (`--event`, else `$GITHUB_EVENT_PATH`). A `null` or absent title or body is empty text.
   The body is also judged for its form, after the attribution rule, with two findings that each
   name the line, counted in line feeds (the title is one line and gets neither):
-  `unclosed-fence` fires when the body ends inside a fenced code block, which opens with a run of
-  three or more backticks or tildes, at most three spaces of indent, and closes with a run of the
-  same character at least as long, so a fence left open swallows the rest of the page; and
-  `carriage-return` fires when the body holds a carriage return that no line feed follows, which
-  splits a table row on GitHub. A CRLF line end passes, since GitHub's web editor submits bodies
-  that way. A fence inside a block quote or a list item is not judged, whether it sits on the
-  item's marker line or on a later line of the item. Which lines an item holds follows
-  CommonMark's list rules: an item whose marker line holds nothing ends at the next blank line,
-  and a marker that would interrupt a paragraph starts no item when nothing follows it or its
-  number is not 1.
+  `unclosed-fence` fires when the body ends inside a fenced code block, so the rest of the page
+  renders as code; and `carriage-return` fires when the body holds a carriage return that no line
+  feed follows, which splits a table row on GitHub. A CRLF line end passes, since GitHub's web
+  editor submits bodies that way.
+
+  A fence opens on a line with at most three spaces of indent and a run of three or more
+  backticks or of three or more tildes; after backticks, the rest of the line holds no backtick,
+  so a line of inline code (three backticks, `x`, three backticks) opens nothing. It closes on a
+  line with at most three spaces of indent, a run of the opener's character at least as long as
+  the opener's, and nothing after the run but spaces or tabs, so a run followed by text closes
+  nothing. Which lines can open or close a fence follows CommonMark's block structure. A line
+  inside an open fence, an indented code block or an HTML block is content: an HTML block runs
+  from a line that starts with `<!--` to the line that holds `-->`, from `<pre>`, `<script>`,
+  `<style>` or `<textarea>` to the line that holds an end tag of one of the four, likewise for
+  the other kinds CommonMark lists, and from a block-level tag such as `<details>` or `<div>`,
+  or, outside a paragraph, from a line holding only one tag, to the next blank line. A fence
+  inside a block quote or a list item is not judged, whether it sits on the item's marker line
+  or on a later line of the item. List
+  items start and end by CommonMark's list rules: an item whose marker line holds nothing ends at
+  the next blank line, and a marker that would interrupt a paragraph starts no item when nothing
+  follows it or its number is not 1. A paragraph made only of link reference definitions is no
+  paragraph, so a `===` line under it is text, not a heading underline. Where CommonMark parsers
+  differ, the check reads the body as markdown-it does in its CommonMark mode; for example, the
+  line right after a link reference definition starts a new block, where cmark (on which
+  GitHub's renderer is built) reads it as paragraph text, and an HTML block in a list item ends
+  at a blank line indented less than the item's content, where cmark keeps it open. On such rare
+  bodies the check and GitHub can disagree, in either direction.
 
 The subject rule: the first line reads `type(scope)!: description`, the scope and the `!` optional
 and the type one of `commit.types`. A commit with more than one parent (a merge) is exempt, since
