@@ -110,10 +110,11 @@ These departures loosen a check (`LOOSENING` in `src/railform/frame.py`):
 | `ci.self_hosted` | it is `true` |
 | `ci.extra_workflows`, `changelog.unwatched`, `branch.allow`, `release.metadata_paths`, `commit.types`, `python.sync_args`, `ci.setup.extra_installs` | the list has an element the preset lacks: an argument after `uv sync --frozen` or a requirement installed after it changes the environment the checks run in |
 | `ci.os`, `commit.attribution_patterns`, `hooks.names`, `python.lint_paths` | the list leaves out an element the preset has |
+| `hooks.large_file_kb` | it is above the preset's |
 
 Any other departure, and these in the other direction, needs no row: a `ci.setup.fetch_depth`, a
 longer `ci.os`, an empty `changelog.unwatched`, `changelog.consumer_affecting = "error"`, a
-shorter `commit.types`, another `hooks.dir` or `python.newest`. A key of the first row needs a row
+shorter `commit.types`, a lower `hooks.large_file_kb`, another `hooks.dir` or `python.newest`. A key of the first row needs a row
 for any change, a stricter one included.
 
 Every key of the frame is classified: in `LOOSENING`, in `NEUTRAL` (the keys above that loosen
@@ -589,7 +590,9 @@ fails when any of them differs from what adopt would write. Adopt owns only thes
   (`pre-commit/pre-commit-hooks` v5.0.0, pinned by its commit). Each hygiene hook carries
   `stages: [pre-commit]`: without it a hook runs at every stage a wrapper is installed for, so
   `check-merge-conflict --assume-in-merge` would refuse a commit message that quotes a conflict
-  marker, and the whole set would run again at `pre-push`.
+  marker, and the whole set would run again at `pre-push`. `check-added-large-files` takes
+  `args: [--maxkb=<value>]` when the frame's `hooks.large_file_kb` is not 500, the hook's own
+  limit in KB; at 500 the entry carries no `args`.
 - In `.github/dependabot.yml`, an ignore entry for `grimaldost/railform` in the `github-actions`
   update. Adopt adds that update when there is none.
 - Whole files: the hook wrappers in `hooks.dir`, staged as their exact bytes and tracked as

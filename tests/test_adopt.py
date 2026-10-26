@@ -184,6 +184,99 @@ def test_the_hygiene_entry_is_pre_commit_hooks_v5_at_its_sha(adopted: Fixture) -
     assert railform[0]['rev'] == PIN
 
 
+LARGE_FILE_ID = '- id: check-added-large-files'
+LARGE_FILE_ROW = (
+    '\n[[exceptions]]\nkey = "hooks.large_file_kb"\nreason = "a data fixture of 1.5 MB"\n'
+)
+
+
+def _hygiene_hooks(root: Path) -> dict[str, list[str] | None]:
+    repos = yaml.safe_load(read(root, PRE_COMMIT))['repos']
+    [hygiene] = [repo for repo in repos if repo['repo'].endswith('/pre-commit/pre-commit-hooks')]
+    return {hook['id']: hook.get('args') for hook in hygiene['hooks']}
+
+
+def test_the_hygiene_template_parses_and_takes_no_values() -> None:
+    # The template stays a YAML list with no `__NAME__` placeholder: the hygiene replay's tests
+    # read its raw text, and adopt adds the large-file limit after filling it.
+    text = adopt_module._template_text('pre-commit-hygiene.yaml')
+    assert text is not None
+    assert '__' not in text
+    [entry] = yaml.safe_load(text)
+    hooks = {hook['id']: hook.get('args') for hook in entry['hooks']}
+    assert hooks['check-added-large-files'] is None
+
+
+def test_a_frame_at_the_default_large_file_limit_renders_no_args(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    before = read(adopted.root, PRE_COMMIT)
+    config = read(adopted.root, 'railform.toml')
+    write(adopted.root, 'railform.toml', config + '\n[hooks]\nlarge_file_kb = 500\n')
+    code, line, out = run_adopt(capsys)
+    assert (code, line) == (0, f'{VERDICT} pass ok'), out
+    assert read(adopted.root, PRE_COMMIT) == before
+    assert _hygiene_hooks(adopted.root)['check-added-large-files'] is None
+    assert '--maxkb' not in before
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+
+
+def test_red_proof_a_raised_large_file_limit_renders_maxkb_and_passes_check(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = read(adopted.root, 'railform.toml')
+    write(
+        adopted.root, 'railform.toml', config + '\n[hooks]\nlarge_file_kb = 2048\n' + LARGE_FILE_ROW
+    )
+    assert main(['frame', '--check']) == 0, capsys.readouterr().out
+    capsys.readouterr()
+    # The owned region still has the default entry, so the new limit is a drift until adopt runs.
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift'), out
+    code, line, out = run_adopt(capsys)
+    assert (code, line) == (0, f'{VERDICT} pass ok'), out
+    assert _hygiene_hooks(adopted.root)['check-added-large-files'] == ['--maxkb=2048']
+    # The line goes directly under the hook's id, at the column of the entry's other `args:`.
+    lines = read(adopted.root, PRE_COMMIT).splitlines()
+    [at] = [i for i, text in enumerate(lines) if text.strip() == LARGE_FILE_ID]
+    [other] = [text for text in lines if text.strip() == 'args: [--assume-in-merge]']
+    indent = other[: len(other) - len(other.lstrip())]
+    assert lines[at + 1] == f'{indent}args: [--maxkb=2048]'
+    assert read(adopted.root, PRE_COMMIT).count('--maxkb') == 1
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (0, f'{VERDICT} pass ok'), out
+    # Back at the default, adopt takes the line out again.
+    write(adopted.root, 'railform.toml', config)
+    assert run_adopt(capsys)[0] == 0
+    assert _hygiene_hooks(adopted.root)['check-added-large-files'] is None
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+
+
+def test_a_lowered_large_file_limit_renders_maxkb_and_needs_no_row(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = read(adopted.root, 'railform.toml')
+    write(adopted.root, 'railform.toml', config + '\n[hooks]\nlarge_file_kb = 400\n')
+    assert main(['frame', '--check']) == 0, capsys.readouterr().out
+    capsys.readouterr()
+    assert run_adopt(capsys)[0] == 0
+    assert _hygiene_hooks(adopted.root)['check-added-large-files'] == ['--maxkb=400']
+    assert run_adopt(capsys, '--check')[1] == f'{VERDICT} pass ok'
+
+
+def test_a_hand_typed_maxkb_with_the_frame_at_the_default_is_drift(
+    adopted: Fixture, capsys: pytest.CaptureFixture[str]
+) -> None:
+    text = read(adopted.root, PRE_COMMIT)
+    lines = text.splitlines(keepends=True)
+    [at] = [i for i, line in enumerate(lines) if line.strip() == LARGE_FILE_ID]
+    indent = lines[at][: len(lines[at]) - len(lines[at].lstrip())] + '  '
+    lines.insert(at + 1, f'{indent}args: [--maxkb=2048]\n')
+    write(adopted.root, PRE_COMMIT, ''.join(lines))
+    code, line, out = run_adopt(capsys, '--check')
+    assert (code, line) == (1, f'{VERDICT} fail drift'), out
+
+
 def test_red_proof_every_hygiene_hook_runs_at_the_pre_commit_stage_only(adopted: Fixture) -> None:
     # The development-rails spec, §13 (the keel pilot): a hook with no stages runs at every
     # stage a wrapper is installed for, so check-merge-conflict --assume-in-merge judged the

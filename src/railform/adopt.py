@@ -610,14 +610,32 @@ def _hooks_files(directory: str) -> str:
     return "'" + ('^' + re.escape(directory) + '/').replace("'", "''") + "'"
 
 
-def _plan_pre_commit(pre: _PreCommit, rev: str | None, directory: str) -> str:
+# The limit `check-added-large-files` applies when it is given no `--maxkb`, in KB.
+HOOK_LARGE_FILE_KB = 500
+_LARGE_FILE_ID = '- id: check-added-large-files'
+
+
+def _hygiene(large_file_kb: int) -> list[str]:
+    """The hygiene entry: the template as it is at the hook's own limit, and otherwise with
+    `args: [--maxkb=<large_file_kb>]` directly under the large-file hook's id, at the column of
+    the entry's other `args:` lines."""
+    lines = _fill('pre-commit-hygiene.yaml')
+    if large_file_kb == HOOK_LARGE_FILE_KB:
+        return lines
+    [at] = [i for i, line in enumerate(lines) if line.strip() == _LARGE_FILE_ID]
+    other = next(line for line in lines if line.lstrip().startswith('args: '))
+    indent = other[: len(other) - len(other.lstrip())]
+    return [*lines[: at + 1], f'{indent}args: [--maxkb={large_file_kb}]', *lines[at + 1 :]]
+
+
+def _plan_pre_commit(pre: _PreCommit, rev: str | None, directory: str, large_file_kb: int) -> str:
     """The text of the pre-commit configuration as adopt writes it; `rev` None is self-hosted."""
     files = _hooks_files(directory)
     if rev is None:
         entry = _fill('pre-commit-local.yaml', HOOKS_FILES=files)
     else:
         entry = _fill('pre-commit-railform.yaml', PIN=rev, HOOKS_FILES=files)
-    body = entry + _fill('pre-commit-hygiene.yaml')
+    body = entry + _hygiene(large_file_kb)
     doc, region = pre.doc, pre.region
     if region is not None:
         _require_inside(doc, region, pre.repos_key, pre.repos, 'repos:')
@@ -1251,6 +1269,7 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         )
     frame = frame_module.effective_frame(config)
     directory, names, wrappers = _wrappers(frame)
+    large_file_kb = frame['hooks']['large_file_kb']
     if _in_git_dir(directory):
         raise AdoptError(
             f'hooks.dir {directory!r} lies inside .git, where nothing is tracked; choose a '
@@ -1276,7 +1295,9 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
                 'and --pin rewrites nothing'
             )
         planned.append((CI_PATH, ci_text, _plan_ci(ci, LOCAL_WORKFLOW, SELF_HOSTED_SHA)))
-        planned.append((PRE_COMMIT_PATH, pre_text, _plan_pre_commit(pre, None, directory)))
+        planned.append(
+            (PRE_COMMIT_PATH, pre_text, _plan_pre_commit(pre, None, directory, large_file_kb))
+        )
         if has_caller:
             planned.append((TAG_WATCH_PATH, tag_watch_text, _plan_tag_watch(tag_watch_text, None)))
     else:
@@ -1291,7 +1312,9 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         if pin is None:
             raise AdoptError('no pin to adopt at: pass --pin with a 40-hex commit of railform')
         planned.append((CI_PATH, ci_text, _plan_ci(ci, f'{REMOTE_WORKFLOW}@{pin}', pin)))
-        planned.append((PRE_COMMIT_PATH, pre_text, _plan_pre_commit(pre, pin, directory)))
+        planned.append(
+            (PRE_COMMIT_PATH, pre_text, _plan_pre_commit(pre, pin, directory, large_file_kb))
+        )
         if has_caller:
             planned.append((TAG_WATCH_PATH, tag_watch_text, _plan_tag_watch(tag_watch_text, pin)))
     planned.append((DEPENDABOT_PATH, dependabot_text, _plan_dependabot(dependabot_text)))
@@ -1451,7 +1474,12 @@ def _check(root: Path) -> Verdict:
             elif not self_hosted and pre.rev is None:
                 drift(f'{PRE_COMMIT_PATH}: the railform entry has no rev')
             else:
-                expected = _plan_pre_commit(pre, None if self_hosted else pre.rev, directory)
+                expected = _plan_pre_commit(
+                    pre,
+                    None if self_hosted else pre.rev,
+                    directory,
+                    frame['hooks']['large_file_kb'],
+                )
                 for message in _differences(PRE_COMMIT_PATH, pre_text, expected, pre.region):
                     drift(message)
             if not self_hosted and pre.rev is not None:

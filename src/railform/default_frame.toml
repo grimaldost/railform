@@ -101,6 +101,10 @@ names = ["pre-commit", "commit-msg", "pre-push"]
 wrapper = ""
 # The pinned pre-commit of a wrapper that runs it through uvx; set only by the type that does.
 pre_commit_version = ""
+# The limit of `check-added-large-files`, in KB: a file staged as added above it is refused at
+# commit time. 500 is the hook's own default; adopt writes any other value into the hygiene entry
+# as `args: [--maxkb=<value>]`. A value above the preset's loosens the check and needs a row.
+large_file_kb = 500
 
 [branch]
 # A Python `re` pattern the whole branch name must match: a lowercase category, a slash and a

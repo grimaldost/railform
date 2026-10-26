@@ -396,6 +396,49 @@ def test_the_guide_carries_the_points_the_adoptions_met(sentence: str) -> None:
     assert sentence in _words(_guide_text())
 
 
+def _edits_outside_the_markers() -> str:
+    """The paragraph of the guide that opens with "Edits outside the marker lines"."""
+    paragraphs = re.split(r'\n[ \t]*\n', _guide_text())
+    [paragraph] = [p for p in paragraphs if p.startswith('Edits outside the marker lines')]
+    return paragraph
+
+
+@pytest.mark.parametrize(
+    'point',
+    [
+        # the key that raises the limit
+        'raise the limit without that trade-off',
+        '`hooks.large_file_kb`',
+        # what a top-level exclude costs the hygiene hooks: at commit time and in the replay
+        "removes the excluded paths from the hygiene hooks both at commit time and in ci's replay",
+        # and the paths half of private-refs: at commit time only, since CI scans every file
+        'from the paths half of `railform private-refs` at commit time only',
+        'in ci the paths half scans every tracked file, the excluded ones included',
+        # where the limit binds
+        'the limit binds at commit time, on added files only',
+    ],
+)
+def test_the_guide_says_what_a_top_level_exclude_costs_and_where_the_limit_binds(
+    point: str,
+) -> None:
+    assert point in _words(_edits_outside_the_markers())
+
+
+def test_the_guide_s_drift_example_names_the_frame_key() -> None:
+    sentences = re.split(r'(?<=\.)\s+', ' '.join(_edits_outside_the_markers().split()))
+    [example] = [s for s in sentences if '`args: [--maxkb=2048]`' in s]
+    assert '`drift`' in example
+    assert 'while the frame keeps the default' in example
+    assert '`hooks.large_file_kb`' in example
+
+
+def test_the_exclude_paragraph_says_nothing_about_private_names() -> None:
+    # This paragraph keeps to the hygiene hooks, the paths half and the large-file limit.
+    words = _words(_edits_outside_the_markers())
+    for clause in ('private name', 'names half', 'names file', 'names-file', 'egress'):
+        assert clause not in words, clause
+
+
 def test_the_readme_links_to_the_guide() -> None:
     assert GUIDE.is_file()
     assert '](docs/adopting.md)' in README.read_text(encoding='utf-8')

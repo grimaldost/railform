@@ -71,6 +71,7 @@ TURNED_OFF = 'turned off'  # a boolean the preset has true is false
 TURNED_ON = 'turned on'  # a boolean the preset has false is true
 DROPS = 'drops an element'  # a list leaves out an element the preset has
 ADDS = 'adds an element'  # a list has an element the preset lacks
+RAISED = 'raised'  # an integer is above the preset's
 UNCLASSIFIED = 'unclassified key, treated as loosening'  # in no table: a test should have failed
 LOOSENING = {
     'python.test_command': REPLACED,
@@ -98,6 +99,7 @@ LOOSENING = {
     'hooks.pre_commit_version': REPLACED,
     'python.sync_args': ADDS,
     'ci.setup.extra_installs': ADDS,
+    'hooks.large_file_kb': RAISED,
 }
 
 # The keys whose departure loosens nothing, each with the reason. Every key of the frame is in
@@ -255,6 +257,14 @@ class _Count(_Node):
         return [Problem(WRONG_TYPE, f'{path}: expected a non-negative integer, got {_kind(value)}')]
 
 
+class _Positive(_Node):
+    def check(self, value: object, path: str, complete: bool) -> list[Problem]:
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+            return []
+        got = str(value) if isinstance(value, int) and not isinstance(value, bool) else _kind(value)
+        return [Problem(WRONG_TYPE, f'{path}: expected a positive integer, got {got}')]
+
+
 @dataclass(frozen=True)
 class _List(_Node):
     item: _Node
@@ -337,7 +347,13 @@ SCHEMA = _Table(
             }
         ),
         'hooks': _Table(
-            {'dir': _Str(), 'names': _STRINGS, 'wrapper': _Str(), 'pre_commit_version': _Str()}
+            {
+                'dir': _Str(),
+                'names': _STRINGS,
+                'wrapper': _Str(),
+                'pre_commit_version': _Str(),
+                'large_file_kb': _Positive(),
+            }
         ),
         'branch': _Table({'pattern': _Str(regex=True), 'allow': _STRINGS}),
         'private_refs': _Table(
@@ -770,6 +786,15 @@ def loosens(departure: Departure) -> str | None:
     if how == DROPS and any(not any(_same(p, v) for v in value) for p in preset):
         return how
     if how == ADDS and any(not any(_same(v, p) for p in preset) for v in value):
+        return how
+    if (
+        how == RAISED
+        and isinstance(preset, int)
+        and isinstance(value, int)
+        and not isinstance(preset, bool)
+        and not isinstance(value, bool)
+        and value > preset
+    ):
         return how
     return None
 

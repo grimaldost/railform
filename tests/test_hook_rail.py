@@ -225,13 +225,7 @@ def _build_origin(
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(root)
         assert main(['adopt', '--pin', PIN]) == 0
-    config = root / PRE_COMMIT
-    text = config.read_text(encoding='utf-8')
-    path, sha = railform
-    assert text.count(RAILFORM_REPO_LINE) == 1 and text.count(f'rev: {PIN}') == 1, text
-    text = text.replace(RAILFORM_REPO_LINE, f"repo: '{path.as_posix()}'")
-    text = text.replace(f'rev: {PIN}', f'rev: {sha}')
-    config.write_bytes(text.encode('utf-8'))
+    _point_at_the_railform_under_test(root, railform)
     if project_type != 'plugin-marketplace':
         # The wrapper runs pre-commit from the fixture's own locked dev group.
         locked = _run(root, ['uv', 'lock'], hook_environment(outside))
@@ -245,6 +239,17 @@ def _build_origin(
     _git(root, 'commit', '-q', '--no-verify', '-m', 'chore: adopt railform')
     assert _executables(root) == executables
     return root
+
+
+def _point_at_the_railform_under_test(root: Path, railform: tuple[Path, str]) -> None:
+    """Point the railform entry adopt wrote at the repository holding the railform under test."""
+    config = root / PRE_COMMIT
+    text = config.read_text(encoding='utf-8')
+    path, sha = railform
+    assert text.count(RAILFORM_REPO_LINE) == 1 and text.count(f'rev: {PIN}') == 1, text
+    text = text.replace(RAILFORM_REPO_LINE, f"repo: '{path.as_posix()}'")
+    text = text.replace(f'rev: {PIN}', f'rev: {sha}')
+    config.write_bytes(text.encode('utf-8'))
 
 
 def _executables(root: Path) -> set[str]:
@@ -387,6 +392,40 @@ def test_red_proof_a_staged_home_path_is_refused_and_only_staged_files_are_judge
     assert refused.returncode != 0
     assert 'railform-verdict: private-refs fail home-path' in refused.stdout + refused.stderr
     assert _head(clone) == before
+
+
+LARGE_FILE = 'data.txt'
+# 1024 KB of text: over check-added-large-files' default limit of 500 KB, under 2048 KB.
+LARGE_TEXT = ('x' * 1023 + '\n') * 1024
+LARGE_FILE_FRAME = (
+    '\n[hooks]\nlarge_file_kb = 2048\n'
+    '\n[[exceptions]]\nkey = "hooks.large_file_kb"\nreason = "a data file of 1 MB"\n'
+)
+
+
+def test_red_proof_a_raised_large_file_limit_lets_a_1_mb_file_be_committed(
+    clone: Path, env: dict[str, str], railform_under_test: tuple[Path, str]
+) -> None:
+    # check-added-large-files judges the files staged as added. At the default limit the 1 MB
+    # file is refused; once the clone is adopted with hooks.large_file_kb = 2048, it goes in.
+    before = _head(clone)
+    refused = _commit(clone, env, 'docs: add a data file', name=LARGE_FILE, text=LARGE_TEXT)
+    assert refused.returncode != 0
+    assert '- hook id: check-added-large-files' in refused.stdout + refused.stderr
+    assert _head(clone) == before
+    _git(clone, 'reset', '-q', '--', LARGE_FILE)
+    frame_file = clone / 'railform.toml'
+    frame_file.write_bytes(frame_file.read_bytes() + LARGE_FILE_FRAME.encode('utf-8'))
+    assert main(['frame', '--check']) == 0
+    assert main(['adopt']) == 0
+    _point_at_the_railform_under_test(clone, railform_under_test)
+    assert '--maxkb=2048' in (clone / PRE_COMMIT).read_text(encoding='utf-8')
+    _git(clone, 'add', '--', 'railform.toml', PRE_COMMIT)
+    _git(clone, 'commit', '-q', '--no-verify', '-m', 'chore: raise the large-file limit')
+    raised = _head(clone)
+    done = _commit(clone, env, 'docs: add a data file', name=LARGE_FILE, text=LARGE_TEXT)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert _head(clone) != raised
 
 
 def test_red_proof_a_commit_that_only_deletes_a_wrapper_is_refused(
