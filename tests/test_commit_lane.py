@@ -1079,6 +1079,9 @@ def test_a_fence_line_inside_an_html_block_is_html(
     [
         pytest.param('<!--\nx\n-->\n```\n', 4, id='after-a-comment-closes'),
         pytest.param('<!-- x -->\n```\n', 2, id='after-a-comment-closed-on-its-first-line'),
+        pytest.param(
+            '<!--\n--!>\n```\n-->\n```\n', 5, id='a-comment-is-not-ended-by-a-bang-end-tag'
+        ),
         pytest.param('<pre>\nx</pre>\n```\n', 3, id='after-the-end-tag-of-pre'),
         pytest.param('<!DOCTYPE html>\n```\n', 2, id='after-a-one-line-declaration'),
         pytest.param('<div>\n\n```\n', 3, id='after-the-blank-line-that-ends-a-block-tag'),

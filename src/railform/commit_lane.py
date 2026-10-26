@@ -72,9 +72,10 @@ _BULLET = re.compile(r'[*+-]')
 _ORDERED = re.compile(r'(\d{1,9})[.)]')
 _NON_SPACE = re.compile(r'[^ \t\f\v\r\n]')
 # The seven kinds of HTML block, each as (start, end): the end is searched for from the block's
-# first line on, and None ends the block before the next blank line. The last kind, a line holding
-# only one complete tag, cannot interrupt a paragraph. The block-level tag names are the reference
-# implementation's, whose list of headings holds only h1.
+# first line on, and None ends the block before the next blank line. A literal end is a string,
+# found by substring; only the first kind's, which ignores case, is a pattern. The last kind, a
+# line holding only one complete tag, cannot interrupt a paragraph. The block-level tag names are
+# the reference implementation's, whose list of headings holds only h1.
 _BLOCK_TAGS = (
     'address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|'
     'dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|head|header|hr|'
@@ -85,15 +86,15 @@ _ATTRIBUTE = (
     r'\s+[a-zA-Z_:][a-zA-Z0-9:._-]*'  # a name, then an optional value
     r"""(?:\s*=\s*(?:[^"'=<>`\x00-\x20]+|'[^']*'|"[^"]*"))?"""
 )
-_HTML_BLOCKS: tuple[tuple[re.Pattern[str], re.Pattern[str] | None], ...] = (
+_HTML_BLOCKS: tuple[tuple[re.Pattern[str], re.Pattern[str] | str | None], ...] = (
     (
         re.compile(r'<(?:script|pre|style)(?:\s|>|$)', re.IGNORECASE),
         re.compile(r'</(?:script|pre|style)>', re.IGNORECASE),
     ),
-    (re.compile('<!--'), re.compile('-->')),
-    (re.compile(r'<\?'), re.compile(r'\?>')),
-    (re.compile('<![A-Z]'), re.compile('>')),
-    (re.compile(r'<!\[CDATA\['), re.compile(r'\]\]>')),
+    (re.compile('<!--'), '-->'),
+    (re.compile(r'<\?'), '?>'),
+    (re.compile('<![A-Z]'), '>'),
+    (re.compile(r'<!\[CDATA\['), ']]>'),
     (re.compile(rf'</?(?:{_BLOCK_TAGS})(?:\s|/?>|$)', re.IGNORECASE), None),
     (
         re.compile(
@@ -310,7 +311,7 @@ class _Block:
     char: str = ''
     length: int = 0
     indent: int = 0
-    end: re.Pattern[str] | None = None
+    end: re.Pattern[str] | str | None = None
     text: str = ''
 
 
@@ -547,7 +548,12 @@ class _Blocks:
         if container is not None and kind == _PARAGRAPH:
             container.text += line.text[line.offset :] + '\n'
         elif container is not None and kind == _HTML:
-            if container.end is not None and container.end.search(line.text, line.offset):
+            end = container.end
+            if end is not None and (
+                end.search(line.text, line.offset)
+                if isinstance(end, re.Pattern)
+                else line.text.find(end, line.offset) != -1
+            ):
                 self._close_top()
         elif kind not in _CONTENT_BLOCKS and line.offset < len(line.text) and not line.blank:
             paragraph = self._add(_Block(_PARAGRAPH, number))
