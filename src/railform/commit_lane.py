@@ -21,8 +21,9 @@ The rules:
   `commit.attribution_patterns` (Python `re`, case-insensitive, per line). The pull request's
   title and body are held to the same patterns.
 - **Form of a pull request body** (`pr-text` only; the title is one line and gets neither).
-  `unclosed-fence`: the body ends inside a fenced code block, as CommonMark reads fences, and the
-  finding names the opening line. `carriage-return`: the body holds a carriage return that no line
+  `unclosed-fence`: the body ends inside a fenced code block that no block quote or list item
+  holds, its block structure read as markdown-it reads CommonMark, and the finding names the
+  opening line. `carriage-return`: the body holds a carriage return that no line
   feed follows; a CRLF line end passes, since GitHub's web editor submits bodies that way. Both
   name lines counted in line feeds, and both read the raw body, because `str.splitlines` ends a
   line at a lone carriage return and would never show one.
@@ -41,7 +42,7 @@ from railform import frame
 from railform.verdict import Verdict
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Iterator, Sequence
     from pathlib import Path
 
 SUBJECT = 'subject'
@@ -69,6 +70,38 @@ _THEMATIC_BREAK = re.compile(r'(?:\* *){3,}|(?:- *){3,}|(?:_ *){3,}')
 # the line follows it.
 _BULLET = re.compile(r'[-+*](?= |$)')
 _ORDERED = re.compile(r'(\d{1,9})[.)](?= |$)')
+# The starts of an HTML block, each with the end searched for from its first line on; None ends the
+# block before the next blank line. A start of the last kind, a line of block-level tag names, can
+# interrupt a paragraph; `_TAG_LINE`, a line holding only one complete tag, cannot.
+_BLOCK_TAGS = (
+    'address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|'
+    'dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|'
+    'header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|'
+    'param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul'
+)
+_HTML_STARTS: tuple[tuple[re.Pattern[str], re.Pattern[str] | None], ...] = (
+    (
+        re.compile(r'<(?:script|pre|style|textarea)(?=\s|>|$)', re.IGNORECASE),
+        re.compile(r'</(?:script|pre|style|textarea)>', re.IGNORECASE),
+    ),
+    (re.compile('<!--'), re.compile('-->')),
+    (re.compile(r'<\?'), re.compile(r'\?>')),
+    (re.compile('<![A-Z]'), re.compile('>')),
+    (re.compile(r'<!\[CDATA\['), re.compile(r'\]\]>')),
+    (re.compile(rf'</?(?:{_BLOCK_TAGS})(?=\s|/?>|$)', re.IGNORECASE), None),
+)
+_ATTRIBUTE = (
+    r'\s+[A-Za-z_:][A-Za-z0-9_.:-]*'  # a name, then an optional value
+    r"""(?:\s*=\s*(?:[^"'=<>`\x00-\x20]+|'[^']*'|"[^"]*"))?"""
+)
+_TAG_LINE = re.compile(
+    rf'(?:<[A-Za-z][A-Za-z0-9-]*(?:{_ATTRIBUTE})*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>)\s*'
+)
+# A link destination markdown-it refuses, after backslash escapes: a script, file or data URL
+# other than an image.
+_ESCAPE = re.compile(r'\\([!-/:-@\[-`{-~])')
+_UNSAFE_LINK = re.compile(r'(?:vbscript|javascript|file|data):', re.IGNORECASE)
+_IMAGE_DATA_LINK = re.compile(r'data:image/(?:gif|png|jpeg|webp);', re.IGNORECASE)
 _LONE_CARRIAGE_RETURN = re.compile(r'\r(?!\n)')
 # What `git commit --fixup`, `--squash` and `--fixup=amend:` put before the subject they target.
 AUTOSQUASH_PREFIXES = ('fixup! ', 'squash! ', 'amend! ')
@@ -230,6 +263,13 @@ class _Fence:
     nested: bool
 
 
+@dataclass(frozen=True)
+class _Html:
+    """An open HTML block: the end that closes it, or None when a blank line does."""
+
+    end: re.Pattern[str] | None
+
+
 _PARAGRAPH = 'paragraph'
 _INDENTED_CODE = 'indented code'
 _ONE_LINE = 'one line'  # a heading or a thematic break, closed on the line that opens it
@@ -282,15 +322,36 @@ def _fill(containers: Sequence[_Item | None]) -> None:
         containers[-1].filled = True
 
 
+def _short_of_items(containers: Sequence[_Item | None], line: str) -> bool:
+    """Whether a blank `line` is indented less than the content of the list items that hold the
+    innermost block, counted from the last block quote's marker. markdown-it ends an HTML block at
+    such a line, where the reference implementations keep it open."""
+    quote = max((i for i, container in enumerate(containers) if container is None), default=-1)
+    width = sum(item.width for item in containers[quote + 1 :] if item is not None)
+    _, rest = _continued(containers[: quote + 1], line)
+    return _spaces(rest) < width
+
+
+def _html_start(text: str, *, lone_tag: bool) -> _Html | None:
+    """The HTML block that `text` starts, else None; `lone_tag`: whether a line holding only one
+    complete tag may start one, which it may not where it would interrupt a paragraph."""
+    for start, end in _HTML_STARTS:
+        if start.match(text):
+            return _Html(end)
+    return _Html(None) if lone_tag and _TAG_LINE.fullmatch(text) else None
+
+
 def _block_starts(
     rest: str, *, continues_paragraph: bool, in_paragraph: bool
-) -> tuple[list[_Item | None], tuple[str, int] | str | None, str]:
+) -> tuple[list[_Item | None], tuple[str, int] | _Html | str | None, str]:
     """The containers that `rest` opens (None for a block quote), the leaf block it opens after
-    them (a fence's marker, indented code, a one-line block, or None), and the text left.
+    them (a fence's marker, an HTML block, indented code, a one-line block, or None), and the text
+    left.
 
     `continues_paragraph`: without a block start the line would continue an open paragraph, so a
     list item must be able to interrupt one. `in_paragraph`: a paragraph is the deepest open block,
-    so an indented line continues it rather than opening indented code.
+    so, unless a container opens first, an indented line continues it rather than opening indented
+    code, and so does a line holding only one tag, even when the paragraph is continued lazily.
     """
     started: list[_Item | None] = []
     while True:
@@ -306,6 +367,8 @@ def _block_starts(
             continue
         if fence := _opener(text):
             return started, fence, ''
+        if html := _html_start(text, lone_tag=not (in_paragraph and not started)):
+            return started, html, text
         underline = continues_paragraph and _SETEXT_UNDERLINE.fullmatch(text)
         if underline or _ATX_HEADING.match(text) or _THEMATIC_BREAK.fullmatch(text):
             return started, _ONE_LINE, ''
@@ -317,24 +380,163 @@ def _block_starts(
         continues_paragraph = False
 
 
+class _Text:
+    """The text of the lines a link reference definition may span, joined with line feeds and
+    read only as far as the definition needs."""
+
+    def __init__(self, first: str, following: Iterator[str]) -> None:
+        self.text = first
+        self._following = following
+
+    def at(self, pos: int) -> str:
+        """The character at `pos`, or '' past the last line."""
+        while pos >= len(self.text):
+            line = next(self._following, None)
+            if line is None:
+                return ''
+            self.text += '\n' + line
+        return self.text[pos]
+
+
+def _skip(text: _Text, pos: int, chars: str) -> int:
+    """The first position from `pos` on whose character is not one of `chars`."""
+    while (char := text.at(pos)) and char in chars:
+        pos += 1
+    return pos
+
+
+def _destination_end(text: _Text, pos: int) -> int:
+    """The position after a link destination that starts at `pos`, else 0: text in angle
+    brackets on one line, or a run without spaces or control characters whose parentheses
+    balance."""
+    if text.at(pos) == '<':
+        pos += 1
+        while (char := text.at(pos)) not in ('', '\n', '<'):
+            if char == '>':
+                return pos + 1
+            pos += 2 if char == '\\' and text.at(pos + 1) else 1
+        return 0
+    start, depth = pos, 0
+    while (char := text.at(pos)) and ' ' < char != '\x7f':
+        if char == '\\' and text.at(pos + 1):
+            if text.at(pos + 1) == ' ':
+                break
+            pos += 2
+            continue
+        if char == '(':
+            depth += 1
+            if depth > 32:
+                return 0
+        elif char == ')':
+            if not depth:
+                break
+            depth -= 1
+        pos += 1
+    return pos if pos > start and not depth else 0
+
+
+def _title_end(text: _Text, pos: int) -> int:
+    """The position after a link title that starts at `pos`, else 0: text in double quotes, in
+    single quotes, or in parentheses without an unescaped `(`."""
+    closer = {'"': '"', "'": "'", '(': ')'}.get(text.at(pos))
+    if closer is None:
+        return 0
+    pos += 1
+    while char := text.at(pos):
+        if char == closer:
+            return pos + 1
+        if char == '(' and closer == ')':
+            return 0
+        pos += 2 if char == '\\' and text.at(pos + 1) else 1
+    return 0
+
+
+def _line_ends(text: _Text, pos: int) -> bool:
+    """Whether only spaces and tabs follow `pos` on its line."""
+    return text.at(_skip(text, pos, ' \t')) in ('', '\n')
+
+
+def _definition_lines(text: _Text) -> int:
+    """How many lines the link reference definition at the start of `text` takes, else 0.
+
+    `[label]:`, a destination and an optional title, with spaces, tabs or a line end between the
+    parts, and nothing after the definition on its last line. A title followed by other text is
+    dropped when it holds text, leaving the definition to end with its destination.
+    """
+    pos = 1
+    while (char := text.at(pos)) != ']':
+        if char in ('', '['):
+            return 0
+        pos += 2 if char == '\\' else 1
+    if not text.text[1:pos].strip() or text.at(pos + 1) != ':':
+        return 0
+    start = _skip(text, pos + 2, ' \t\n')
+    end = _destination_end(text, start)
+    url = _ESCAPE.sub(r'\1', text.text[start:end].removeprefix('<').removesuffix('>')).strip()
+    if not end or (_UNSAFE_LINK.match(url) and not _IMAGE_DATA_LINK.match(url)):
+        return 0
+    pos = _skip(text, end, ' \t\n')
+    title = _title_end(text, pos) if pos > end else 0
+    if title and _line_ends(text, title):
+        end = title
+    elif (title and title - pos == 2) or not _line_ends(text, end):
+        return 0
+    return text.text.count('\n', 0, end) + 1
+
+
+def _paragraph_lines(
+    lines: Sequence[str], start: int, containers: Sequence[_Item | None]
+) -> Iterator[str]:
+    """The text of each line from index `start` on that would continue a paragraph inside
+    `containers`, up to the first that would not: a blank line, or a line that starts a block even
+    where a list item could not interrupt a paragraph."""
+    for index in range(start, len(lines)):
+        _, rest = _continued(containers, lines[index])
+        if not rest.strip(' '):
+            return
+        started, opened, _ = _block_starts(rest, continues_paragraph=False, in_paragraph=True)
+        if started or opened is not None:
+            return
+        yield rest
+
+
 def unclosed_fence_findings(body: str) -> list[tuple[int, str]]:
     """The opening line of a fenced code block still open when `body` ends, as a list of one
     (line number, message), else empty. Lines are numbered in line feeds.
 
     Follows CommonMark's block structure, reduced to what places a fence: block quotes and list
-    items (the containers), paragraphs, indented code, headings and thematic breaks. Each line
-    first continues the open containers it can, then opens new blocks; a line that opens nothing
-    and follows paragraph text continues the paragraph, lazily when a container did not continue,
-    and leaves the containers open. A fence inside a block quote or a list item is not judged: it
-    ends with its container. HTML blocks and link reference definitions are not modeled.
+    items (the containers), paragraphs, link reference definitions, indented code, HTML blocks,
+    headings and thematic breaks. Each line first continues the open containers it can, then opens
+    new blocks; a line that opens nothing and follows paragraph text continues the paragraph,
+    lazily when a container did not continue, and leaves the containers open. A fence inside a
+    block quote or a list item is not judged: it ends with its container.
+
+    Where CommonMark parsers differ, the body is read as markdown-it reads it: a link reference
+    definition is read where a paragraph would start, over the lines that would continue that
+    paragraph, and the line after it starts afresh (cmark and commonmark.js keep the paragraph open
+    on that line); a script, file or non-image data URL makes no definition; and an HTML block in
+    a list item ends at a blank line indented less than the item's content.
     """
+    lines = [_expand_tabs(raw) for raw in _body_lines(body)]
     containers: list[_Item | None] = []  # the open block quotes (None) and list items
-    leaf: _Fence | str | None = None  # the open block the innermost container holds
-    for number, raw in enumerate(_body_lines(body), start=1):
-        matched, rest = _continued(containers, _expand_tabs(raw))
+    leaf: _Fence | _Html | str | None = None  # the open block the innermost container holds
+    definition_ends = 0  # the last line of the link reference definition being read
+    for number, line in enumerate(lines, start=1):
+        matched, rest = _continued(containers, line)
         all_matched = matched == len(containers)
+        if number <= definition_ends:
+            if number == definition_ends:
+                leaf = None
+            continue
         if all_matched and isinstance(leaf, _Fence):
             if _closes(rest, leaf.char, leaf.length):
+                leaf = None
+            continue
+        if all_matched and isinstance(leaf, _Html):
+            blank = not rest.strip(' ')
+            if (leaf.end.search(rest) if leaf.end else blank) or (
+                blank and _short_of_items(containers, line)
+            ):
                 leaf = None
             continue
         if all_matched and leaf == _INDENTED_CODE and (_spaces(rest) > 3 or not rest.strip(' ')):
@@ -355,10 +557,17 @@ def unclosed_fence_findings(body: str) -> list[tuple[int, str]]:
             _fill(containers)
         if isinstance(opened, tuple):
             leaf = _Fence(number, opened[0], opened[1], nested=bool(containers))
+        elif isinstance(opened, _Html):
+            leaf = None if opened.end and opened.end.search(rest) else opened
         elif opened == _INDENTED_CODE:
             leaf = _INDENTED_CODE
         elif opened is None and rest.strip(' '):
             leaf = _PARAGRAPH
+            if rest.lstrip(' ').startswith('['):
+                text = _Text(rest.lstrip(' '), _paragraph_lines(lines, number, containers))
+                if size := _definition_lines(text):
+                    definition_ends = number + size - 1
+                    leaf = None if size == 1 else leaf
         else:
             leaf = None
     if isinstance(leaf, _Fence) and not leaf.nested:

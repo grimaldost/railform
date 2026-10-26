@@ -1003,6 +1003,123 @@ def test_a_block_still_open_at_the_end_names_the_opening_line(body: str, opening
     assert commit_lane.unclosed_fence_findings(body) == [(opening, UNCLOSED_FENCE_MESSAGE)]
 
 
+@pytest.mark.parametrize(
+    'body',
+    [
+        pytest.param('<details>\n```\ncode\n</details>\n', id='details-before-a-blank-line'),
+        pytest.param('<!--\n```\n-->\n', id='comment'),
+        pytest.param('<!--\n```\n\nx\n-->\n', id='comment-across-a-blank-line'),
+        pytest.param('<pre>\n```\n</pre>\n', id='pre'),
+        pytest.param('<PRE>\n\n```\n</pre>\n', id='pre-across-a-blank-line'),
+        pytest.param('<script>\n```\n</script>\n', id='script'),
+        pytest.param('<style type="x">\n```\n</style>\n', id='style'),
+        pytest.param('<textarea>\n```\n</textarea>\n', id='textarea'),
+        pytest.param('<?php\n```\n?>\n', id='processing-instruction'),
+        pytest.param('<!DOCTYPE x\n```\n>\n', id='declaration'),
+        pytest.param('<![CDATA[\n```\n]]>\n', id='cdata'),
+        pytest.param('<div>\n```\n\nx\n', id='block-tag-up-to-a-blank-line'),
+        pytest.param('</div>\n```\n', id='closing-block-tag'),
+        pytest.param('<div class="x"\n```\n', id='block-tag-left-open'),
+        pytest.param('text\n<div>\n```\n', id='block-tag-interrupts-a-paragraph'),
+        pytest.param('<span>\n```\n', id='lone-inline-tag'),
+        pytest.param('<a href="x" title=\'y\'>\n```\n', id='lone-tag-with-attributes'),
+        pytest.param('</custom-tag >\n```\n', id='lone-closing-tag'),
+        pytest.param('> <div>\n> ```\n', id='in-a-block-quote'),
+        pytest.param('  <!--\n```\n  -->\n', id='indented-two-spaces'),
+    ],
+)
+def test_a_fence_line_inside_an_html_block_is_html(
+    body: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert body_verdict(body, tmp_path, capsys) == (0, [], ('pass', 'ok'))
+
+
+@pytest.mark.parametrize(
+    ('body', 'opening'),
+    [
+        pytest.param('<!--\nx\n-->\n```\n', 4, id='after-a-comment-closes'),
+        pytest.param('<!-- x -->\n```\n', 2, id='after-a-comment-closed-on-its-first-line'),
+        pytest.param('<pre>\nx</pre>\n```\n', 3, id='after-the-end-tag-of-pre'),
+        pytest.param('<!DOCTYPE html>\n```\n', 2, id='after-a-one-line-declaration'),
+        pytest.param('<div>\n\n```\n', 3, id='after-the-blank-line-that-ends-a-block-tag'),
+        pytest.param('<span>\n\n```\n', 3, id='after-the-blank-line-that-ends-a-lone-tag'),
+        pytest.param('text\n<span>\n```\n', 3, id='a-lone-tag-does-not-interrupt-a-paragraph'),
+        pytest.param('<span> text\n```\n', 2, id='a-tag-followed-by-text-is-not-a-lone-tag'),
+        pytest.param('<!doctype html>\n```\n', 2, id='a-declaration-starts-with-a-capital'),
+        pytest.param('<divx>\n\n```\n', 3, id='not-a-block-tag-name'),
+        pytest.param('    <!--\n```\n', 2, id='indented-four-spaces-is-code'),
+        pytest.param('```\n<!--\n```\n```\n', 4, id='html-inside-a-fence-is-content'),
+        pytest.param('> <div>\ntext\n```\n', 3, id='a-block-quote-html-block-takes-no-lazy-line'),
+        pytest.param('1. ><!--\ntext\n===\n   ~~~ a `b`\n', 4, id='after-a-list-item-comment'),
+    ],
+)
+def test_a_fence_after_an_html_block_is_judged(body: str, opening: int) -> None:
+    assert commit_lane.unclosed_fence_findings(body) == [(opening, UNCLOSED_FENCE_MESSAGE)]
+
+
+@pytest.mark.parametrize(
+    ('body', 'opening'),
+    [
+        # A paragraph made only of definitions is no paragraph: `===` under it is text, not a
+        # heading underline, so the marker lines after it continue that text and start no item.
+        pytest.param('[a]: /u\n===\n2. x\n   ```\n', 4, id='ordered-item-not-starting-at-1'),
+        pytest.param('[a]: /u\n===\n-\n  ```\n', 4, id='empty-dash-item'),
+        pytest.param('[a]: /u\n===\n*\n  ```\n', 4, id='empty-star-item'),
+        pytest.param(
+            'See the notes.\n\n[docs]: https://example.com\n===\n2. Run it:\n   ```\n',
+            6,
+            id='after-a-paragraph',
+        ),
+        pytest.param('[a]: /u "t"\n===\n2. x\n   ```\n', 4, id='with-a-title'),
+        pytest.param('[a]: /u\n"t"\n===\n2. x\n   ```\n', 5, id='with-a-title-on-the-next-line'),
+        pytest.param('[a]:\n/u\n===\n2. x\n   ```\n', 5, id='destination-on-the-next-line'),
+        pytest.param('[a]: /u "t\nx"\n===\n2. x\n   ```\n', 5, id='title-across-two-lines'),
+        pytest.param('[a]: /u\n[b]: <v>\n===\n2. x\n   ```\n', 5, id='two-definitions'),
+        # Not a definition: a paragraph, which `===` underlines.
+        pytest.param('[a]: /u x\n===\n2. x\n   ```\n', None, id='text-after-the-destination'),
+        pytest.param('[a]\n===\n2. x\n   ```\n', None, id='no-colon'),
+        pytest.param('[ ]: /u\n===\n2. x\n   ```\n', None, id='blank-label'),
+        pytest.param('text\n[a]: /u\n===\n2. x\n   ```\n', None, id='inside-a-paragraph'),
+    ],
+)
+def test_a_paragraph_made_only_of_link_reference_definitions_is_no_paragraph(
+    body: str, opening: int | None
+) -> None:
+    expected = [] if opening is None else [(opening, UNCLOSED_FENCE_MESSAGE)]
+    assert commit_lane.unclosed_fence_findings(body) == expected
+
+
+@pytest.mark.parametrize(
+    ('body', 'opening'),
+    [
+        # The line after a definition starts afresh, where cmark keeps the paragraph open and
+        # reads it as text: an item, a lone tag or indented code then holds the fence.
+        pytest.param('[a]: /u\n2. x\n   ```\n', None, id='an-ordered-item-not-starting-at-1'),
+        pytest.param('[a]: /u\n-\n  ```\n', None, id='an-empty-item'),
+        pytest.param('[a]: /u\n<span>\n```\n', None, id='a-lone-tag'),
+        pytest.param('[a]: /u\n    x\n2. y\n   ```\n', None, id='indented-code'),
+        # A lazy line after a definition in a container leaves it, where cmark continues the
+        # container's paragraph: the item then continues that line's paragraph.
+        pytest.param('> [a]: /u\nfoo\n2. x\n   ```\n', 4, id='after-a-definition-in-a-quote'),
+        # A script URL makes no definition, so the paragraph goes on.
+        pytest.param('[a]: javascript:x\n2. y\n   ```\n', 3, id='a-script-url'),
+        pytest.param('[a]: data:image/png;x\n2. y\n   ```\n', None, id='an-image-data-url'),
+        # In a list item, a blank line indented less than the item's content ends an HTML block.
+        pytest.param('- <!--\n\n  x\ny\n2. z\n   ```\n', None, id='html-ends-at-a-short-blank'),
+        pytest.param('- <!--\n  \n  x\ny\n2. z\n   ```\n', 6, id='html-goes-on-past-a-full-blank'),
+        pytest.param('- - <!--\n   \n    x\ny\n2. z\n   ```\n', None, id='html-in-a-nested-item'),
+        pytest.param(
+            '> - <!--\n> \n>   x\ny\n2. z\n   ```\n', None, id='html-in-an-item-in-a-quote'
+        ),
+    ],
+)
+def test_where_commonmark_parsers_differ_the_body_is_read_as_markdown_it_reads_it(
+    body: str, opening: int | None
+) -> None:
+    expected = [] if opening is None else [(opening, UNCLOSED_FENCE_MESSAGE)]
+    assert commit_lane.unclosed_fence_findings(body) == expected
+
+
 def test_lines_are_numbered_in_line_feeds_not_in_carriage_returns() -> None:
     body = 'a\rb\rc\n```\ncode\n'
     assert commit_lane.unclosed_fence_findings(body) == [(2, UNCLOSED_FENCE_MESSAGE)]
