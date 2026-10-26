@@ -21,15 +21,61 @@ UV_WRAPPER = 'uv run --frozen python -m pre_commit hook-impl'
 
 
 def expected_wrapper(hook: str, command: str = UV_WRAPPER) -> str:
-    """The wrapper text of contract section 7, written out here apart from the renderer."""
-    return (
+    """The wrapper text for `hook`, written out here apart from the renderer: the `pre-push` and
+    `pre-commit` texts carry the egress extension point, any other hook's runs its stage only."""
+    head = (
         '#!/bin/sh\n'
         f'# Written by railform adopt: runs the {hook} stage of .pre-commit-config.yaml.\n'
         '# `railform hooks-check` fails if this file is edited; arm a clone with `railform arm`.\n'
         'HERE="$(cd "$(dirname "$0")" && pwd)"\n'
-        f'exec {command} --config=.pre-commit-config.yaml --hook-type={hook} '
-        '--hook-dir "$HERE" -- "$@"\n'
     )
+    stage = (
+        f'{command} --config=.pre-commit-config.yaml --hook-type={hook} --hook-dir "$HERE" -- "$@"'
+    )
+    egress = (
+        'EGRESS="$RAILFORM_EGRESS_HOOK"\n'
+        'if [ -z "$EGRESS" ]; then\n'
+        '    EGRESS="$(git config --get railform.egressHook)"\n'
+        'fi\n'
+    )
+    if hook == 'pre-push':
+        return (
+            f'{head}{egress}'
+            'if [ -z "$EGRESS" ]; then\n'
+            f'    exec {stage}\n'
+            'fi\n'
+            'if [ ! -f "$EGRESS" ]; then\n'
+            '    printf \'%s\\n\' "railform: egress hook $EGRESS is not a file" >&2\n'
+            '    exit 2\n'
+            'fi\n'
+            'INPUT="$(mktemp)" || exit 1\n'
+            'trap \'rm -f "$INPUT"\' EXIT\n'
+            "trap 'exit 1' HUP INT TERM\n"
+            'cat >"$INPUT"\n'
+            'uv run --no-project python "$EGRESS" pre-push "$1" "$2" <"$INPUT"\n'
+            'STATUS=$?\n'
+            'if [ "$STATUS" -ne 0 ]; then\n'
+            '    printf \'%s\\n\' "railform: egress hook $EGRESS refused the push (exit $STATUS)"'
+            ' >&2\n'
+            '    exit "$STATUS"\n'
+            'fi\n'
+            f'{stage} <"$INPUT"\n'
+            'exit $?\n'
+        )
+    if hook == 'pre-commit':
+        return (
+            f'{head}{egress}'
+            'if [ -n "$EGRESS" ]; then\n'
+            '    if [ -f "$EGRESS" ]; then\n'
+            '        uv run --no-project python "$EGRESS" pre-commit </dev/null\n'
+            '    else\n'
+            "        printf '%s\\n' \"railform: egress hook $EGRESS is not a file; the commit goes"
+            ' on" >&2\n'
+            '    fi\n'
+            'fi\n'
+            f'exec {stage}\n'
+        )
+    return f'{head}exec {stage}\n'
 
 
 def git(repo: Path, *args: str) -> str:
@@ -99,10 +145,11 @@ def test_the_renderer_writes_the_text_of_the_contract_for_each_wrapper_command()
 
 
 def test_the_renderer_ends_in_one_newline_and_has_no_carriage_return() -> None:
-    text = wrapper.render(frame.effective_frame(None), 'pre-push')
-    assert text.endswith('"$@"\n')
-    assert not text.endswith('\n\n')
-    assert '\r' not in text
+    for hook in HOOKS:
+        text = wrapper.render(frame.effective_frame(None), hook)
+        assert text.endswith('exit $?\n' if hook == 'pre-push' else '"$@"\n'), hook
+        assert not text.endswith('\n\n'), hook
+        assert '\r' not in text, hook
 
 
 # --- the checks --------------------------------------------------------------------------------

@@ -43,9 +43,18 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import pytest
 
-# Variables that would point uv at railform's own environment, or make pre-commit skip hooks.
+# Variables that would point uv at railform's own environment, make pre-commit skip hooks, or
+# make the hook wrappers run an egress hook the developer's environment names.
 DROPPED = frozenset(
-    {'VIRTUAL_ENV', 'UV_PROJECT_ENVIRONMENT', 'UV_FROZEN', 'UV_LOCKED', 'UV_NO_SYNC', 'SKIP'}
+    {
+        'VIRTUAL_ENV',
+        'UV_PROJECT_ENVIRONMENT',
+        'UV_FROZEN',
+        'UV_LOCKED',
+        'UV_NO_SYNC',
+        'SKIP',
+        'RAILFORM_EGRESS_HOOK',
+    }
 )
 
 
