@@ -190,7 +190,7 @@ Some keys hold rows rather than plain values:
   unread and needs an `exceptions` row, and a shorter one needs none. A lock in a subdirectory
   (`plugins/a/uv.lock`) is not matched by `uv.lock`; list it.
 - `python.type_check` is the paths `ty check` runs over, from the repository root: an array
-  (`["claude_archive", "archive.py"]`) or a string of shell words (`"claude_archive archive.py"`),
+  (`["acme_tool", "tool.py"]`) or a string of shell words (`"acme_tool tool.py"`),
   each word one argument; `""` or `[]` runs no `ty`. A string and an array that name the same paths
   are the same value, so `["src"]` is not a departure from the preset's `"src"`. The
   `python-package` preset type-checks `src`; a repository with `project.layout = "flat"` and a
