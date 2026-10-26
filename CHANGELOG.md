@@ -30,6 +30,14 @@ All notable changes to this project are recorded here, in the
   file and an unknown commit exit 2. It is the check an environment's egress hook runs on what
   leaves the machine. Without `--names-file` the verb is unchanged: the names half, its variable,
   `--require-names` and the `private_refs` keys work as before.
+- `hooks.large_file_kb` (default 500) in the frame: the limit of `check-added-large-files`, in
+  KB. At 500, the hook's own limit, adopt writes the hygiene entry as before, with no `args`, so
+  no owned region changes; any other value is written as `args: [--maxkb=<value>]` on that hook.
+  A value above the preset's loosens the check (the new `LOOSENING` word `raised`), so
+  `railform frame --check` fails it as `unlisted-departure` unless an `exceptions` row names
+  `hooks.large_file_kb`; a lower value needs no row. The limit binds at commit time, on files
+  staged as added in an armed clone; CI's replay of the hygiene hooks adds nothing to the index,
+  so the hook cannot fail there.
 
 ## [0.3.0] - 2026-10-25
 

@@ -573,6 +573,29 @@ def test_every_frame_key_is_classified_exactly_once() -> None:
     assert sorted(named - keys) == [], 'a class names a key the frame does not have'
 
 
+README = Path(__file__).resolve().parents[1] / 'README.md'
+
+
+def _readme_loosening_table() -> dict[str, str]:
+    """The README's table of loosening departures: each key it names, with its "Loosens when"."""
+    text = README.read_text(encoding='utf-8')
+    head = '| Key | Loosens when |'
+    assert text.count(head) == 1
+    rows = text.split(head, 1)[1].lstrip('\n').split('\n\n', 1)[0].splitlines()[1:]
+    table: dict[str, str] = {}
+    for row in rows:
+        keys, when = row.strip('|').split(' | ', 1)
+        for key in re.findall(r'`([^`]+)`', keys):
+            table[key] = when.strip(' |')
+    return table
+
+
+def test_the_readme_table_of_loosening_departures_names_every_loosening_key() -> None:
+    table = _readme_loosening_table()
+    assert sorted(set(frame.LOOSENING) - set(table)) == []
+    assert table['hooks.large_file_kb'] == "it is above the preset's"
+
+
 def test_every_neutral_key_says_why() -> None:
     assert all(reason.strip() for reason in frame.NEUTRAL.values())
 
@@ -742,6 +765,37 @@ def test_a_tag_row_may_set_since_which_defaults_to_empty(
     assert any('release.tag_prefix[0].since' in line for line in findings), findings
 
 
+@pytest.mark.parametrize('preset', PRESETS)
+def test_the_large_file_limit_is_500_kb_in_every_preset(preset: str) -> None:
+    hooks = frame.effective_frame({'project': {'type': preset}})['hooks']
+    assert hooks['large_file_kb'] == 500
+    assert type(hooks['large_file_kb']) is int
+
+
+def test_red_proof_a_raised_large_file_limit_with_its_row_passes_frame_check(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # At 0.3.0 the frame had no such key, so this failed as unknown-key.
+    _write(
+        scratch_repo,
+        '[hooks]\nlarge_file_kb = 2048\n'
+        '[[exceptions]]\nkey = "hooks.large_file_kb"\nreason = "a data fixture of 1.5 MB"\n',
+    )
+    assert _check(capsys) == (0, 'ok', [])
+
+
+@pytest.mark.parametrize('value', ['0', '-1', '"2048"', '2048.0', 'true', '[2048]'])
+def test_the_large_file_limit_is_a_positive_integer(
+    value: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, f'[hooks]\nlarge_file_kb = {value}\n')
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'wrong-type')
+    assert any('hooks.large_file_kb: expected a positive integer' in line for line in findings), (
+        findings
+    )
+
+
 # --- rows by key, and only for a departure that loosens a check ---------------------------------
 
 MARKETPLACE = '[project]\ntype = "plugin-marketplace"\n'
@@ -827,6 +881,8 @@ LOOSENING = [
         'release.pr_title_pattern',
         id='rel-title-other',
     ),
+    # A larger file passes check-added-large-files.
+    pytest.param('[hooks]\nlarge_file_kb = 2048\n', 'hooks.large_file_kb', id='large-file-raised'),
 ]
 
 STAMP = frame.effective_frame(None)['commit']['attribution_patterns']
@@ -850,6 +906,7 @@ NOT_LOOSENING = [
     pytest.param(
         '[project]\ntype = "python-scripts"\n[python]\ntype_check = "src"\n', id='add-type-check'
     ),
+    pytest.param('[hooks]\nlarge_file_kb = 400\n', id='large-file-lowered'),
 ]
 
 
