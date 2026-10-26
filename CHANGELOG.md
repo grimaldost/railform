@@ -19,6 +19,17 @@ All notable changes to this project are recorded here, in the
   wrappers behave as before, and the `commit-msg` wrapper is unchanged. railform ships no egress
   hook. An adopter picks up the new wrapper text by running `railform adopt` at the new pin;
   `railform hooks-check` and `railform adopt --check` report the old text until then.
+- The egress mode of `railform private-refs`: with `--names-file PATH`, the verb looks only for
+  the terms of that file, only in the input given with `--commits FILE` (the commits listed, one
+  id per line: the lines each adds, a merge's own resolution included, the paths it adds or
+  renames, an empty file included, its author, committer and message), `--staged` (the lines the
+  index adds against `HEAD`, labelled `path:line`) or `--text FILE`, which combine. It reads no
+  frame, so a `railform.toml` that does not load changes nothing, no other tracked file and no
+  names variable, and makes no home-path finding. A file of the input that is binary or not UTF-8
+  is reported `unscannable`, which fails the run when no term is found; a missing or empty names
+  file and an unknown commit exit 2. It is the check an environment's egress hook runs on what
+  leaves the machine. Without `--names-file` the verb is unchanged: the names half, its variable,
+  `--require-names` and the `private_refs` keys work as before.
 
 ## [0.3.0] - 2026-10-25
 
