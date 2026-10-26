@@ -57,6 +57,19 @@ is labelled `commit SHA PATH` (`commit SHA` for a message), SHA being the first 
 Outside a git repository the verb checks the files named as `PATH` or `--text`, and `--event`,
 under the default frame; the tracked files, `--diff`, `--history` and a directory exit 2.
 
+With `--names-file PATH` the verb runs in the egress mode, the check an environment runs on what
+leaves the machine: the names half alone, with the terms of that file, over exactly the input
+given, and nothing else. `--commits FILE` lists commits, one id per line; for each, the lines it
+adds against its first parent (read with `--text`, so no file is skipped as binary), for a merge
+also the lines its own resolution adds (read with `--remerge-diff`), the path of every file it
+adds or renames (an empty file included), its author and committer names and emails, and its
+message. `--staged` is the lines the index adds against `HEAD`, labelled `path:line`; `--text
+FILE` is a whole file, and it also works outside a repository. The three combine. The mode reads
+no frame (so a `railform.toml` that does not load changes nothing), no other tracked file and no
+names variable, and makes no home-path finding. A file of the input whose content holds a NUL byte
+or is not UTF-8 is reported `unscannable`: the run fails `private-name` when a term is found, else
+`unscannable`. A missing or empty names file, an unknown commit or a bad argument exits 2.
+
 No output contains a matched name or the user segment of a matched home path. A finding shows the
 shape with the segment replaced by `<name>`, and a term only by its line number in the names file.
 """
@@ -580,6 +593,391 @@ def sources_for_text(files: list[str]) -> list[Source]:
     return found
 
 
+# --- the egress mode ---------------------------------------------------------------------------
+
+UNSCANNABLE = 'unscannable'
+NOT_UTF8 = 'not UTF-8'
+BINARY = 'binary'
+EGRESS_FLAGS = '--commits, --staged or --text'
+# The file modes whose blob is content: a regular file, an executable one and a symbolic link
+# (its target). A gitlink (160000) has no content in this repository.
+_CONTENT_MODES = frozenset({'100644', '100755', '120000'})
+_HEX = re.compile(r'[0-9a-f]{40}([0-9a-f]{24})?')
+# What git log and git diff print the same way whatever the configuration says: no colour, no
+# external diff or text conversion, every file as text, no context, no path relative to a
+# subdirectory, and the `a/` and `b/` prefixes the patch reader expects.
+_PATCH_OPTIONS = (
+    '-p',
+    '--text',
+    '-U0',
+    '--inter-hunk-context=0',
+    '-M',
+    '--no-color',
+    '--no-ext-diff',
+    '--no-textconv',
+    '--no-relative',
+    '--submodule=short',
+    '--src-prefix=a/',
+    '--dst-prefix=b/',
+)
+# The listed commits only, in the order given, read from standard input, with no signature
+# check printed between them and every message and name in UTF-8.
+_LOG = (
+    'git',
+    '-c',
+    'core.quotepath=off',
+    'log',
+    '--no-walk=unsorted',
+    '--stdin',
+    '--no-color',
+    '--no-show-signature',
+    '--encoding=UTF-8',
+)
+
+
+def read_names_file(given: str) -> Names:
+    """The terms of the names file at `given`, read as the names half reads its file."""
+    path = Path(given)
+    if not given or not path.is_file():
+        raise UsageError(f'--names-file {given}: no such names file')
+    try:
+        text = path.read_bytes().decode('utf-8-sig', errors='replace')
+    except OSError as exc:
+        raise UsageError(f'--names-file {given}: cannot read the names file') from exc
+    names = Names.parse(text)
+    if names.pattern is None:
+        raise UsageError(f'--names-file {given}: the names file holds no term')
+    return names
+
+
+def _defect(data: bytes) -> str | None:
+    """Why `data` cannot be scanned as text, or None: a NUL byte, or bytes that are not UTF-8."""
+    if b'\0' in data:
+        return BINARY
+    try:
+        data.decode('utf-8')
+    except UnicodeDecodeError:
+        return NOT_UTF8
+    return None
+
+
+@dataclass(frozen=True)
+class Egress:
+    """The names half alone, judging the input of the egress mode."""
+
+    names: Names
+
+    @property
+    def redactor(self) -> Checker:
+        # No frame is read, so no placeholder passes: every home path in a label is hidden.
+        return Checker(frozenset(), self.names)
+
+    def label(self, text: str) -> str:
+        return self.redactor.label(text)
+
+    def hits(self, label: str, text: str) -> list[tuple[str, str]]:
+        """One finding per term in `text`, which has no lines of its own (a path, a name)."""
+        return [
+            (PRIVATE_NAME, f'{label}: private name (names file line {span.term_line})')
+            for span in self.names.hits(text)
+        ]
+
+    def lines(self, label: str, numbered: Iterable[tuple[int, str]]) -> list[tuple[str, str]]:
+        """One finding per term in each (line number, line) pair of the text called `label`."""
+        findings: list[tuple[str, str]] = []
+        for number, line in numbered:
+            findings.extend(self.hits(f'{label}:{number}', line.rstrip('\r')))
+        return findings
+
+    def unscannable(self, label: str, defect: str) -> tuple[str, str]:
+        return (UNSCANNABLE, f'{label}: unscannable ({defect})')
+
+
+def _git_input(root: Path, command: list[str], given: bytes) -> bytes:
+    """The output of the git `command`, `given` written to its standard input."""
+    try:
+        done = subprocess.run(command, cwd=root, input=given, capture_output=True, check=False)
+    except OSError as exc:
+        raise UsageError(f'cannot run git: {exc}') from exc
+    if done.returncode != 0:
+        detail = done.stderr.decode('utf-8', 'replace').strip().splitlines()
+        verb = next(word for word in command[1:] if not word.startswith('-') and '=' not in word)
+        raise UsageError(f'git {verb} failed: {detail[0] if detail else "no output"}')
+    return done.stdout
+
+
+def _read_commit_list(given: str) -> list[str]:
+    try:
+        text = Path(given).read_bytes().decode('utf-8-sig', errors='replace')
+    except OSError as exc:
+        raise UsageError(f'--commits {given}: cannot read: {exc.strerror or exc}') from exc
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _resolve_commits(root: Path, listed: list[str]) -> list[str]:
+    """The full id of each listed commit, in the order given, each once.
+
+    A line git cannot resolve to a commit is a usage error; it is never read as an option.
+    """
+    if not listed:
+        return []
+    query = ''.join(f'{line}^{{commit}}\n' for line in listed).encode('utf-8')
+    command = ['git', 'cat-file', '--batch-check=%(objectname) %(objecttype)']
+    answers = _git_input(root, command, query).decode('utf-8', 'replace').splitlines()
+    answers += [''] * (len(listed) - len(answers))
+    resolved: list[str] = []
+    for line, answer in zip(listed, answers, strict=False):
+        sha, _, kind = answer.partition(' ')
+        if kind != 'commit' or not _HEX.fullmatch(sha):
+            raise UsageError(f'--commits: unknown commit {line}')
+        if sha not in resolved:
+            resolved.append(sha)
+    return resolved
+
+
+@dataclass(frozen=True)
+class _Change:
+    """A file a commit (or the index) adds or changes: its path, status and new blob."""
+
+    path: str
+    status: str
+    mode: str
+    blob: str
+
+
+def _raw_changes(output: bytes) -> Iterator[tuple[str, _Change]]:
+    """The (sha, change) pairs of `--raw -z` output, a commit introduced by `%x01%H`."""
+    tokens = iter(output.split(b'\0'))
+    sha = ''
+    for token in tokens:
+        token = token.lstrip(b'\n')
+        if token.startswith(_COMMIT_MARK):
+            sha = token[1:].decode('ascii', 'replace').strip()
+        elif token.startswith(b':'):
+            fields = token[1:].decode('ascii', 'replace').split(' ')
+            if len(fields) < 5:
+                continue
+            _, new_mode, _, new_blob, status = fields[:5]
+            path = next(tokens, b'')
+            if status[:1] in ('R', 'C'):
+                path = next(tokens, b'')  # the source path comes first, then the new one
+            yield sha, _Change(path.decode('utf-8', 'replace'), status[:1], new_mode, new_blob)
+
+
+def _blob_defects(root: Path, changes: list[_Change]) -> dict[str, str]:
+    """The defect of each blob among `changes` that holds content and cannot be scanned."""
+    # A blob id of zeros stands for no blob (a deletion, or a work-tree file `git diff` hashed).
+    wanted = sorted(
+        {
+            c.blob
+            for c in changes
+            if c.status != 'D' and c.mode in _CONTENT_MODES and c.blob.strip('0')
+        }
+    )
+    defects: dict[str, str] = {}
+    if not wanted:
+        return defects
+    try:
+        proc = subprocess.Popen(
+            ['git', 'cat-file', '--batch'],
+            cwd=root,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        raise UsageError(f'cannot run git: {exc}') from exc
+    if proc.stdin is None or proc.stdout is None:
+        raise UsageError('cannot read the output of git cat-file')
+    try:
+        # One blob at a time, so neither pipe fills while the other waits.
+        for blob in wanted:
+            proc.stdin.write(f'{blob}\n'.encode('ascii'))
+            proc.stdin.flush()
+            header = proc.stdout.readline().decode('ascii', 'replace').split()
+            if len(header) != 3 or header[1] != 'blob':
+                raise UsageError(f'cannot read blob {blob}')
+            data = proc.stdout.read(int(header[2]))
+            proc.stdout.read(1)  # the line feed after the content
+            defect = _defect(data)
+            if defect is not None:
+                defects[blob] = defect
+    finally:
+        proc.stdin.close()
+        proc.stdout.close()
+        proc.wait()
+    return defects
+
+
+def _identities(root: Path, commits: list[str]) -> dict[str, tuple[str, ...]]:
+    """Each commit's parents, then its author name and email and committer name and email."""
+    command = [*_LOG, '--format=%H%x00%P%x00%an%x00%ae%x00%cn%x00%ce']
+    output = _git_input(root, command, _feed(commits)).decode('utf-8', 'replace')
+    found: dict[str, tuple[str, ...]] = {}
+    for line in output.splitlines():
+        sha, *fields = line.split('\0')
+        found[sha] = tuple(fields)
+    return found
+
+
+def _messages(root: Path, commits: list[str]) -> dict[str, str]:
+    output = _git_input(root, [*_LOG, '-z', '--format=%H%n%B'], _feed(commits))
+    found: dict[str, str] = {}
+    for entry in output.split(b'\0'):
+        sha, _, message = entry.decode('utf-8', 'replace').partition('\n')
+        if sha.strip():
+            found[sha.strip()] = message
+    return found
+
+
+def _feed(commits: list[str]) -> bytes:
+    return ''.join(f'{sha}\n' for sha in commits).encode('ascii')
+
+
+def commits_findings(root: Path, listed: list[str], egress: Egress) -> list[tuple[str, str]]:
+    """The findings in what each listed commit carries, commit by commit in the order given.
+
+    For each commit: its author, its committer, its message, the path of each file it adds or
+    renames, each file whose content at the commit cannot be scanned, and the lines it adds
+    against its first parent (the empty tree for a root commit); for a merge commit, also the
+    lines its own resolution adds, read with `--remerge-diff`.
+    """
+    commits = _resolve_commits(root, listed)
+    if not commits:
+        return []
+    identities = _identities(root, commits)
+    messages = _messages(root, commits)
+    first_parent = ['--root', '--diff-merges=first-parent']
+    raw = _git_input(
+        root,
+        [*_LOG, '--format=%x01%H', '--raw', '--no-abbrev', '-z', '-M', *first_parent],
+        _feed(commits),
+    )
+    changes: dict[str, list[_Change]] = {sha: [] for sha in commits}
+    for sha, change in _raw_changes(raw):
+        changes.setdefault(sha, []).append(change)
+    defects = _blob_defects(root, [c for found in changes.values() for c in found])
+    added: dict[str, list[tuple[str, str]]] = {sha: [] for sha in commits}
+    seen: set[tuple[str, str, int, str]] = set()
+    merges = [sha for sha in commits if len(identities.get(sha, ('',))[0].split()) > 1]
+    passes = [(commits, first_parent)]
+    if merges:
+        passes.append((merges, ['--diff-merges=remerge']))
+    for chosen, how in passes:
+        command = [*_LOG, *_PATCH_OPTIONS, *how, '--format=%x01%H']
+        for sha, path, lines in _patch_added_lines(root, command, _feed(chosen)):
+            fresh = []
+            for number, text in lines:
+                key = (sha, path, number, text)
+                if key not in seen:  # a resolution line the first-parent patch showed already
+                    seen.add(key)
+                    fresh.append((number, text))
+            label = f'commit {sha[:12]} {egress.label(path)}'
+            added.setdefault(sha, []).extend(egress.lines(label, fresh))
+    findings: list[tuple[str, str]] = []
+    for sha in commits:
+        tag = f'commit {sha[:12]}'
+        identity = identities.get(sha, ('', '', '', '', ''))
+        for role, values in (('author', identity[1:3]), ('committer', identity[3:5])):
+            for value in values:
+                findings.extend(egress.hits(f'{tag} {role}', value))
+        message = messages.get(sha, '')
+        findings.extend(egress.lines(f'{tag} message', enumerate(message.split('\n'), start=1)))
+        for change in changes.get(sha, []):
+            if change.status in ('A', 'R', 'C'):
+                findings.extend(egress.hits(f'{tag} path {egress.label(change.path)}', change.path))
+        for change in changes.get(sha, []):
+            if change.blob in defects and change.status != 'D':
+                label = f'{tag} {egress.label(change.path)}'
+                findings.append(egress.unscannable(label, defects[change.blob]))
+        findings.extend(added.get(sha, []))
+    return findings
+
+
+def staged_findings(root: Path, egress: Egress) -> list[tuple[str, str]]:
+    """The findings in the lines the index adds against HEAD (every staged line without HEAD),
+    labelled `path:line`, and each staged file whose content cannot be scanned."""
+    diff = ['git', '-c', 'core.quotepath=off', 'diff', '--cached']
+    raw = _git_input(root, [*diff, '--raw', '--no-abbrev', '-z', '-M'], b'')
+    changes = [change for _, change in _raw_changes(raw)]
+    defects = _blob_defects(root, changes)
+    findings = [
+        egress.unscannable(egress.label(change.path), defects[change.blob])
+        for change in changes
+        if change.blob in defects and change.status != 'D'
+    ]
+    for _, path, lines in _patch_added_lines(root, [*diff, *_PATCH_OPTIONS]):
+        findings.extend(egress.lines(egress.label(path), lines))
+    return findings
+
+
+def text_findings(given: str, egress: Egress) -> list[tuple[str, str]]:
+    """The findings in the whole file `given`, or the reason it cannot be scanned."""
+    try:
+        data = Path(given).read_bytes()
+    except OSError as exc:
+        raise UsageError(f'--text {given}: cannot read: {exc.strerror or exc}') from exc
+    label = egress.label(given)
+    defect = _defect(data)
+    if defect is not None:
+        return [egress.unscannable(label, defect)]
+    text = data.decode('utf-8-sig')
+    return egress.lines(label, enumerate(text.split('\n'), start=1))
+
+
+def _egress_root() -> Path:
+    try:
+        return frame.repository_root()
+    except frame.FrameError as exc:  # NoRepositoryError included
+        raise UsageError(f'--commits and --staged need a git repository: {exc}') from exc
+
+
+def run_egress(args: argparse.Namespace) -> Verdict:
+    """The egress mode: the names half alone, on exactly the input given, with no frame read."""
+    redactor = Checker(frozenset(), Names(None, ()))
+    others = [
+        flag
+        for flag, given in (
+            ('PATH', bool(args.paths)),
+            ('--diff', args.diff is not None),
+            ('--history', args.history),
+            ('--event', args.event is not None),
+            ('--require-names', args.require_names),
+        )
+        if given
+    ]
+    if others:
+        return Verdict.usage(
+            VERB,
+            f'{VERB}: the egress mode (--names-file) takes only {EGRESS_FLAGS}, '
+            f'not {", ".join(others)}',
+        )
+    if args.commits is None and not args.staged and not args.text:
+        return Verdict.usage(VERB, f'{VERB}: the egress mode (--names-file) needs {EGRESS_FLAGS}')
+    try:
+        egress = Egress(read_names_file(args.names_file))
+    except UsageError as exc:
+        return Verdict.usage(VERB, f'{VERB}: {redactor.label(str(exc))}')
+    findings: list[tuple[str, str]] = []
+    try:
+        if args.commits is not None or args.staged:
+            root = _egress_root()
+            if args.commits is not None:
+                findings += commits_findings(root, _read_commit_list(args.commits), egress)
+            if args.staged:
+                findings += staged_findings(root, egress)
+        for given in args.text:
+            findings += text_findings(given, egress)
+    except UsageError as exc:
+        return Verdict.usage(VERB, f'{VERB}: {egress.label(str(exc))}')
+    lines = tuple(line for _, line in findings)
+    if any(code == PRIVATE_NAME for code, _ in findings):
+        return Verdict.fail(VERB, PRIVATE_NAME, lines)
+    if findings:
+        return Verdict.fail(VERB, UNSCANNABLE, lines)
+    return Verdict.ok(VERB)
+
+
 # --- the verb ----------------------------------------------------------------------------------
 
 
@@ -609,7 +1007,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         'the files and commit messages of --diff; else every tracked file. --history adds every '
         'commit message and every line any commit added. '
         '--text and --event add to any scope. Outside a git repository only files (PATH, '
-        '--text) and --event can be checked, under the default frame.'
+        '--text) and --event can be checked, under the default frame. With --names-file the '
+        'verb runs in the egress mode instead (below).'
     )
     parser.add_argument('paths', nargs='*', metavar='PATH', help='files to check (staged names)')
     parser.add_argument(
@@ -639,6 +1038,33 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         '--require-names',
         action='store_true',
         help='also fail with names-file-missing when the names variable is unset',
+    )
+    egress = parser.add_argument_group(
+        'egress mode',
+        'With --names-file, only the terms of that file are looked for, only in the input '
+        f'given with {EGRESS_FLAGS} (at least one, and they combine): no frame, no other '
+        'tracked file, no names variable and no home path. A file in the input that is binary or '
+        'not UTF-8 is reported unscannable. Exit 1 on a finding (private-name, else '
+        'unscannable); exit 2 on a missing or empty names file, an unknown commit or a bad '
+        'argument.',
+    )
+    egress.add_argument(
+        '--names-file',
+        metavar='PATH',
+        help='turn the egress mode on, with the terms of this file (one per line)',
+    )
+    egress.add_argument(
+        '--commits',
+        metavar='FILE',
+        help=(
+            'check the commits listed in FILE, one id per line: the lines each adds (a merge, '
+            'also its resolution), the paths it adds or renames, its author, committer and message'
+        ),
+    )
+    egress.add_argument(
+        '--staged',
+        action='store_true',
+        help='check the lines the index adds against HEAD, labelled path:line',
     )
 
 
@@ -670,6 +1096,12 @@ def _scope_sources(root: Path | None, args: argparse.Namespace) -> list[Source]:
 
 
 def run(args: argparse.Namespace) -> Verdict:
+    if args.names_file is not None:
+        return run_egress(args)  # before the frame is loaded: the egress mode reads none
+    if args.commits is not None or args.staged:
+        return Verdict.usage(
+            VERB, f'{VERB}: --commits and --staged belong to the egress mode, with --names-file'
+        )
     try:
         root = _repository_root()
         effective = frame.load(root) if root is not None else frame.effective_frame(None)
