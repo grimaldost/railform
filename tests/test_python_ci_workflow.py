@@ -143,15 +143,15 @@ def test_red_proof_every_job_has_a_time_limit(workflow: dict[Any, Any]) -> None:
         assert isinstance(limit, int) and 0 < limit <= 60, (name, limit)
 
 
-def test_red_proof_only_the_checks_job_caches_uv(workflow: dict[Any, Any]) -> None:
-    # Wave A's review (folded at §13): only `checks` syncs the caller's lock; the other jobs
-    # install railform or a pinned tool, and a cache saved from them buys nothing.
+def test_red_proof_no_job_caches_uv(workflow: dict[Any, Any]) -> None:
+    # No job keeps a uv cache, `checks` included, so no run restores a cache another run saved,
+    # whichever runner it ran on. Written out, since setup-uv's default may cache.
     for name, job in workflow['jobs'].items():
         for step in job['steps']:
             if not step.get('uses', '').startswith('astral-sh/setup-uv@'):
                 continue
             enabled = (step.get('with') or {}).get('enable-cache', 'auto')
-            assert enabled == ('auto' if name == 'checks' else False), (name, enabled)
+            assert enabled is False, (name, enabled)
 
 
 def test_no_permission_writes(workflow: dict[Any, Any]) -> None:

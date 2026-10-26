@@ -69,6 +69,9 @@ All notable changes to this project are recorded here, in the
   `frame --check` and for the merge-base reading. A fixture that needs a change at a new release is
   recorded as an expected failure, never edited to pass, and a second breakage in the same step
   changes the set and fails the test.
+- Every `setup-uv` step of the reusable workflows sets `enable-cache: false`, the `checks` job's
+  included, so no run restores a uv cache another run saved. An adopter's `checks` job no longer
+  restores or saves a uv cache.
 
 ## [0.3.0] - 2026-10-25
 

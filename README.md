@@ -836,8 +836,8 @@ checks that the input is 40 hexadecimal characters before anything is installed.
   release newer than the date moves the date in the same pull request.
 - **What the workflow allows.** Every action is pinned by a 40-hex commit, every setup-uv step
   pins the same uv version, and the token is read-only (`contents: read`). Every job has a time
-  limit (`timeout-minutes`, 45 for `checks` and 10 to 20 for the others), and only `checks`, which
-  syncs the caller's lock, keeps setup-uv's cache. It runs from the
+  limit (`timeout-minutes`, 45 for `checks` and 10 to 20 for the others), and no job keeps
+  setup-uv's cache (`enable-cache: false` on every setup-uv step). It runs from the
   caller's `pull_request` and `push` events, never `pull_request_target`. The jobs that read
   history (`commit-lane`, `changelog` and `hooks`) check out all of it. No `run:`
   text holds an expression: values such as the head branch's name reach the scripts through
