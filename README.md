@@ -291,7 +291,10 @@ Three verbs judge commit text, with the rules read from the frame (`commit.types
   `carriage-return` fires when the body holds a carriage return that no line feed follows, which
   splits a table row on GitHub. A CRLF line end passes, since GitHub's web editor submits bodies
   that way. A fence inside a block quote or a list item is not judged, whether it sits on the
-  item's marker line or on a later line indented to the item's content.
+  item's marker line or on a later line of the item. Which lines an item holds follows
+  CommonMark's list rules: an item whose marker line holds nothing ends at the next blank line,
+  and a marker that would interrupt a paragraph starts no item when nothing follows it or its
+  number is not 1.
 
 The subject rule: the first line reads `type(scope)!: description`, the scope and the `!` optional
 and the type one of `commit.types`. A commit with more than one parent (a merge) is exempt, since
