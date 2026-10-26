@@ -851,6 +851,15 @@ checks that the input is 40 hexadecimal characters before anything is installed.
 - **The jobs after `frame`.** `checks`, `commit-lane`, `changelog` and `hooks` need `frame`, so a
   pin that is not a full commit, or a `railform.toml` that `frame --check` fails, stops them
   before they install anything. `audit` installs no railform and runs on its own.
+- **The runner.** The repository variable `LINUX_RUNS_ON` routes the Linux jobs. Unset, the
+  default, every job runs on `ubuntu-latest`, and each leg of `checks` on its `matrix.os`. Set to
+  a JSON array of runner labels, such as `["self-hosted","linux","example"]`, it sends every Linux
+  job, and every `ubuntu*` leg of `checks`, to a runner with those labels; the Windows legs stay
+  on their `matrix.os`. A run whose actor is Dependabot, and a run on a pull request Dependabot
+  opened, whoever started it, stay on GitHub's runners. The `gate` job adopt writes and the
+  `release-check` job of `tag-watch.yml` take the same expression, and no job that reads the
+  variable holds a `write` permission, `id-token` or a `secrets.` reference
+  (`tests/test_runs_on_variable.py`).
 
 railform itself calls the workflow by local path, `./.github/workflows/python-ci.yml`, with
 `ci.self_hosted = true` in its `railform.toml`, and passes the commit under test

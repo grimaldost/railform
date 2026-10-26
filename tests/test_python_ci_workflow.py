@@ -285,7 +285,13 @@ def test_the_checks_job_runs_the_frame_pipeline_on_the_frame_matrix(
         'os': '${{ fromJSON(needs.frame.outputs.ci_os) }}',
         'python': '${{ fromJSON(needs.frame.outputs.python_versions) }}',
     }
-    assert job['runs-on'] == '${{ matrix.os }}'
+    # The matrix form of the routing expression: a leg that is not `ubuntu*` runs on its
+    # `matrix.os` in every case (tests/test_runs_on_variable.py).
+    assert job['runs-on'] == (
+        "${{ startsWith(matrix.os, 'ubuntu') && github.actor != 'dependabot[bot]' && "
+        "github.event.pull_request.user.login != 'dependabot[bot]' && "
+        'fromJSON(vars.LINUX_RUNS_ON || \'"ubuntu-latest"\') || matrix.os }}'
+    )
     assert job['env'] == {'UV_PYTHON': '${{ matrix.python }}'}
     checkout = job['steps'][0]
     assert (

@@ -27,7 +27,7 @@ defaults:
     shell: bash
 jobs:
   release-check:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && fromJSON(vars.LINUX_RUNS_ON || '"ubuntu-latest"') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - name: Check that railform-sha is a full commit
