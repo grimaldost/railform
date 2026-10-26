@@ -43,6 +43,21 @@ All notable changes to this project are recorded here, in the
   the key as the way to raise the limit, and gives a hand-typed `--maxkb` with the frame at the
   default as its `drift` example.
 
+### Changed
+
+- The adopter fixtures of `tests/fixtures/adopter_frames/` are true copies: a header of three
+  lines (the repository, the full commit and the blob id of `<commit>:railform.toml`), then the
+  adopter's `railform.toml` byte for byte, refreshed from each adopter's `origin/main`. The fathom
+  fixture no longer carries a row the adopter's file lacked; fathom's own file holds it. A hermetic
+  check hashes the bytes below the header against the header's blob id, and a network check,
+  marked `slow`, fetches the commit from the adopter's repository and compares its blob; it fails
+  offline and never skips, so `pytest -m "not slow"` stays the offline suite.
+- What railform is expected to say about each fixture is recorded in
+  `tests/fixtures/adopter_verdicts.toml`: `pass`, or the exact set of verdict codes, for
+  `frame --check` and for the merge-base reading. A fixture that needs a change at a new release is
+  recorded as an expected failure, never edited to pass, and a second breakage in the same step
+  changes the set and fails the test.
+
 ## [0.3.0] - 2026-10-25
 
 ### Added

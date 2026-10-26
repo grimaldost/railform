@@ -1,6 +1,6 @@
-# Copied from github.com/grimaldost/keel at commit bf7c1e1 (origin/main on 2026-10-25), unchanged
-# below this header. railform.toml of a public adopter; tests/test_adopter_frames.py keeps it
-# readable by every verb that reads a frame.
+# Copied from github.com/grimaldost/keel at commit d8d3292dd74166d2748392cba848af3167db49f4, blob 869c5c73362193aaf109ccb21a8941438301106f of railform.toml
+# The adopter's file begins on line 4, byte for byte, its own leading comments included;
+# tests/test_adopter_frames.py keeps it readable by every verb that reads a frame.
 # This repository's frame for railform: `railform frame` prints the effective frame and
 # `railform frame --check` judges this file.
 

@@ -1,6 +1,6 @@
-# Copied from github.com/grimaldost/mantis-research at commit da71b8c (origin/main on 2026-10-25), unchanged
-# below this header. railform.toml of a public adopter; tests/test_adopter_frames.py keeps it
-# readable by every verb that reads a frame.
+# Copied from github.com/grimaldost/mantis-research at commit a41bdb11ff4c77af5e8fbeddf06e6483a5c04484, blob eb18f9aa6b65a27e51069dc880f84ad74430892d of railform.toml
+# The adopter's file begins on line 4, byte for byte, its own leading comments included;
+# tests/test_adopter_frames.py keeps it readable by every verb that reads a frame.
 # This repository's frame for railform: `railform frame` prints the effective frame and
 # `railform frame --check` judges this file.
 [project]
