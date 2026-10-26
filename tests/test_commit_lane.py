@@ -1170,10 +1170,15 @@ def test_a_setext_underline_under_a_paragraph_of_definitions_is_text(
         pytest.param('<h2>Title</h2>\n```\n', 2, id='an-h2-tag'),
         pytest.param('<textarea\n\n```\n', 3, id='textarea-starts-no-raw-text-block'),
         pytest.param('<pre>\n</textarea>\n```\n', None, id='textarea-ends-no-pre-block'),
-        # A line indented four or more spaces after a container is too far in to start a block,
-        # so it goes on with the paragraph lazily.
+        # A line indented four or more spaces after a container that holds an open paragraph is
+        # too far in to start a block, so it goes on with that paragraph lazily.
         pytest.param('   - x\n    ---\ny\n-\n  ```\n', None, id='after-a-wide-list-item'),
         pytest.param('>x\n    >\nx\n-\n  ```\n', None, id='after-a-block-quote'),
+        # After a block quote that holds no paragraph, such a line is indented code outside the
+        # quote: nothing is open for it to continue lazily.
+        pytest.param(
+            '>\n    > x\ny\n2. z\n   ~~~\n', 5, id='after-a-block-quote-without-a-paragraph'
+        ),
         # An ordered marker interrupts a paragraph only when its number is written `1`.
         pytest.param('x\n01. y\n-\n  ```\n', 4, id='a-number-with-a-leading-zero'),
         # List items nested ten deep are read like any other.

@@ -307,10 +307,15 @@ Three verbs judge commit text, with the rules read from the frame (`commit.types
   rules: an item whose marker line holds nothing ends at the next blank line, and a marker that
   would interrupt a paragraph starts no item when nothing follows it or its number is not 1. A
   setext underline under a paragraph made only of link reference definitions underlines nothing,
-  so a `===` line there is paragraph text. The check departs from the reference implementation in
-  one place, by the definition above: a closer followed by a tab closes its fence, as CommonMark
-  0.30 and markdown-it read it, where the reference implementation, written to CommonMark 0.29,
-  reads `'~~~\nx\n~~~\t\n'` as a fence left open on line 1.
+  so a `===` line there is paragraph text.
+
+  A closing fence may be followed by spaces or tabs, as in CommonMark 0.30 and later, and as
+  markdown-it reads it; this is the one place the check departs from the reference
+  implementation. Older readers that allow only spaces, such as the `commonmark` package 0.9.1
+  and other readers of CommonMark 0.29, see such a fence as still open, so in those readers the
+  check can both pass a body they read as open and refuse one they pass: `'~~~\nx\n~~~\t\n'`
+  passes, where they read a fence left open on line 1, and `'~~~\n~~~\t\n~~~\n'` fails on line 3,
+  where they read the third line as the closer of the fence opened on line 1.
 
   markdown-it-py 3.0.0, in its `commonmark` mode, reads some bodies differently from the
   reference implementation, and on each of them the check follows the reference implementation.
@@ -321,9 +326,13 @@ Three verbs judge commit text, with the rules read from the frame (`commit.types
     starts a new block there: `'[a]: /u\n<b>\n~~~\n'` fails on line 3.
   - A line holding only one tag, after a list item or block quote it does not continue, starts an
     HTML block, where markdown-it reads it as lazy paragraph text: `'- a\n<b>\n~~~\n'` passes.
-  - A line indented four or more spaces after a list item or block quote goes on with the
-    paragraph lazily, where markdown-it measures the indent from the container's content and can
-    start a block there: `'   - x\n    ---\ny\n-\n  ~~~\n'` passes.
+  - A line indented four or more spaces after a list item or block quote that holds an open
+    paragraph goes on with that paragraph lazily, where markdown-it measures the indent from the
+    container's content and can start a block there: `'   - x\n    ---\ny\n-\n  ~~~\n'` passes.
+  - A line indented four or more spaces after a block quote that holds no paragraph is indented
+    code outside the quote, since no paragraph is open for it to continue lazily, where
+    markdown-it goes on with the quote through an indented `>`: `'>\n    > x\ny\n2. z\n   ~~~\n'`
+    fails on line 5.
   - A list item whose only block is a paragraph of link reference definitions holds nothing once
     that paragraph ends, so a second blank line ends it: `'- [d]: /a\n\n\n  ~~~\n'` fails on
     line 4.
