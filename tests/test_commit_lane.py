@@ -826,6 +826,7 @@ def test_without_a_comment_character_in_the_configuration_hash_is_the_marker(
 
 UNCLOSED_FENCE_MESSAGE = 'a code fence opens on this line and is never closed'
 CARRIAGE_RETURN_MESSAGE = 'a carriage return not followed by a line feed'
+FENCE_FAIL = ('fail', 'unclosed-fence')
 
 
 def body_verdict(
@@ -873,6 +874,44 @@ def test_red_proof_a_body_with_both_defects_fails_as_unclosed_fence_and_lists_bo
 
 
 @pytest.mark.parametrize(
+    ('body', 'expected'),
+    [
+        # The item is empty, so the fence after the blank line is a top-level fence, closed by
+        # its last line.
+        pytest.param('- \n\n  ```\n---\n   ```\n', (0, [], ('pass', 'ok')), id='closed'),
+        pytest.param(
+            '-\n\n  ```\n',
+            (1, [f'pull request body:3: unclosed-fence: {UNCLOSED_FENCE_MESSAGE}'], FENCE_FAIL),
+            id='open',
+        ),
+    ],
+)
+def test_red_proof_a_list_item_that_begins_with_a_blank_line_ends_at_the_next_blank_line(
+    body: str,
+    expected: tuple[int, list[str], tuple[str, str]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert body_verdict(body, tmp_path, capsys) == expected
+
+
+@pytest.mark.parametrize(
+    'body',
+    [
+        pytest.param('Steps:\n2. build\n   ```\nmake\n', id='ordered-list-not-starting-at-1'),
+        pytest.param('Steps:\n*\n  ```\nmake\n', id='empty-item'),
+    ],
+)
+def test_red_proof_a_list_marker_that_cannot_interrupt_a_paragraph_starts_no_item(
+    body: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The marker line continues the paragraph, so the fence after it is a top-level fence.
+    code, findings, verdict = body_verdict(body, tmp_path, capsys)
+    assert (code, verdict) == (1, FENCE_FAIL)
+    assert findings == [f'pull request body:3: unclosed-fence: {UNCLOSED_FENCE_MESSAGE}']
+
+
+@pytest.mark.parametrize(
     'body',
     [
         pytest.param('```\ncode\n```\n', id='closed-backticks'),
@@ -903,6 +942,9 @@ def test_red_proof_a_body_with_both_defects_fails_as_unclosed_fence_and_lists_bo
         pytest.param('- a\ntext\n  ```\n  x\n', id='fence-after-a-lazy-continuation-line'),
         pytest.param('> a\n>\n> ```\n> x\n', id='fence-on-a-block-quote-continuation-line'),
         pytest.param('- a\n\n      ```\n      x\n', id='indented-code-in-a-list-item'),
+        pytest.param('-\n  a\n\n  ```\n  x\n', id='fence-in-an-item-whose-content-starts-below'),
+        pytest.param('- - \n\n  ```\n  x\n', id='fence-in-an-item-after-its-empty-nested-item'),
+        pytest.param('- a\n  2. b\n\n  ```\n  x\n', id='a-later-number-continues-the-item-text'),
         pytest.param('``\ncode\n', id='two-backticks-open-nothing'),
         pytest.param('~~\ncode\n', id='two-tildes-open-nothing'),
         pytest.param('```\na\n```\n\n```\nb\n```\n', id='two-closed-blocks'),
@@ -952,6 +994,9 @@ def test_a_crlf_closer_followed_by_spaces_is_a_closer(
         pytest.param(
             '- ```\n  code\ntext\n```\nx\n', 4, id='fence-after-text-that-ends-a-list-item-fence'
         ),
+        pytest.param('- # h\ntext\n  ```\n', 3, id='fence-after-text-that-follows-an-item-heading'),
+        pytest.param('text\n-\n  ```\n', 3, id='fence-after-an-underline-that-looks-like-an-item'),
+        pytest.param('1. a\n2.\n\n   ```\n', 4, id='fence-after-an-empty-sibling-item'),
     ],
 )
 def test_a_block_still_open_at_the_end_names_the_opening_line(body: str, opening: int) -> None:

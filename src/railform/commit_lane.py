@@ -55,18 +55,20 @@ DEFAULT_COMMENT_CHAR = '#'
 SUBJECT_MESSAGE = 'the subject is not "type(scope)!: description" with a type of the frame'
 UNCLOSED_FENCE_MESSAGE = 'a code fence opens on this line and is never closed'
 CARRIAGE_RETURN_MESSAGE = 'a carriage return not followed by a line feed'
-# A fence opens with at most three spaces of indent and a run of three or more backticks (whose
-# info string holds no backtick) or of three or more tildes. A closer is such a run with nothing
-# but spaces or tabs after it.
-_BACKTICK_OPENER = re.compile(r' {0,3}(`{3,})[^`]*')
-_TILDE_OPENER = re.compile(r' {0,3}(~{3,}).*')
-_CLOSER = re.compile(r' {0,3}(`{3,}|~{3,})[ \t]*')
-# A list item starts with at most three spaces, a bullet or a number of up to nine digits and a
-# delimiter, then spaces and content (or the end of the line); a thematic break is not one.
-_LIST_ITEM = re.compile(r'( {0,3})([-+*]|\d{1,9}[.)])(?:( +)(\S.*)|[ \t]*)')
-_THEMATIC_BREAK = re.compile(r' {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*')
-_QUOTE = re.compile(r' {0,3}>')
-_HEADING = re.compile(r' {0,3}#{1,6}(?:[ \t]|$)')
+# The block starts of CommonMark that decide where a fence sits, each matched on a line's text
+# after an indent of at most three spaces, with tabs already expanded to spaces. A fence opens with
+# a run of three or more backticks (whose info string holds no backtick) or of three or more
+# tildes; a closer is such a run with nothing but spaces after it.
+_BACKTICK_OPENER = re.compile(r'(`{3,})[^`]*')
+_TILDE_OPENER = re.compile(r'(~{3,}).*')
+_CLOSER = re.compile(r'(`{3,}|~{3,}) *')
+_ATX_HEADING = re.compile(r'#{1,6}(?: |$)')
+_SETEXT_UNDERLINE = re.compile(r'(?:=+|-+) *')
+_THEMATIC_BREAK = re.compile(r'(?:\* *){3,}|(?:- *){3,}|(?:_ *){3,}')
+# A list marker: a bullet, or a number of up to nine digits and a delimiter; a space or the end of
+# the line follows it.
+_BULLET = re.compile(r'[-+*](?= |$)')
+_ORDERED = re.compile(r'(\d{1,9})[.)](?= |$)')
 _LONE_CARRIAGE_RETURN = re.compile(r'\r(?!\n)')
 # What `git commit --fixup`, `--squash` and `--fixup=amend:` put before the subject they target.
 AUTOSQUASH_PREFIXES = ('fixup! ', 'squash! ', 'amend! ')
@@ -181,109 +183,187 @@ def _body_lines(body: str) -> list[str]:
     return [line.removesuffix('\r') for line in lines[:-1]] + lines[-1:]
 
 
-def _expand_indent(line: str) -> str:
-    """`line` with its leading tabs written as spaces, to the next multiple of four columns."""
-    column = 0
-    for char in line:
-        if char == ' ':
-            column += 1
-        elif char == '\t':
-            column += 4 - column % 4
-        else:
-            break
-    return ' ' * column + line.lstrip(' \t')
+def _expand_tabs(line: str) -> str:
+    """`line` with each tab written as the spaces that reach the next multiple of four columns,
+    the tab stop CommonMark reads block structure with."""
+    parts = line.split('\t')
+    text = parts[0]
+    for part in parts[1:]:
+        text += ' ' * (4 - len(text) % 4) + part
+    return text
+
+
+def _spaces(text: str) -> int:
+    """How many spaces `text` starts with."""
+    return len(text) - len(text.lstrip(' '))
 
 
 def _opener(text: str) -> tuple[str, int] | None:
-    """The marker character and run length when `text` is a fence opening line, else None."""
+    """The marker character and run length when `text` opens a fence, else None."""
     found = _BACKTICK_OPENER.fullmatch(text) or _TILDE_OPENER.fullmatch(text)
     return (found[1][0], len(found[1])) if found else None
 
 
-def _closes(text: str, char: str, length: int) -> bool:
-    """Whether `text` is a closing line for a fence of `length` copies of `char`."""
-    found = _CLOSER.fullmatch(text)
-    return bool(found) and found[1][0] == char and len(found[1]) >= length
+def _closes(rest: str, char: str, length: int) -> bool:
+    """Whether `rest`, with at most three spaces of indent, closes a fence of `length` `char`s."""
+    indent = _spaces(rest)
+    found = _CLOSER.fullmatch(rest[indent:])
+    return indent < 4 and bool(found) and found[1][0] == char and len(found[1]) >= length
 
 
-def _list_item(text: str) -> tuple[int, str] | None:
-    """When `text` starts a list item, the columns its content is indented by and what follows
-    its marker; else None."""
-    if _THEMATIC_BREAK.fullmatch(text):
+@dataclass
+class _Item:
+    """An open list item: the columns its content is indented by, and whether it holds a block."""
+
+    width: int
+    filled: bool = False
+
+
+@dataclass(frozen=True)
+class _Fence:
+    """An open fenced code block: its opening line, its marker, and whether a block quote or a
+    list item holds it."""
+
+    number: int
+    char: str
+    length: int
+    nested: bool
+
+
+_PARAGRAPH = 'paragraph'
+_INDENTED_CODE = 'indented code'
+_ONE_LINE = 'one line'  # a heading or a thematic break, closed on the line that opens it
+
+
+def _continued(containers: Sequence[_Item | None], line: str) -> tuple[int, str]:
+    """How many of the open containers `line` continues, outermost first, and what is left of the
+    line after their markers. A block quote (None) continues on a line that starts with `>`; a
+    list item continues on a line indented to its content, or on a blank line once it holds a
+    block, since an item can begin with at most one blank line."""
+    rest = line
+    for matched, container in enumerate(containers):
+        indent = _spaces(rest)
+        if container is None:
+            if indent > 3 or rest[indent : indent + 1] != '>':
+                return matched, rest
+            rest = rest[indent + 1 :]
+            rest = rest.removeprefix(' ')
+        elif not rest.strip(' '):
+            if not container.filled:
+                return matched, rest
+            rest = ''
+        elif indent >= container.width:
+            rest = rest[container.width :]
+        else:
+            return matched, rest
+    return len(containers), rest
+
+
+def _list_item(text: str, *, interrupts: bool) -> tuple[int, str] | None:
+    """When `text` starts a list item, the columns from its marker to its content and the text
+    after them; else None. An item that would interrupt a paragraph must have content on its
+    first line and, when ordered, start at 1."""
+    found = _BULLET.match(text) or _ORDERED.match(text)
+    if found is None:
         return None
-    found = _LIST_ITEM.fullmatch(text)
-    if not found:
+    after = text[found.end() :]
+    content = after.lstrip(' ')
+    if interrupts and (not content or (found.re is _ORDERED and int(found[1]) != 1)):
         return None
-    width = len(found[1]) + len(found[2])
-    if found[4] is None:  # an empty first line
-        return width + 1, ''
-    if len(found[3]) > 4:  # five or more spaces: the content is indented code
-        return width + 1, ' ' * (len(found[3]) - 1) + found[4]
-    return width + len(found[3]), found[4]
+    spaces = len(after) - len(content)
+    if not content or spaces > 4:  # an empty first line, or indented code after one space
+        return found.end() + 1, after[1:]
+    return found.end() + spaces, content
 
 
-def _starts_block(text: str) -> bool:
-    """Whether `text` starts a block that cannot continue a paragraph lazily."""
-    return bool(
-        _list_item(text)
-        or _QUOTE.match(text)
-        or _opener(text)
-        or _HEADING.match(text)
-        or _THEMATIC_BREAK.fullmatch(text)
-    )
+def _fill(containers: Sequence[_Item | None]) -> None:
+    """Record that the innermost container, when it is a list item, holds a block."""
+    if containers and containers[-1] is not None:
+        containers[-1].filled = True
+
+
+def _block_starts(
+    rest: str, *, continues_paragraph: bool, in_paragraph: bool
+) -> tuple[list[_Item | None], tuple[str, int] | str | None, str]:
+    """The containers that `rest` opens (None for a block quote), the leaf block it opens after
+    them (a fence's marker, indented code, a one-line block, or None), and the text left.
+
+    `continues_paragraph`: without a block start the line would continue an open paragraph, so a
+    list item must be able to interrupt one. `in_paragraph`: a paragraph is the deepest open block,
+    so an indented line continues it rather than opening indented code.
+    """
+    started: list[_Item | None] = []
+    while True:
+        indent = _spaces(rest)
+        text = rest[indent:]
+        if indent > 3:
+            code = bool(text) and not (in_paragraph and not started)
+            return started, _INDENTED_CODE if code else None, rest
+        if text.startswith('>'):
+            rest = text[1:].removeprefix(' ')
+            started.append(None)
+            continues_paragraph = False
+            continue
+        if fence := _opener(text):
+            return started, fence, ''
+        underline = continues_paragraph and _SETEXT_UNDERLINE.fullmatch(text)
+        if underline or _ATX_HEADING.match(text) or _THEMATIC_BREAK.fullmatch(text):
+            return started, _ONE_LINE, ''
+        item = _list_item(text, interrupts=continues_paragraph)
+        if item is None:
+            return started, None, rest
+        started.append(_Item(indent + item[0]))
+        rest = item[1]
+        continues_paragraph = False
 
 
 def unclosed_fence_findings(body: str) -> list[tuple[int, str]]:
     """The opening line of a fenced code block still open when `body` ends, as a list of one
     (line number, message), else empty. Lines are numbered in line feeds.
 
-    Follows CommonMark: a line indented four or more spaces outside a block is indented code and
-    opens nothing. A fence inside a block quote or a list item is not judged: the list items a
-    line continues are tracked by their content indent (a continuation line is indented at least
-    that far, or follows a paragraph line lazily), so a fence on a continuation line is inside
-    its item, and a block quote line is skipped.
+    Follows CommonMark's block structure, reduced to what places a fence: block quotes and list
+    items (the containers), paragraphs, indented code, headings and thematic breaks. Each line
+    first continues the open containers it can, then opens new blocks; a line that opens nothing
+    and follows paragraph text continues the paragraph, lazily when a container did not continue,
+    and leaves the containers open. A fence inside a block quote or a list item is not judged: it
+    ends with its container. HTML blocks and link reference definitions are not modeled.
     """
-    opened: tuple[int, str, int] | None = None  # line number, marker character, marker length
-    inner: tuple[str, int, int] | None = None  # in a list item: marker, length, content indent
-    items: list[int] = []  # the content indents of the list items the line is in, innermost last
-    no_paragraph = False  # the previous line left no paragraph open to continue lazily
+    containers: list[_Item | None] = []  # the open block quotes (None) and list items
+    leaf: _Fence | str | None = None  # the open block the innermost container holds
     for number, raw in enumerate(_body_lines(body), start=1):
-        line = _expand_indent(raw)
-        if opened is not None:
-            if _closes(line, opened[1], opened[2]):
-                opened = None
+        matched, rest = _continued(containers, _expand_tabs(raw))
+        all_matched = matched == len(containers)
+        if all_matched and isinstance(leaf, _Fence):
+            if _closes(rest, leaf.char, leaf.length):
+                leaf = None
             continue
-        if not line.strip():
-            no_paragraph = True
+        if all_matched and leaf == _INDENTED_CODE and (_spaces(rest) > 3 or not rest.strip(' ')):
             continue
-        if inner is not None:
-            if len(line) - len(line.lstrip(' ')) >= inner[2]:
-                if _closes(line[inner[2] :], inner[0], inner[1]):
-                    inner = None
-                    no_paragraph = True
-                continue
-            inner = None
-            no_paragraph = True
-        indent = len(line) - len(line.lstrip(' '))
-        depth = sum(1 for offset in items if offset <= indent)
-        base = items[depth - 1] if depth else 0
-        rest = line[base:]
-        if depth < len(items) and not no_paragraph and not _starts_block(rest):
-            continue  # a lazy continuation of a paragraph in the item
-        del items[depth:]
-        no_paragraph = False
-        while item := _list_item(rest):
-            base += item[0]
-            rest = item[1]
-            items.append(base)
-        if _QUOTE.match(rest):
-            continue
-        if found := _opener(rest):
-            if items:
-                inner = (found[0], found[1], items[-1])
-            else:
-                opened = (number, found[0], found[1])
-    return [] if opened is None else [(opened[0], UNCLOSED_FENCE_MESSAGE)]
+        in_paragraph = leaf == _PARAGRAPH
+        started, opened, rest = _block_starts(
+            rest,
+            continues_paragraph=in_paragraph and all_matched and bool(rest.strip(' ')),
+            in_paragraph=in_paragraph,
+        )
+        if in_paragraph and not started and opened is None and rest.strip(' '):
+            continue  # paragraph text; when lazy, the containers it did not continue stay open
+        del containers[matched:]
+        for container in started:
+            _fill(containers)
+            containers.append(container)
+        if opened is not None or rest.strip(' '):
+            _fill(containers)
+        if isinstance(opened, tuple):
+            leaf = _Fence(number, opened[0], opened[1], nested=bool(containers))
+        elif opened == _INDENTED_CODE:
+            leaf = _INDENTED_CODE
+        elif opened is None and rest.strip(' '):
+            leaf = _PARAGRAPH
+        else:
+            leaf = None
+    if isinstance(leaf, _Fence) and not leaf.nested:
+        return [(leaf.number, UNCLOSED_FENCE_MESSAGE)]
+    return []
 
 
 def carriage_return_findings(body: str) -> list[tuple[int, str]]:
