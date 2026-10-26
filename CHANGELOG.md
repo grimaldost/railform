@@ -37,7 +37,11 @@ All notable changes to this project are recorded here, in the
   `railform frame --check` fails it as `unlisted-departure` unless an `exceptions` row names
   `hooks.large_file_kb`; a lower value needs no row. The limit binds at commit time, on files
   staged as added in an armed clone; CI's replay of the hygiene hooks adds nothing to the index,
-  so the hook cannot fail there.
+  so the hook cannot fail there. The adopting guide's paragraph on edits outside the marker lines
+  now says what a top-level `exclude:` costs (the hygiene hooks lose the excluded paths at commit
+  time and in CI's replay, the paths half of `railform private-refs` at commit time only), names
+  the key as the way to raise the limit, and gives a hand-typed `--maxkb` with the frame at the
+  default as its `drift` example.
 
 ## [0.3.0] - 2026-10-25
 

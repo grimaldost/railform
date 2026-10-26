@@ -175,13 +175,25 @@ inside a marker line fails CI.
 
 Edits outside the marker lines are the repository's: adopt keeps them byte for byte, and
 `adopt --check` does not compare them with what adopt would write. A hygiene hook that trips on a
-file the repository has (a data fixture over the 500 KB limit of `check-added-large-files`, a
-generated file with trailing spaces) is dealt with there, by the top-level `exclude:` of
-`.pre-commit-config.yaml`. An edit to the hygiene entry between the marker lines, such as
-`args: [--maxkb=2048]`, fails the next `adopt --check` as `drift`, and a second
-`check-added-large-files` entry outside the markers does not raise the limit, since the marked one
-still runs. Both `adopt` and `adopt --check` refuse a top-level `files:` or `exclude:` that drops a
-hook wrapper or the commit message file (`adopt --check` reports it as `drift`).
+file the repository has, such as a generated file with trailing spaces, can be kept away from it
+there, by the top-level `exclude:` of `.pre-commit-config.yaml`, at a cost that railform 0.4.0
+keeps: a top-level `exclude:` removes the excluded paths from the hygiene hooks both at commit time and in
+CI's replay of them, and from the paths half of `railform private-refs` at commit time only,
+while in CI the paths half scans every tracked file, the excluded ones included.
+The exclude therefore fits a data directory that holds nothing those hooks guard. A data file
+over the 500 KB limit of `check-added-large-files` needs no exclude: `hooks.large_file_kb` in
+`railform.toml` sets the limit in KB, so a repository can raise the limit without that trade-off
+(a value above 500 needs an `exceptions` row), and adopt writes it into the hygiene entry as
+`args: [--maxkb=<value>]`. The limit binds at commit time, on added files only: the hook judges
+the files staged as added, in a clone whose hooks are armed, so a tracked file that grows past the
+limit later is never judged, and CI's replay adds nothing to the index, so the hook cannot fail
+there at any limit. A hand edit to the hygiene entry between the marker lines that departs from
+what the frame renders, such as `args: [--maxkb=2048]` typed into the `check-added-large-files`
+entry while the frame keeps the default, fails the next `adopt --check` as `drift`; set the limit
+with `hooks.large_file_kb` instead, and adopt writes that line. A second
+`check-added-large-files` entry outside the markers does not raise the limit either, since the
+marked one still runs. Both `adopt` and `adopt --check` refuse a top-level `files:` or `exclude:`
+that drops a hook wrapper or the commit message file (`adopt --check` reports it as `drift`).
 
 Before opening the pull request, run the checks that CI will run on it. Every check the jobs of the
 shared workflow run is in this step (`frame --github-output` only writes the job outputs), with the
