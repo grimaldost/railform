@@ -283,6 +283,14 @@ Three verbs judge commit text, with the rules read from the frame (`commit.types
   base.
 - `railform pr-text [--event PATH]` checks a pull request's title and body, read from the event
   payload (`--event`, else `$GITHUB_EVENT_PATH`). A `null` or absent title or body is empty text.
+  The body is also judged for its form, after the attribution rule, with two findings that each
+  name the line, counted in line feeds (the title is one line and gets neither):
+  `unclosed-fence` fires when the body ends inside a fenced code block, which opens with a run of
+  three or more backticks or tildes, at most three spaces of indent, and closes with a run of the
+  same character at least as long, so a fence left open swallows the rest of the page; and
+  `carriage-return` fires when the body holds a carriage return that no line feed follows, which
+  splits a table row on GitHub. A CRLF line end passes, since GitHub's web editor submits bodies
+  that way. A fence inside a block quote or a list item is not judged.
 
 The subject rule: the first line reads `type(scope)!: description`, the scope and the `!` optional
 and the type one of `commit.types`. A commit with more than one parent (a merge) is exempt, since
