@@ -5,6 +5,21 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+### Added
+
+- The egress extension point in the `pre-push` and `pre-commit` hook wrappers. When the
+  environment names an egress hook, in the variable `RAILFORM_EGRESS_HOOK` (set and not empty) or
+  else in the git configuration key `railform.egressHook`, the `pre-push` wrapper saves git's
+  input to a temporary file and runs `uv run --no-project python <hook> pre-push <remote name>
+  <remote URL>` with it before pre-commit's stage, which then reads the same input; a hook that
+  exits non-zero refuses the push with its own status, and a hook path that is not a file refuses
+  it with exit 2. The `pre-commit` wrapper runs `uv run --no-project python <hook> pre-commit`
+  and ignores its exit status, so a commit is never refused by it; a hook path that is not a file
+  is reported in one line and the commit goes on. With neither the variable nor the key set, the
+  wrappers behave as before, and the `commit-msg` wrapper is unchanged. railform ships no egress
+  hook. An adopter picks up the new wrapper text by running `railform adopt` at the new pin;
+  `railform hooks-check` and `railform adopt --check` report the old text until then.
+
 ## [0.3.0] - 2026-10-25
 
 ### Added
