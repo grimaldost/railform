@@ -914,6 +914,46 @@ def test_red_proof_a_list_marker_that_cannot_interrupt_a_paragraph_starts_no_ite
 @pytest.mark.parametrize(
     'body',
     [
+        pytest.param('[d]: /a\\\nb\n===\n2. x\n   ```\n', id='bare-destination'),
+        pytest.param('[d]: <a\\\nb>\n===\n2. x\n   ```\n', id='destination-in-angle-brackets'),
+    ],
+)
+def test_red_proof_a_backslash_before_a_line_end_does_not_carry_a_destination_on(
+    body: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A backslash escapes only punctuation, so the line end ends the destination (or, in angle
+    # brackets, leaves it unclosed). `b` is then paragraph text that `===` turns into a heading,
+    # and the fence sits in the list item after it.
+    assert body_verdict(body, tmp_path, capsys) == (0, [], ('pass', 'ok'))
+
+
+@pytest.mark.parametrize(
+    'body',
+    [
+        pytest.param(
+            '   - Steps:\n    ```\n    run\n    ```\n<br>\n```\n', id='after-indented-fence-lines'
+        ),
+        pytest.param('   - x\n    ```\n<t>\n```', id='after-an-indented-fence-line'),
+        pytest.param(
+            ' 1.  x\n    <summary>s</summary>\n<custom-tag/>\n```py\n[x]\n',
+            id='after-an-indented-tag',
+        ),
+        pytest.param('- a\n<b>\n```\n', id='after-a-list-item'),
+        pytest.param('> a\n<b>\n```\n', id='after-a-block-quote'),
+    ],
+)
+def test_red_proof_a_lone_tag_after_a_container_it_leaves_starts_an_html_block(
+    body: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The tag line continues neither the list item nor the block quote, so the paragraph it would
+    # continue lazily is not its container, and a line holding only one tag starts an HTML block
+    # there. The block runs to the next blank line and holds the fence line.
+    assert body_verdict(body, tmp_path, capsys) == (0, [], ('pass', 'ok'))
+
+
+@pytest.mark.parametrize(
+    'body',
+    [
         pytest.param('```\ncode\n```\n', id='closed-backticks'),
         pytest.param('~~~\ncode\n~~~\n', id='closed-tildes'),
         pytest.param('```python\ncode\n```\t\n', id='closer-followed-by-a-tab'),
@@ -1092,28 +1132,55 @@ def test_a_paragraph_made_only_of_link_reference_definitions_is_no_paragraph(
 @pytest.mark.parametrize(
     ('body', 'opening'),
     [
-        # The line after a definition starts afresh, where cmark keeps the paragraph open and
-        # reads it as text: an item, a lone tag or indented code then holds the fence.
-        pytest.param('[a]: /u\n2. x\n   ```\n', None, id='an-ordered-item-not-starting-at-1'),
-        pytest.param('[a]: /u\n-\n  ```\n', None, id='an-empty-item'),
-        pytest.param('[a]: /u\n<span>\n```\n', None, id='a-lone-tag'),
-        pytest.param('[a]: /u\n    x\n2. y\n   ```\n', None, id='indented-code'),
-        # A lazy line after a definition in a container leaves it, where cmark continues the
-        # container's paragraph: the item then continues that line's paragraph.
-        pytest.param('> [a]: /u\nfoo\n2. x\n   ```\n', 4, id='after-a-definition-in-a-quote'),
-        # A script URL makes no definition, so the paragraph goes on.
-        pytest.param('[a]: javascript:x\n2. y\n   ```\n', 3, id='a-script-url'),
-        pytest.param('[a]: data:image/png;x\n2. y\n   ```\n', None, id='an-image-data-url'),
-        # In a list item, a blank line indented less than the item's content ends an HTML block.
-        pytest.param('- <!--\n\n  x\ny\n2. z\n   ```\n', None, id='html-ends-at-a-short-blank'),
-        pytest.param('- <!--\n  \n  x\ny\n2. z\n   ```\n', 6, id='html-goes-on-past-a-full-blank'),
-        pytest.param('- - <!--\n   \n    x\ny\n2. z\n   ```\n', None, id='html-in-a-nested-item'),
+        # The line after a definition goes on with the paragraph, which is read for definitions
+        # only when it ends or meets a setext underline: a marker that cannot interrupt a
+        # paragraph, a lone tag or an indented line is then text, and the fence after it is
+        # judged.
+        pytest.param('[a]: /u\n2. x\n   ```\n', 3, id='an-ordered-item-not-starting-at-1'),
+        pytest.param('[a]: /u\n-\n  ```\n', 3, id='an-empty-item'),
+        pytest.param('[a]: /u\n<span>\n```\n', 3, id='a-lone-tag'),
+        pytest.param('[a]: /u\n    x\n2. y\n   ```\n', 4, id='an-indented-line'),
+        pytest.param('[a]: data:image/png;x\n2. y\n   ```\n', 3, id='an-image-data-url'),
+        pytest.param('[d]: /a\\\n<b>\n```\n', 3, id='a-destination-ending-in-a-backslash'),
+        pytest.param('[d]:\n\\\n<a>\n```', 4, id='a-backslash-as-the-destination'),
+        # A lazy line after a definition in a block quote goes on with the quote's paragraph,
+        # and the item after it closes the quote.
+        pytest.param('> [a]: /u\nfoo\n2. x\n   ```\n', None, id='after-a-definition-in-a-quote'),
+        # Definitions as the reference implementation reads them: a script URL, an unmatched `(`
+        # and a backslash before a title's closing quote make one; a tab, a backslash before a
+        # line end in a label and a label over 1000 characters make none.
+        pytest.param('[a]: javascript:x\n===\n2. y\n   ```\n', 4, id='a-script-url'),
+        pytest.param('[a]: /u(b\n===\n2. y\n   ```\n', 4, id='an-unmatched-parenthesis'),
+        pytest.param('[a]: /u "a\\"\n===\n2. y\n   ```\n', 4, id='a-backslash-before-a-quote'),
+        pytest.param('[a]:\t/u\n===\n2. y\n   ```\n', None, id='a-tab-after-the-colon'),
+        pytest.param('[a]: /u\t\n===\n2. y\n   ```\n', None, id='a-tab-after-the-destination'),
+        pytest.param('[a\\\nb]: /u\n===\n2. y\n   ```\n', None, id='a-backslash-in-a-label'),
         pytest.param(
-            '> - <!--\n> \n>   x\ny\n2. z\n   ```\n', None, id='html-in-an-item-in-a-quote'
+            '[' + 'x' * 1001 + ']: /u\n===\n2. y\n   ```\n', None, id='a-label-over-1000-characters'
         ),
+        # A list item whose only block is a paragraph of definitions holds nothing once that
+        # paragraph ends, so a second blank line ends the item.
+        pytest.param('- [d]: /a\n\n\n  ```\n', 4, id='an-item-of-definitions-only'),
+        # An HTML block in a list item goes on past a blank line indented less than the item's
+        # content, and ends with the item.
+        pytest.param('- <!--\n\n  x\ny\n2. z\n   ```\n', 6, id='html-past-a-short-blank'),
+        pytest.param('- - <!--\n   \n    x\ny\n2. z\n   ```\n', 6, id='html-in-a-nested-item'),
+        pytest.param('> - <!--\n> \n>   x\ny\n2. z\n   ```\n', 6, id='html-in-an-item-in-a-quote'),
+        # The block-level tag names hold h1 but not h2 to h6, and textarea is no raw-text tag.
+        pytest.param('<h2>Title</h2>\n```\n', 2, id='an-h2-tag'),
+        pytest.param('<textarea\n\n```\n', 3, id='textarea-starts-no-raw-text-block'),
+        pytest.param('<pre>\n</textarea>\n```\n', None, id='textarea-ends-no-pre-block'),
+        # A line indented four or more spaces after a container is too far in to start a block,
+        # so it goes on with the paragraph lazily.
+        pytest.param('   - x\n    ---\ny\n-\n  ```\n', None, id='after-a-wide-list-item'),
+        pytest.param('>x\n    >\nx\n-\n  ```\n', None, id='after-a-block-quote'),
+        # An ordered marker interrupts a paragraph only when its number is written `1`.
+        pytest.param('x\n01. y\n-\n  ```\n', 4, id='a-number-with-a-leading-zero'),
+        # List items nested ten deep are read like any other.
+        pytest.param('- ' * 10 + 'a\n```\n', 2, id='items-nested-ten-deep'),
     ],
 )
-def test_where_commonmark_parsers_differ_the_body_is_read_as_markdown_it_reads_it(
+def test_where_commonmark_parsers_differ_the_body_is_read_as_the_reference_implementation(
     body: str, opening: int | None
 ) -> None:
     expected = [] if opening is None else [(opening, UNCLOSED_FENCE_MESSAGE)]

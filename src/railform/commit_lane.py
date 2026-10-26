@@ -22,8 +22,8 @@ The rules:
   title and body are held to the same patterns.
 - **Form of a pull request body** (`pr-text` only; the title is one line and gets neither).
   `unclosed-fence`: the body ends inside a fenced code block that no block quote or list item
-  holds, its block structure read as markdown-it reads CommonMark, and the finding names the
-  opening line. `carriage-return`: the body holds a carriage return that no line
+  holds, its block structure read as the CommonMark reference implementation reads it, and the
+  finding names the opening line. `carriage-return`: the body holds a carriage return that no line
   feed follows; a CRLF line end passes, since GitHub's web editor submits bodies that way. Both
   name lines counted in line feeds, and both read the raw body, because `str.splitlines` ends a
   line at a lone carriage return and would never show one.
@@ -42,7 +42,7 @@ from railform import frame
 from railform.verdict import Verdict
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Sequence
+    from collections.abc import Iterable, Sequence
     from pathlib import Path
 
 SUBJECT = 'subject'
@@ -56,52 +56,59 @@ DEFAULT_COMMENT_CHAR = '#'
 SUBJECT_MESSAGE = 'the subject is not "type(scope)!: description" with a type of the frame'
 UNCLOSED_FENCE_MESSAGE = 'a code fence opens on this line and is never closed'
 CARRIAGE_RETURN_MESSAGE = 'a carriage return not followed by a line feed'
-# The block starts of CommonMark that decide where a fence sits, each matched on a line's text
-# after an indent of at most three spaces, with tabs already expanded to spaces. A fence opens with
-# a run of three or more backticks (whose info string holds no backtick) or of three or more
-# tildes; a closer is such a run with nothing but spaces after it.
-_BACKTICK_OPENER = re.compile(r'(`{3,})[^`]*')
-_TILDE_OPENER = re.compile(r'(~{3,}).*')
-_CLOSER = re.compile(r'(`{3,}|~{3,}) *')
-_ATX_HEADING = re.compile(r'#{1,6}(?: |$)')
-_SETEXT_UNDERLINE = re.compile(r'(?:=+|-+) *')
-_THEMATIC_BREAK = re.compile(r'(?:\* *){3,}|(?:- *){3,}|(?:_ *){3,}')
-# A list marker: a bullet, or a number of up to nine digits and a delimiter; a space or the end of
-# the line follows it.
-_BULLET = re.compile(r'[-+*](?= |$)')
-_ORDERED = re.compile(r'(\d{1,9})[.)](?= |$)')
-# The starts of an HTML block, each with the end searched for from its first line on; None ends the
-# block before the next blank line. A start of the last kind, a line of block-level tag names, can
-# interrupt a paragraph; `_TAG_LINE`, a line holding only one complete tag, cannot.
+# The fence check reads a body's block structure as the CommonMark reference implementation does
+# (commonmark.js, as ported to Python in the `commonmark` package 0.9.1). Each block start is
+# matched on a line's text from its first character that is not a space or a tab. A fence opens
+# with a run of three or more backticks, with no backtick after it on the line, or of three or more
+# tildes. It closes on a run of its character at least as long, with nothing after the run but
+# spaces or tabs (the reference implementation, written to CommonMark 0.29, takes spaces only; 0.30
+# takes both).
+_FENCE_OPENER = re.compile(r'`{3,}(?!.*`)|~{3,}')
+_FENCE_CLOSER = re.compile(r'(?:`{3,}|~{3,})(?=[ \t]*$)')
+_ATX_HEADING = re.compile(r'#{1,6}(?:[ \t]+|$)')
+_SETEXT_UNDERLINE = re.compile(r'(?:=+|-+)[ \t]*$')
+_THEMATIC_BREAK = re.compile(r'(?:(?:\*[ \t]*){3,}|(?:_[ \t]*){3,}|(?:-[ \t]*){3,})[ \t]*$')
+_BULLET = re.compile(r'[*+-]')
+_ORDERED = re.compile(r'(\d{1,9})[.)]')
+_NON_SPACE = re.compile(r'[^ \t\f\v\r\n]')
+# The seven kinds of HTML block, each as (start, end): the end is searched for from the block's
+# first line on, and None ends the block before the next blank line. The last kind, a line holding
+# only one complete tag, cannot interrupt a paragraph. The block-level tag names are the reference
+# implementation's, whose list of headings holds only h1.
 _BLOCK_TAGS = (
     'address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|'
-    'dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|'
-    'header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|'
-    'param|section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul'
+    'dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|head|header|hr|'
+    'html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|'
+    'section|source|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul'
 )
-_HTML_STARTS: tuple[tuple[re.Pattern[str], re.Pattern[str] | None], ...] = (
+_ATTRIBUTE = (
+    r'\s+[a-zA-Z_:][a-zA-Z0-9:._-]*'  # a name, then an optional value
+    r"""(?:\s*=\s*(?:[^"'=<>`\x00-\x20]+|'[^']*'|"[^"]*"))?"""
+)
+_HTML_BLOCKS: tuple[tuple[re.Pattern[str], re.Pattern[str] | None], ...] = (
     (
-        re.compile(r'<(?:script|pre|style|textarea)(?=\s|>|$)', re.IGNORECASE),
-        re.compile(r'</(?:script|pre|style|textarea)>', re.IGNORECASE),
+        re.compile(r'<(?:script|pre|style)(?:\s|>|$)', re.IGNORECASE),
+        re.compile(r'</(?:script|pre|style)>', re.IGNORECASE),
     ),
     (re.compile('<!--'), re.compile('-->')),
     (re.compile(r'<\?'), re.compile(r'\?>')),
     (re.compile('<![A-Z]'), re.compile('>')),
     (re.compile(r'<!\[CDATA\['), re.compile(r'\]\]>')),
-    (re.compile(rf'</?(?:{_BLOCK_TAGS})(?=\s|/?>|$)', re.IGNORECASE), None),
+    (re.compile(rf'</?(?:{_BLOCK_TAGS})(?:\s|/?>|$)', re.IGNORECASE), None),
+    (
+        re.compile(
+            rf'(?:<[A-Za-z][A-Za-z0-9-]*(?:{_ATTRIBUTE})*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>)\s*$',
+            re.IGNORECASE,
+        ),
+        None,
+    ),
 )
-_ATTRIBUTE = (
-    r'\s+[A-Za-z_:][A-Za-z0-9_.:-]*'  # a name, then an optional value
-    r"""(?:\s*=\s*(?:[^"'=<>`\x00-\x20]+|'[^']*'|"[^"]*"))?"""
-)
-_TAG_LINE = re.compile(
-    rf'(?:<[A-Za-z][A-Za-z0-9-]*(?:{_ATTRIBUTE})*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>)\s*'
-)
-# A link destination markdown-it refuses, after backslash escapes: a script, file or data URL
-# other than an image.
-_ESCAPE = re.compile(r'\\([!-/:-@\[-`{-~])')
-_UNSAFE_LINK = re.compile(r'(?:vbscript|javascript|file|data):', re.IGNORECASE)
-_IMAGE_DATA_LINK = re.compile(r'data:image/(?:gif|png|jpeg|webp);', re.IGNORECASE)
+# A link reference definition's label, and its destination in angle brackets. A backslash escapes
+# an ASCII punctuation character, and nothing else.
+_LINK_LABEL = re.compile(r'\[(?:[^\\\[\]]|\\.){0,1000}\]')
+_BRACKETED_DESTINATION = re.compile(r'<(?:[^<>\n\\\x00]|\\.)*>')
+_ESCAPABLE = re.compile(r"""[!"#$%&'()*+,./:;<=>?@[\\\]^_`{|}~-]""")
+_SPACES_TO_LINE_END = re.compile(r' *(?:\n|$)')
 _LONE_CARRIAGE_RETURN = re.compile(r'\r(?!\n)')
 # What `git commit --fixup`, `--squash` and `--fixup=amend:` put before the subject they target.
 AUTOSQUASH_PREFIXES = ('fixup! ', 'squash! ', 'amend! ')
@@ -216,362 +223,433 @@ def _body_lines(body: str) -> list[str]:
     return [line.removesuffix('\r') for line in lines[:-1]] + lines[-1:]
 
 
-def _expand_tabs(line: str) -> str:
-    """`line` with each tab written as the spaces that reach the next multiple of four columns,
-    the tab stop CommonMark reads block structure with."""
-    parts = line.split('\t')
-    text = parts[0]
-    for part in parts[1:]:
-        text += ' ' * (4 - len(text) % 4) + part
-    return text
+class _Line:
+    """A line being read, with the reference implementation's cursor over it: `offset` counts
+    characters and `column` counts columns, a tab reaching the next multiple of four. When an
+    indent takes only part of a tab, `offset` stays on the tab and its other columns are left for
+    the next reader."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text.replace('\0', '�')
+        self.offset = 0
+        self.column = 0
+        # Set by `find_next_nonspace`: the first character from `offset` on that is not a space or
+        # a tab, its column, the indent before it counted from `column`, and whether the line
+        # holds nothing more.
+        self.next_nonspace = 0
+        self.next_nonspace_column = 0
+        self.indent = 0
+        self.blank = False
+
+    def at(self, pos: int) -> str:
+        """The character at `pos`, or '' past the end of the line."""
+        return self.text[pos : pos + 1]
+
+    @property
+    def indented(self) -> bool:
+        """Whether the indent is four columns or more: indented code, which opens no other block."""
+        return self.indent >= 4
+
+    def rest(self) -> str:
+        """The line from its next character that is not a space or a tab."""
+        return self.text[self.next_nonspace :]
+
+    def find_next_nonspace(self) -> None:
+        pos, column, char = self.offset, self.column, self.at(self.offset)
+        while char in (' ', '\t'):
+            column += 1 if char == ' ' else 4 - column % 4
+            pos += 1
+            char = self.at(pos)
+        self.next_nonspace, self.next_nonspace_column = pos, column
+        self.indent = column - self.column
+        self.blank = char in ('', '\r')
+
+    def advance_next_nonspace(self) -> None:
+        self.offset, self.column = self.next_nonspace, self.next_nonspace_column
+
+    def advance(self, count: int, *, columns: bool) -> None:
+        """Move past `count` characters, or past `count` columns when `columns` is set, which may
+        take part of a tab."""
+        while count > 0 and (char := self.at(self.offset)):
+            to_stop = 4 - self.column % 4 if char == '\t' else 1
+            if columns and to_stop > count:
+                self.column += count
+                return
+            self.column += to_stop
+            self.offset += 1
+            count -= to_stop if columns else 1
 
 
-def _spaces(text: str) -> int:
-    """How many spaces `text` starts with."""
-    return len(text) - len(text.lstrip(' '))
-
-
-def _opener(text: str) -> tuple[str, int] | None:
-    """The marker character and run length when `text` opens a fence, else None."""
-    found = _BACKTICK_OPENER.fullmatch(text) or _TILDE_OPENER.fullmatch(text)
-    return (found[1][0], len(found[1])) if found else None
-
-
-def _closes(rest: str, char: str, length: int) -> bool:
-    """Whether `rest`, with at most three spaces of indent, closes a fence of `length` `char`s."""
-    indent = _spaces(rest)
-    found = _CLOSER.fullmatch(rest[indent:])
-    return indent < 4 and bool(found) and found[1][0] == char and len(found[1]) >= length
+_QUOTE = 'block quote'
+_ITEM = 'list item'
+_PARAGRAPH = 'paragraph'
+_FENCE = 'fence'
+_INDENTED_CODE = 'indented code'
+_HTML = 'html block'
+_HEADING = 'heading'
+_BREAK = 'thematic break'
+_CONTAINERS = (_QUOTE, _ITEM)
+# The leaf blocks that take every line they continue on as content, so no block starts there.
+_CONTENT_BLOCKS = (_FENCE, _INDENTED_CODE, _HTML)
 
 
 @dataclass
-class _Item:
-    """An open list item: the columns its content is indented by, and whether it holds a block."""
+class _Block:
+    """An open block: its kind, the line it opens on, and what its kind needs to read later lines.
 
-    width: int
-    filled: bool = False
-
-
-@dataclass(frozen=True)
-class _Fence:
-    """An open fenced code block: its opening line, its marker, and whether a block quote or a
-    list item holds it."""
-
-    number: int
-    char: str
-    length: int
-    nested: bool
-
-
-@dataclass(frozen=True)
-class _Html:
-    """An open HTML block: the end that closes it, or None when a blank line does."""
-
-    end: re.Pattern[str] | None
-
-
-_PARAGRAPH = 'paragraph'
-_INDENTED_CODE = 'indented code'
-_ONE_LINE = 'one line'  # a heading or a thematic break, closed on the line that opens it
-
-
-def _continued(containers: Sequence[_Item | None], line: str) -> tuple[int, str]:
-    """How many of the open containers `line` continues, outermost first, and what is left of the
-    line after their markers. A block quote (None) continues on a line that starts with `>`; a
-    list item continues on a line indented to its content, or on a blank line once it holds a
-    block, since an item can begin with at most one blank line."""
-    rest = line
-    for matched, container in enumerate(containers):
-        indent = _spaces(rest)
-        if container is None:
-            if indent > 3 or rest[indent : indent + 1] != '>':
-                return matched, rest
-            rest = rest[indent + 1 :]
-            rest = rest.removeprefix(' ')
-        elif not rest.strip(' '):
-            if not container.filled:
-                return matched, rest
-            rest = ''
-        elif indent >= container.width:
-            rest = rest[container.width :]
-        else:
-            return matched, rest
-    return len(containers), rest
-
-
-def _list_item(text: str, *, interrupts: bool) -> tuple[int, str] | None:
-    """When `text` starts a list item, the columns from its marker to its content and the text
-    after them; else None. An item that would interrupt a paragraph must have content on its
-    first line and, when ordered, start at 1."""
-    found = _BULLET.match(text) or _ORDERED.match(text)
-    if found is None:
-        return None
-    after = text[found.end() :]
-    content = after.lstrip(' ')
-    if interrupts and (not content or (found.re is _ORDERED and int(found[1]) != 1)):
-        return None
-    spaces = len(after) - len(content)
-    if not content or spaces > 4:  # an empty first line, or indented code after one space
-        return found.end() + 1, after[1:]
-    return found.end() + spaces, content
-
-
-def _fill(containers: Sequence[_Item | None]) -> None:
-    """Record that the innermost container, when it is a list item, holds a block."""
-    if containers and containers[-1] is not None:
-        containers[-1].filled = True
-
-
-def _short_of_items(containers: Sequence[_Item | None], line: str) -> bool:
-    """Whether a blank `line` is indented less than the content of the list items that hold the
-    innermost block, counted from the last block quote's marker. markdown-it ends an HTML block at
-    such a line, where the reference implementations keep it open."""
-    quote = max((i for i, container in enumerate(containers) if container is None), default=-1)
-    width = sum(item.width for item in containers[quote + 1 :] if item is not None)
-    _, rest = _continued(containers[: quote + 1], line)
-    return _spaces(rest) < width
-
-
-def _html_start(text: str, *, lone_tag: bool) -> _Html | None:
-    """The HTML block that `text` starts, else None; `lone_tag`: whether a line holding only one
-    complete tag may start one, which it may not where it would interrupt a paragraph."""
-    for start, end in _HTML_STARTS:
-        if start.match(text):
-            return _Html(end)
-    return _Html(None) if lone_tag and _TAG_LINE.fullmatch(text) else None
-
-
-def _block_starts(
-    rest: str, *, continues_paragraph: bool, in_paragraph: bool
-) -> tuple[list[_Item | None], tuple[str, int] | _Html | str | None, str]:
-    """The containers that `rest` opens (None for a block quote), the leaf block it opens after
-    them (a fence's marker, an HTML block, indented code, a one-line block, or None), and the text
-    left.
-
-    `continues_paragraph`: without a block start the line would continue an open paragraph, so a
-    list item must be able to interrupt one. `in_paragraph`: a paragraph is the deepest open block,
-    so, unless a container opens first, an indented line continues it rather than opening indented
-    code, and so does a line holding only one tag, even when the paragraph is continued lazily.
+    A list item has `width`, the columns from its container's content to its own content, and
+    `children`, how many blocks it holds; a fence has its marker `char`, its run `length` and the
+    `indent` of its opener; an HTML block has its `end` (None: the next blank line ends it); a
+    paragraph has its `text`, each line followed by a line feed.
     """
-    started: list[_Item | None] = []
+
+    kind: str
+    line: int
+    width: int = 0
+    children: int = 0
+    char: str = ''
+    length: int = 0
+    indent: int = 0
+    end: re.Pattern[str] | None = None
+    text: str = ''
+
+
+def _closes(fence: _Block, line: _Line) -> bool:
+    """Whether `line` closes `fence`: at most three columns of indent, then a run of its character
+    at least as long as its opener's, with nothing after the run but spaces or tabs."""
+    found = _FENCE_CLOSER.match(line.text, line.next_nonspace)
+    return (
+        line.indent <= 3
+        and line.at(line.next_nonspace) == fence.char
+        and found is not None
+        and len(found[0]) >= fence.length
+    )
+
+
+def _continues(block: _Block, line: _Line) -> bool:
+    """Whether `line` continues the open `block`, the cursor moved past the block's marker or
+    indent when it does. A fence's closer is read before, by `_closes`."""
+    if block.kind == _QUOTE:
+        if line.indented or line.at(line.next_nonspace) != '>':
+            return False
+        line.advance_next_nonspace()
+        line.advance(1, columns=False)
+        if line.at(line.offset) in (' ', '\t'):
+            line.advance(1, columns=True)
+        return True
+    if block.kind == _ITEM:
+        if line.blank and not block.children:
+            return False  # an item that holds nothing yet ends at a blank line
+        if line.blank:
+            line.advance_next_nonspace()
+        elif line.indent >= block.width:
+            line.advance(block.width, columns=True)
+        else:
+            return False
+        return True
+    if block.kind == _FENCE:
+        for _ in range(block.indent):
+            if line.at(line.offset) not in (' ', '\t'):
+                break
+            line.advance(1, columns=True)
+        return True
+    if block.kind == _INDENTED_CODE:
+        if line.indented:
+            line.advance(4, columns=True)
+        elif line.blank:
+            line.advance_next_nonspace()
+        else:
+            return False
+        return True
+    if block.kind == _HTML:
+        return not (line.blank and block.end is None)
+    return block.kind == _PARAGRAPH and not line.blank  # a heading or a break takes one line
+
+
+def _list_item(line: _Line, number: int, *, interrupts: bool) -> _Block | None:
+    """The list item that starts on `line`, the cursor moved to its content, else None.
+
+    `interrupts`: the line would otherwise continue a paragraph, so the item must hold something
+    on its first line and, when ordered, start at 1.
+    """
+    if line.indented:
+        return None
+    rest = line.rest()
+    found = _BULLET.match(rest)
+    if found is None:
+        found = _ORDERED.match(rest)
+        if found is None or (interrupts and found[1] != '1'):
+            return None
+    marker = len(found[0])
+    if line.at(line.next_nonspace + marker) not in ('', ' ', '\t'):
+        return None
+    if interrupts and not _NON_SPACE.search(rest, marker):
+        return None
+    width = line.indent + marker
+    line.advance_next_nonspace()
+    line.advance(marker, columns=True)
+    start_column, start_offset = line.column, line.offset
     while True:
-        indent = _spaces(rest)
-        text = rest[indent:]
-        if indent > 3:
-            code = bool(text) and not (in_paragraph and not started)
-            return started, _INDENTED_CODE if code else None, rest
-        if text.startswith('>'):
-            rest = text[1:].removeprefix(' ')
-            started.append(None)
-            continues_paragraph = False
-            continue
-        if fence := _opener(text):
-            return started, fence, ''
-        if html := _html_start(text, lone_tag=not (in_paragraph and not started)):
-            return started, html, text
-        underline = continues_paragraph and _SETEXT_UNDERLINE.fullmatch(text)
-        if underline or _ATX_HEADING.match(text) or _THEMATIC_BREAK.fullmatch(text):
-            return started, _ONE_LINE, ''
-        item = _list_item(text, interrupts=continues_paragraph)
-        if item is None:
-            return started, None, rest
-        started.append(_Item(indent + item[0]))
-        rest = item[1]
-        continues_paragraph = False
+        line.advance(1, columns=True)
+        if line.column - start_column >= 5 or line.at(line.offset) not in (' ', '\t'):
+            break
+    spaces = line.column - start_column
+    if spaces >= 5 or spaces < 1 or not line.at(line.offset):
+        # Nothing on the line, or indented code after the marker: the content starts one column
+        # after the marker.
+        line.column, line.offset = start_column, start_offset
+        if line.at(line.offset) in (' ', '\t'):
+            line.advance(1, columns=True)
+        spaces = 1
+    return _Block(_ITEM, number, width=width + spaces)
 
 
-class _Text:
-    """The text of the lines a link reference definition may span, joined with line feeds and
-    read only as far as the definition needs."""
-
-    def __init__(self, first: str, following: Iterator[str]) -> None:
-        self.text = first
-        self._following = following
-
-    def at(self, pos: int) -> str:
-        """The character at `pos`, or '' past the last line."""
-        while pos >= len(self.text):
-            line = next(self._following, None)
-            if line is None:
-                return ''
-            self.text += '\n' + line
-        return self.text[pos]
-
-
-def _skip(text: _Text, pos: int, chars: str) -> int:
-    """The first position from `pos` on whose character is not one of `chars`."""
-    while (char := text.at(pos)) and char in chars:
+def _past_spaces_and_a_line_end(text: str, pos: int) -> int:
+    """`pos` moved past spaces, at most one line feed and the spaces after it. A tab stops it."""
+    while text[pos : pos + 1] == ' ':
         pos += 1
+    if text[pos : pos + 1] == '\n':
+        pos += 1
+        while text[pos : pos + 1] == ' ':
+            pos += 1
     return pos
 
 
-def _destination_end(text: _Text, pos: int) -> int:
-    """The position after a link destination that starts at `pos`, else 0: text in angle
-    brackets on one line, or a run without spaces or control characters whose parentheses
-    balance."""
-    if text.at(pos) == '<':
-        pos += 1
-        while (char := text.at(pos)) not in ('', '\n', '<'):
-            if char == '>':
-                return pos + 1
-            pos += 2 if char == '\\' and text.at(pos + 1) else 1
-        return 0
-    start, depth = pos, 0
-    while (char := text.at(pos)) and ' ' < char != '\x7f':
-        if char == '\\' and text.at(pos + 1):
-            if text.at(pos + 1) == ' ':
-                break
+def _destination_end(text: str, pos: int) -> int | None:
+    """The end of the link destination that starts at `pos`, else None: text in angle brackets on
+    one line, or a run up to a space, a tab, a line end or a `)` that closes no `(`. A backslash
+    escapes only an ASCII punctuation character, so before a line end it is part of the
+    destination, and the line end still ends it."""
+    if found := _BRACKETED_DESTINATION.match(text, pos):
+        return found.end()
+    if text[pos : pos + 1] == '<':
+        return None
+    start, depth, char = pos, 0, text[pos : pos + 1]
+    while char:
+        if char == '\\' and _ESCAPABLE.match(text, pos + 1):
             pos += 2
-            continue
-        if char == '(':
+        elif char == '(':
             depth += 1
-            if depth > 32:
-                return 0
-        elif char == ')':
-            if not depth:
-                break
+            pos += 1
+        elif char == ')' and depth:
             depth -= 1
-        pos += 1
-    return pos if pos > start and not depth else 0
+            pos += 1
+        elif char == ')' or char in ' \t\n\v\f\r':
+            break
+        else:
+            pos += 1
+        char = text[pos : pos + 1]
+    return None if pos == start and char != ')' else pos
 
 
-def _title_end(text: _Text, pos: int) -> int:
-    """The position after a link title that starts at `pos`, else 0: text in double quotes, in
-    single quotes, or in parentheses without an unescaped `(`."""
-    closer = {'"': '"', "'": "'", '(': ')'}.get(text.at(pos))
-    if closer is None:
-        return 0
-    pos += 1
-    while char := text.at(pos):
-        if char == closer:
-            return pos + 1
-        if char == '(' and closer == ')':
-            return 0
-        pos += 2 if char == '\\' and text.at(pos + 1) else 1
-    return 0
+def _title_end(text: str, pos: int) -> int | None:
+    """The end of the link title that starts at `pos`, else None: text in double quotes, in single
+    quotes, or in parentheses without an unescaped `(`.
 
-
-def _line_ends(text: _Text, pos: int) -> bool:
-    """Whether only spaces and tabs follow `pos` on its line."""
-    return text.at(_skip(text, pos, ' \t')) in ('', '\n')
-
-
-def _definition_lines(text: _Text) -> int:
-    """How many lines the link reference definition at the start of `text` takes, else 0.
-
-    `[label]:`, a destination and an optional title, with spaces, tabs or a line end between the
-    parts, and nothing after the definition on its last line. A title followed by other text is
-    dropped when it holds text, leaving the definition to end with its destination.
+    A backslash before a punctuation character can be read as an escape or as itself, and the end
+    is the one the reference implementation's regular expression finds first: escapes first, then
+    backtracking. It is computed here from the end back, so a long title costs no backtracking.
     """
-    pos = 1
-    while (char := text.at(pos)) != ']':
-        if char in ('', '['):
-            return 0
-        pos += 2 if char == '\\' else 1
-    if not text.text[1:pos].strip() or text.at(pos + 1) != ':':
-        return 0
-    start = _skip(text, pos + 2, ' \t\n')
-    end = _destination_end(text, start)
-    url = _ESCAPE.sub(r'\1', text.text[start:end].removeprefix('<').removesuffix('>')).strip()
-    if not end or (_UNSAFE_LINK.match(url) and not _IMAGE_DATA_LINK.match(url)):
-        return 0
-    pos = _skip(text, end, ' \t\n')
-    title = _title_end(text, pos) if pos > end else 0
-    if title and _line_ends(text, title):
-        end = title
-    elif (title and title - pos == 2) or not _line_ends(text, end):
-        return 0
-    return text.text.count('\n', 0, end) + 1
+    closer = {'"': '"', "'": "'", '(': ')'}.get(text[pos : pos + 1])
+    if closer is None:
+        return None
+    stops = '()\0' if closer == ')' else closer + '\0'  # never title text
+    # Every reading of the title reaches the first stop that no backslash precedes, so the title
+    # ends there at the latest.
+    limit = pos + 1
+    while limit < len(text) and (text[limit] not in stops or text[limit - 1] == '\\'):
+        limit += 1
+    ends = [-1] * (limit - pos + 2)  # ends[k - pos]: the end when the title's text resumes at k
+    if text[limit : limit + 1] == closer:
+        ends[limit - pos] = limit + 1
+    for k in range(limit - 1, pos, -1):
+        char = text[k]
+        if char == closer:
+            ends[k - pos] = k + 1
+        elif char == '\\' and _ESCAPABLE.match(text, k + 1) and ends[k + 2 - pos] >= 0:
+            ends[k - pos] = ends[k + 2 - pos]
+        elif char not in stops:
+            ends[k - pos] = ends[k + 1 - pos]
+    return ends[1] if ends[1] >= 0 else None
 
 
-def _paragraph_lines(
-    lines: Sequence[str], start: int, containers: Sequence[_Item | None]
-) -> Iterator[str]:
-    """The text of each line from index `start` on that would continue a paragraph inside
-    `containers`, up to the first that would not: a blank line, or a line that starts a block even
-    where a list item could not interrupt a paragraph."""
-    for index in range(start, len(lines)):
-        _, rest = _continued(containers, lines[index])
-        if not rest.strip(' '):
+def _definition_end(text: str, start: int) -> int:
+    """The end of the link reference definition at `start` of a paragraph's `text`, else 0.
+
+    A label, a colon, a destination and an optional title, with spaces and at most one line end
+    between the parts (a tab ends a definition), and nothing after it on its last line but spaces.
+    A title followed by other text is dropped, leaving the definition to end with its destination,
+    unless the title is empty.
+    """
+    label = _LINK_LABEL.match(text, start)
+    if label is None or len(label[0]) == 2 or len(label[0]) > 1001 or not label[0][1:-1].strip():
+        return 0
+    if text[label.end() : label.end() + 1] != ':':
+        return 0
+    destination = _destination_end(text, _past_spaces_and_a_line_end(text, label.end() + 1))
+    if destination is None:
+        return 0
+    spaced = _past_spaces_and_a_line_end(text, destination)
+    title = _title_end(text, spaced) if spaced > destination else None
+    if title is not None and (found := _SPACES_TO_LINE_END.match(text, title)):
+        return found.end()
+    if title is not None and title - spaced == 2:
+        return 0
+    found = _SPACES_TO_LINE_END.match(text, destination)
+    return found.end() if found else 0
+
+
+def _without_definitions(text: str) -> str:
+    """A paragraph's `text` without the link reference definitions it starts with."""
+    start = 0
+    while text.startswith('[', start) and (end := _definition_end(text, start)):
+        start = end
+    return text[start:]
+
+
+class _Blocks:
+    """The open blocks of a body, outermost first, read line by line as the reference
+    implementation's block parser reads them. The document that holds them and the lists that
+    hold list items are left implicit: a list always continues and holds only list items, so
+    neither moves a fence."""
+
+    def __init__(self) -> None:
+        self.open: list[_Block] = []
+        self._matched = 0  # how many open blocks the line being read continues
+        self._unmatched_closed = True
+
+    def read(self, line: _Line, number: int) -> None:
+        """Read one line: continue the open blocks it can, open the blocks that start on it, and
+        give the rest of it to the block that takes it."""
+        self._matched = 0
+        for block in self.open:
+            line.find_next_nonspace()
+            if block.kind == _FENCE and _closes(block, line):
+                self.open.pop()
+                return
+            if not _continues(block, line):
+                break
+            self._matched += 1
+        self._unmatched_closed = self._matched == len(self.open)
+        container = self._open_blocks(
+            line, number, self.open[self._matched - 1] if self._matched else None
+        )
+        tip = self.open[-1] if self.open else None
+        if (
+            tip is not None
+            and tip.kind == _PARAGRAPH
+            and not (self._unmatched_closed or line.blank)
+        ):
+            tip.text += line.text[line.offset :] + '\n'  # a lazy continuation line
             return
-        started, opened, _ = _block_starts(rest, continues_paragraph=False, in_paragraph=True)
-        if started or opened is not None:
-            return
-        yield rest
+        self._close_unmatched()
+        kind = container.kind if container is not None else None
+        if container is not None and kind == _PARAGRAPH:
+            container.text += line.text[line.offset :] + '\n'
+        elif container is not None and kind == _HTML:
+            if container.end is not None and container.end.search(line.text, line.offset):
+                self._close_top()
+        elif kind not in _CONTENT_BLOCKS and line.offset < len(line.text) and not line.blank:
+            paragraph = self._add(_Block(_PARAGRAPH, number))
+            line.advance_next_nonspace()
+            paragraph.text = line.text[line.offset :] + '\n'
+
+    def _open_blocks(self, line: _Line, number: int, container: _Block | None) -> _Block | None:
+        """Open the blocks that start on `line` inside `container`, trying each start in the
+        reference implementation's order, and return the block the rest of the line belongs to."""
+        while container is None or container.kind not in _CONTENT_BLOCKS:
+            line.find_next_nonspace()
+            rest = line.rest()
+            starts = not line.indented
+            paragraph = (
+                container if container is not None and container.kind == _PARAGRAPH else None
+            )
+            if starts and rest.startswith('>'):
+                line.advance_next_nonspace()
+                line.advance(1, columns=False)
+                if line.at(line.offset) in (' ', '\t'):
+                    line.advance(1, columns=True)
+                container = self._add(_Block(_QUOTE, number))
+                continue
+            if starts and _ATX_HEADING.match(rest):
+                line.offset = len(line.text)
+                return self._add(_Block(_HEADING, number))
+            if starts and (found := _FENCE_OPENER.match(rest)):
+                fence = _Block(
+                    _FENCE, number, char=rest[0], length=len(found[0]), indent=line.indent
+                )
+                return self._add(fence)
+            if starts and rest.startswith('<'):
+                for kind, (start, end) in enumerate(_HTML_BLOCKS, start=1):
+                    if start.match(rest) and (kind < 7 or paragraph is None):
+                        return self._add(_Block(_HTML, number, end=end))
+            if starts and paragraph is not None and _SETEXT_UNDERLINE.match(rest):
+                # A paragraph made only of link reference definitions takes no underline, and
+                # the line is read on like any other.
+                paragraph.text = _without_definitions(paragraph.text)
+                if paragraph.text:
+                    self.open[-1] = _Block(_HEADING, paragraph.line)
+                    line.offset = len(line.text)
+                    return self.open[-1]
+            if starts and _THEMATIC_BREAK.match(rest):
+                line.offset = len(line.text)
+                return self._add(_Block(_BREAK, number))
+            if item := _list_item(line, number, interrupts=paragraph is not None):
+                container = self._add(item)
+                continue
+            tip = self.open[-1] if self.open else None
+            if line.indented and not line.blank and (tip is None or tip.kind != _PARAGRAPH):
+                line.advance(4, columns=True)
+                return self._add(_Block(_INDENTED_CODE, number))
+            line.advance_next_nonspace()
+            return container
+        return container
+
+    def _add(self, block: _Block) -> _Block:
+        """Open `block` in the innermost open container, after closing the blocks the line did
+        not continue and the leaf block in the way."""
+        self._close_unmatched()
+        while self.open and self.open[-1].kind not in _CONTAINERS:
+            self._close_top()
+        if self.open:
+            self.open[-1].children += 1
+        self.open.append(block)
+        return block
+
+    def _close_unmatched(self) -> None:
+        """Close the blocks the line being read did not continue, once it opens a block or
+        turns out not to be a lazy continuation line."""
+        if not self._unmatched_closed:
+            while len(self.open) > self._matched:
+                self._close_top()
+            self._unmatched_closed = True
+
+    def _close_top(self) -> None:
+        """Close the innermost open block. A paragraph made only of link reference definitions
+        leaves its container, so a list item it was the only block of holds nothing again."""
+        block = self.open.pop()
+        if block.kind == _PARAGRAPH and self.open and self.open[-1].kind == _ITEM:
+            rest = _without_definitions(block.text)
+            if rest != block.text and not _NON_SPACE.search(rest):
+                self.open[-1].children -= 1
 
 
 def unclosed_fence_findings(body: str) -> list[tuple[int, str]]:
     """The opening line of a fenced code block still open when `body` ends, as a list of one
     (line number, message), else empty. Lines are numbered in line feeds.
 
-    Follows CommonMark's block structure, reduced to what places a fence: block quotes and list
-    items (the containers), paragraphs, link reference definitions, indented code, HTML blocks,
-    headings and thematic breaks. Each line first continues the open containers it can, then opens
-    new blocks; a line that opens nothing and follows paragraph text continues the paragraph,
-    lazily when a container did not continue, and leaves the containers open. A fence inside a
-    block quote or a list item is not judged: it ends with its container.
-
-    Where CommonMark parsers differ, the body is read as markdown-it reads it: a link reference
-    definition is read where a paragraph would start, over the lines that would continue that
-    paragraph, and the line after it starts afresh (cmark and commonmark.js keep the paragraph open
-    on that line); a script, file or non-image data URL makes no definition; and an HTML block in
-    a list item ends at a blank line indented less than the item's content.
+    The body's block structure is read as the CommonMark reference implementation reads it:
+    block quotes and list items (the containers), paragraphs with their lazy continuation lines,
+    the link reference definitions a paragraph starts with (read when it meets a setext underline
+    and when it ends), indented code, the seven kinds of HTML block, headings and thematic breaks.
+    A fence inside a block quote or a list item is not judged: it ends with its container. The one
+    departure: a closer may be followed by tabs as well as spaces, as CommonMark 0.30 has it.
     """
-    lines = [_expand_tabs(raw) for raw in _body_lines(body)]
-    containers: list[_Item | None] = []  # the open block quotes (None) and list items
-    leaf: _Fence | _Html | str | None = None  # the open block the innermost container holds
-    definition_ends = 0  # the last line of the link reference definition being read
-    for number, line in enumerate(lines, start=1):
-        matched, rest = _continued(containers, line)
-        all_matched = matched == len(containers)
-        if number <= definition_ends:
-            if number == definition_ends:
-                leaf = None
-            continue
-        if all_matched and isinstance(leaf, _Fence):
-            if _closes(rest, leaf.char, leaf.length):
-                leaf = None
-            continue
-        if all_matched and isinstance(leaf, _Html):
-            blank = not rest.strip(' ')
-            if (leaf.end.search(rest) if leaf.end else blank) or (
-                blank and _short_of_items(containers, line)
-            ):
-                leaf = None
-            continue
-        if all_matched and leaf == _INDENTED_CODE and (_spaces(rest) > 3 or not rest.strip(' ')):
-            continue
-        in_paragraph = leaf == _PARAGRAPH
-        started, opened, rest = _block_starts(
-            rest,
-            continues_paragraph=in_paragraph and all_matched and bool(rest.strip(' ')),
-            in_paragraph=in_paragraph,
-        )
-        if in_paragraph and not started and opened is None and rest.strip(' '):
-            continue  # paragraph text; when lazy, the containers it did not continue stay open
-        del containers[matched:]
-        for container in started:
-            _fill(containers)
-            containers.append(container)
-        if opened is not None or rest.strip(' '):
-            _fill(containers)
-        if isinstance(opened, tuple):
-            leaf = _Fence(number, opened[0], opened[1], nested=bool(containers))
-        elif isinstance(opened, _Html):
-            leaf = None if opened.end and opened.end.search(rest) else opened
-        elif opened == _INDENTED_CODE:
-            leaf = _INDENTED_CODE
-        elif opened is None and rest.strip(' '):
-            leaf = _PARAGRAPH
-            if rest.lstrip(' ').startswith('['):
-                text = _Text(rest.lstrip(' '), _paragraph_lines(lines, number, containers))
-                if size := _definition_lines(text):
-                    definition_ends = number + size - 1
-                    leaf = None if size == 1 else leaf
-        else:
-            leaf = None
-    if isinstance(leaf, _Fence) and not leaf.nested:
-        return [(leaf.number, UNCLOSED_FENCE_MESSAGE)]
+    blocks = _Blocks()
+    for number, text in enumerate(_body_lines(body), start=1):
+        blocks.read(_Line(text), number)
+    if blocks.open and blocks.open[0].kind == _FENCE:
+        return [(blocks.open[0].line, UNCLOSED_FENCE_MESSAGE)]
     return []
 
 
