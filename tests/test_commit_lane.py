@@ -1100,8 +1100,8 @@ def test_a_fence_after_an_html_block_is_judged(body: str, opening: int) -> None:
 @pytest.mark.parametrize(
     ('body', 'opening'),
     [
-        # A paragraph made only of definitions is no paragraph: `===` under it is text, not a
-        # heading underline, so the marker lines after it continue that text and start no item.
+        # A paragraph made only of definitions takes no setext underline: `===` under it is
+        # text, so the marker lines after it continue that text and start no item.
         pytest.param('[a]: /u\n===\n2. x\n   ```\n', 4, id='ordered-item-not-starting-at-1'),
         pytest.param('[a]: /u\n===\n-\n  ```\n', 4, id='empty-dash-item'),
         pytest.param('[a]: /u\n===\n*\n  ```\n', 4, id='empty-star-item'),
@@ -1122,7 +1122,7 @@ def test_a_fence_after_an_html_block_is_judged(body: str, opening: int) -> None:
         pytest.param('text\n[a]: /u\n===\n2. x\n   ```\n', None, id='inside-a-paragraph'),
     ],
 )
-def test_a_paragraph_made_only_of_link_reference_definitions_is_no_paragraph(
+def test_a_setext_underline_under_a_paragraph_of_definitions_is_text(
     body: str, opening: int | None
 ) -> None:
     expected = [] if opening is None else [(opening, UNCLOSED_FENCE_MESSAGE)]
