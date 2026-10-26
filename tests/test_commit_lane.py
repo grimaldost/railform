@@ -893,6 +893,16 @@ def test_red_proof_a_body_with_both_defects_fails_as_unclosed_fence_and_lists_bo
         pytest.param('> ```\n> code\n', id='fence-in-a-block-quote-is-not-judged'),
         pytest.param('- ```\n  code\n', id='fence-in-a-list-item-is-not-judged'),
         pytest.param('1. ```\n   code\n', id='fence-in-an-ordered-list-item-is-not-judged'),
+        pytest.param('- a\n\n  ```\n  x\n', id='fence-on-a-list-item-continuation-line'),
+        pytest.param(
+            '- item\n\n  ```\n  code\n    ```\n', id='list-item-closer-two-columns-into-the-item'
+        ),
+        pytest.param('- item\n\n  ```\n  code\n  ```\n', id='closed-fence-on-a-continuation-line'),
+        pytest.param('1. a\n\n   ```\n   x\n', id='fence-on-an-ordered-item-continuation-line'),
+        pytest.param('- a\n  - b\n\n    ```\n    x\n', id='fence-in-a-nested-list-item'),
+        pytest.param('- a\ntext\n  ```\n  x\n', id='fence-after-a-lazy-continuation-line'),
+        pytest.param('> a\n>\n> ```\n> x\n', id='fence-on-a-block-quote-continuation-line'),
+        pytest.param('- a\n\n      ```\n      x\n', id='indented-code-in-a-list-item'),
         pytest.param('``\ncode\n', id='two-backticks-open-nothing'),
         pytest.param('~~\ncode\n', id='two-tildes-open-nothing'),
         pytest.param('```\na\n```\n\n```\nb\n```\n', id='two-closed-blocks'),
@@ -935,6 +945,13 @@ def test_a_crlf_closer_followed_by_spaces_is_a_closer(
         pytest.param('```\ncode\n> ```\n', 1, id='closer-in-a-block-quote'),
         pytest.param('```\r\ncode\r\n', 1, id='crlf-body'),
         pytest.param('```', 1, id='opener-is-the-last-byte'),
+        pytest.param('- a\n\n```\nx\n', 3, id='fence-after-a-list-has-ended'),
+        pytest.param('- ```\n  code\n```\nx\n', 3, id='fence-after-a-list-item-fence-ended'),
+        pytest.param('- a\n\n  b\n\n```\nx\n', 5, id='fence-after-an-item-with-two-paragraphs'),
+        pytest.param('> a\n\n```\nx\n', 3, id='fence-after-a-block-quote-has-ended'),
+        pytest.param(
+            '- ```\n  code\ntext\n```\nx\n', 4, id='fence-after-text-that-ends-a-list-item-fence'
+        ),
     ],
 )
 def test_a_block_still_open_at_the_end_names_the_opening_line(body: str, opening: int) -> None:
