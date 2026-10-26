@@ -26,8 +26,8 @@ locally, modelling only what they use:
   Any other key (`continue-on-error`, `working-directory`, `concurrency`, a matrix `include`...)
   fails the run, so a workflow never passes here on a key the model does not read.
 - `${{ }}` expressions: string, number and boolean literals and null; the contexts `github`,
-  `inputs`, `needs`, `matrix`, `steps` and `env`; `!`, `==`, `!=`, `&&` and `||` with their
-  GitHub values; property access with `.` and the `.*` filter; and the functions `always`,
+  `inputs`, `vars`, `needs`, `matrix`, `steps` and `env`; `!`, `==`, `!=`, `&&` and `||` with
+  their GitHub values; property access with `.` and the `.*` filter; and the functions `always`,
   `success`, `failure`, `cancelled`, `contains`, `startsWith`, `endsWith`, `fromJSON` and `toJSON`.
 
 Where a local run differs from a real one:
@@ -41,6 +41,9 @@ Where a local run differs from a real one:
   since one host cannot be every runner; it fails when a leg that ran failed.
 - A job named in `given` does not run and takes the result given: for jobs that need the network
   (the zizmor audit) or that a test is not about. Its `if:` is still judged first.
+- The repository's variables are the `vars` a test gives the run (`Runner.vars`), none by
+  default, and `secrets` is empty. The `github` context holds only what `github_context` writes
+  and the test adds (an `actor`, a pull request's author); any other property reads as null.
 """
 
 from __future__ import annotations
@@ -412,6 +415,15 @@ def holds(condition: object, context: dict[str, Any], status: Status) -> bool:
     return truthy(evaluate(text, context, status))
 
 
+def runners(job: dict[str, Any], context: dict[str, Any]) -> list[tuple[dict[str, Any], object]]:
+    """Each leg of a job with the runner its `runs-on` names on that leg: a label, or a list of
+    labels."""
+    return [
+        (leg, interpolate(job.get('runs-on'), {**context, 'matrix': leg}))
+        for leg in legs(job, context)
+    ]
+
+
 def legs(job: dict[str, Any], context: dict[str, Any]) -> list[dict[str, Any]]:
     """Every leg of a job's matrix (no `include` or `exclude`), or one empty leg."""
     matrix = interpolate((job.get('strategy') or {}).get('matrix') or {}, context)
@@ -484,12 +496,23 @@ class Runner:
     event: dict[str, Any] = field(default_factory=dict)
     given: dict[str, str] = field(default_factory=dict)
     select: Callable[[dict[str, Any]], bool] | None = None
+    # The repository's variables, as GitHub gives them: strings, by name.
+    vars: dict[str, str] = field(default_factory=dict)
     _count: itertools.count[int] = field(default_factory=itertools.count)
+
+    def context(self, inputs: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The contexts every job of a run starts from."""
+        return {
+            'github': self.github,
+            'inputs': inputs or {},
+            'vars': dict(self.vars),
+            'secrets': {},
+        }
 
     def run(self, path: Path, inputs: dict[str, Any] | None = None) -> WorkflowRun:
         workflow = load(path)
         check_workflow(workflow)
-        base = {'github': self.github, 'inputs': inputs or {}, 'vars': {}, 'secrets': {}}
+        base = self.context(inputs)
         env = {
             key: _text(interpolate(value, base))
             for key, value in (workflow.get('env') or {}).items()
@@ -539,10 +562,10 @@ class Runner:
         )
         if not holds(job.get('if'), context, status):
             return JobRun('skipped')
-        all_legs = [] if 'uses' in job else legs(job, context)
+        leg_runners = [] if 'uses' in job else runners(job, context)
+        all_legs = [leg for leg, _ in leg_runners]
         # Every leg's shells, before a given result or a leg selection could hide one.
-        for leg in all_legs:
-            runs_on = interpolate(job.get('runs-on'), {**context, 'matrix': leg})
+        for _, runs_on in leg_runners:
             for step in job['steps']:
                 if 'run' in step:
                     step_shell(step, job, shell, runs_on)
@@ -662,14 +685,21 @@ def _needs(job: dict[str, Any]) -> list[str]:
     return [needs] if isinstance(needs, str) else list(needs)
 
 
-def github_context(event_name: str, **values: Any) -> dict[str, Any]:
+def github_context(event_name: str, *, author: str | None = None, **values: Any) -> dict[str, Any]:
     """The `github` context of a run: `event_name`, `sha`, and for a pull request `base_ref`,
-    `head_ref` and `event.pull_request.head.sha`."""
+    `head_ref`, `event.pull_request.head.sha` and, given `author`, the login of the pull
+    request's author, `event.pull_request.user.login`. Other values (`actor`, ...) are set as
+    given."""
     context: dict[str, Any] = {'event_name': event_name, 'sha': values.pop('sha', '0' * 40)}
     if event_name == 'pull_request':
         context['base_ref'] = values.pop('base_ref', 'main')
         context['head_ref'] = values.pop('head_ref', 'feat/change')
         head = values.pop('head_sha', '1' * 40)
-        context['event'] = {'pull_request': {'head': {'sha': head}}}
+        pull_request: dict[str, Any] = {'head': {'sha': head}}
+        if author is not None:
+            pull_request['user'] = {'login': author}
+        context['event'] = {'pull_request': pull_request}
+    else:
+        assert author is None, f'a {event_name} run has no pull request, so no author'
     context.update(values)
     return context
