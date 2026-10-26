@@ -1,6 +1,6 @@
-# Copied from github.com/grimaldost/craft-collection at commit f1c47e3 (origin/main on 2026-10-25), unchanged
-# below this header. railform.toml of a public adopter; tests/test_adopter_frames.py keeps it
-# readable by every verb that reads a frame.
+# Copied from github.com/grimaldost/craft-collection at commit 21af66c2ded6d68295d2b2f605b6b24d2971abf4, blob 61f3af7770918812ecd2b01489313ff31f26ac09 of railform.toml
+# The adopter's file begins on line 4, byte for byte, its own leading comments included;
+# tests/test_adopter_frames.py keeps it readable by every verb that reads a frame.
 # This repository's frame for railform: `railform frame` prints the effective frame and
 # `railform frame --check` judges this file.
 

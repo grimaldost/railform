@@ -1,6 +1,6 @@
-# Copied from github.com/grimaldost/convoy at commit 8de89f8 (origin/main on 2026-10-25), unchanged
-# below this header. railform.toml of a public adopter; tests/test_adopter_frames.py keeps it
-# readable by every verb that reads a frame.
+# Copied from github.com/grimaldost/convoy at commit 74193e000d4d55fbb9529e6481aae36f54591ae9, blob c63aaccbc643b4666de1c412568aaafaa73c3243 of railform.toml
+# The adopter's file begins on line 4, byte for byte, its own leading comments included;
+# tests/test_adopter_frames.py keeps it readable by every verb that reads a frame.
 # This repository's frame for railform: `railform frame` prints the effective frame and
 # `railform frame --check` judges this file.
 [project]

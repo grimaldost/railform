@@ -1,0 +1,27 @@
+# What railform is expected to say about each adopter's frame in tests/fixtures/adopter_frames/.
+# `frame_check` is `frame --check`, `merge_base` the reading of the frame committed at a merge
+# base. A value is "pass", or the exact set of verdict codes expected (for a fixture that needs a
+# change at a release, an expected failure such as ["unknown-key"]), never an edit of the fixture.
+# `frame_check` lists the codes of the step `frame.check` stops at; `merge_base` those of the
+# schema error behind the error that `effective_frame_at` raises. A breakage in a later step, hidden
+# until the first is fixed, is not listed.
+
+[keel]
+frame_check = "pass"
+merge_base = "pass"
+
+[convoy]
+frame_check = "pass"
+merge_base = "pass"
+
+[fathom]
+frame_check = "pass"
+merge_base = "pass"
+
+[mantis-research]
+frame_check = "pass"
+merge_base = "pass"
+
+[craft-collection]
+frame_check = "pass"
+merge_base = "pass"
