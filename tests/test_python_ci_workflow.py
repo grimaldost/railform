@@ -143,15 +143,15 @@ def test_red_proof_every_job_has_a_time_limit(workflow: dict[Any, Any]) -> None:
         assert isinstance(limit, int) and 0 < limit <= 60, (name, limit)
 
 
-def test_red_proof_only_the_checks_job_caches_uv(workflow: dict[Any, Any]) -> None:
-    # Wave A's review (folded at §13): only `checks` syncs the caller's lock; the other jobs
-    # install railform or a pinned tool, and a cache saved from them buys nothing.
+def test_red_proof_no_job_caches_uv(workflow: dict[Any, Any]) -> None:
+    # No job keeps a uv cache, `checks` included, so no run restores a cache another run saved,
+    # whichever runner it ran on. Written out, since setup-uv's default may cache.
     for name, job in workflow['jobs'].items():
         for step in job['steps']:
             if not step.get('uses', '').startswith('astral-sh/setup-uv@'):
                 continue
             enabled = (step.get('with') or {}).get('enable-cache', 'auto')
-            assert enabled == ('auto' if name == 'checks' else False), (name, enabled)
+            assert enabled is False, (name, enabled)
 
 
 def test_no_permission_writes(workflow: dict[Any, Any]) -> None:
@@ -285,7 +285,13 @@ def test_the_checks_job_runs_the_frame_pipeline_on_the_frame_matrix(
         'os': '${{ fromJSON(needs.frame.outputs.ci_os) }}',
         'python': '${{ fromJSON(needs.frame.outputs.python_versions) }}',
     }
-    assert job['runs-on'] == '${{ matrix.os }}'
+    # The matrix form of the routing expression: a leg that is not `ubuntu*` runs on its
+    # `matrix.os` in every case (tests/test_runs_on_variable.py).
+    assert job['runs-on'] == (
+        "${{ startsWith(matrix.os, 'ubuntu') && github.actor != 'dependabot[bot]' && "
+        "github.event.pull_request.user.login != 'dependabot[bot]' && "
+        'fromJSON(vars.LINUX_RUNS_ON || \'"ubuntu-latest"\') || matrix.os }}'
+    )
     assert job['env'] == {'UV_PYTHON': '${{ matrix.python }}'}
     checkout = job['steps'][0]
     assert (

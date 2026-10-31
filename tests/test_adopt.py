@@ -344,6 +344,14 @@ def _gate(root: Path) -> dict[str, object]:
     return yaml.safe_load(read(root, CI))['jobs']['gate']
 
 
+def _template_runner() -> str:
+    """The `runs-on` of the gate job in adopt's template: the routing expression."""
+    path = Path(adopt_module.__file__).parent / 'templates' / 'ci-jobs.yml'
+    runner = yaml.safe_load(path.read_text(encoding='utf-8'))['gate']['runs-on']
+    assert 'vars.LINUX_RUNS_ON' in runner
+    return runner
+
+
 def _fails(condition: str, results: tuple[str, ...]) -> bool:
     """Evaluate the gate step's condition, `always() && (<terms>)`, where the terms are
     `contains(needs.*.result, '<r>')` joined by `||`. `always()` holds in every run, a cancelled
@@ -379,7 +387,7 @@ def test_the_gate_fails_on_a_failed_or_cancelled_need_and_passes_otherwise(
     assert step['run'] == 'exit 1'
     # Declared, so a workflow-level `defaults.run.shell` cannot change what runs.
     assert step['shell'] == 'bash'
-    assert _gate(adopted.root)['runs-on'] == 'ubuntu-latest'
+    assert _gate(adopted.root)['runs-on'] == _template_runner()
     results = ('success', 'failure', 'cancelled', 'skipped')
     for combination in itertools.product(results, repeat=3):
         bad = any(result in ('failure', 'cancelled') for result in combination)
@@ -1013,7 +1021,9 @@ def test_drift_is_named_before_pin_mismatch(
     adopted: Fixture, capsys: pytest.CaptureFixture[str]
 ) -> None:
     ci = read(adopted.root, CI)
-    write(adopted.root, CI, ci.replace('    runs-on: ubuntu-latest\n', '    runs-on: x\n', 1))
+    edited = ci.replace(f'    runs-on: {_template_runner()}\n', '    runs-on: x\n', 1)
+    assert edited != ci
+    write(adopted.root, CI, edited)
     pre = read(adopted.root, PRE_COMMIT)
     write(adopted.root, PRE_COMMIT, pre.replace(f'rev: {PIN}', f'rev: {OTHER_PIN}'))
     code, line, out = run_adopt(capsys, '--check')

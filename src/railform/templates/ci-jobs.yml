@@ -7,7 +7,7 @@ railform:
 gate:
   if: always()
   needs: __NEEDS__
-  runs-on: ubuntu-latest
+  runs-on: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && fromJSON(vars.LINUX_RUNS_ON || '"ubuntu-latest"') || 'ubuntu-latest' }}
   permissions: {}
   steps:
     - name: Fail when a needed job failed or was cancelled

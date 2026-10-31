@@ -69,6 +69,22 @@ All notable changes to this project are recorded here, in the
   `frame --check` and for the merge-base reading. A fixture that needs a change at a new release is
   recorded as an expected failure, never edited to pass, and a second breakage in the same step
   changes the set and fails the test.
+- The repository variable `LINUX_RUNS_ON` routes an adopter's Linux jobs. Every Linux job of the
+  reusable workflows `python-ci.yml` and `tag-watch.yml`, and the `gate` job adopt writes, runs
+  on `${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login !=
+  'dependabot[bot]' && fromJSON(vars.LINUX_RUNS_ON || '"ubuntu-latest"') || 'ubuntu-latest' }}`;
+  the `checks` matrix takes the same expression behind `startsWith(matrix.os, 'ubuntu')`, so its
+  Windows legs run on their `matrix.os`. The variable is unset by default, and then every job
+  runs on `ubuntu-latest` or its matrix value, as before. Set to a JSON array of runner labels,
+  such as `["self-hosted","linux","example"]`, it sends the Linux jobs to a runner with those
+  labels, except a run whose actor is Dependabot or a run on a pull request Dependabot opened,
+  which stays on GitHub's runners. A job that reads the variable holds no `write` permission, no
+  `id-token` and no `secrets.` reference. An adopter moving to this release runs `railform adopt`
+  at the new pin, which rewrites the `gate` job's `runs-on` line in the owned region of its
+  `ci.yml`; `railform adopt --check` reports that line as drift until then.
+- Every `setup-uv` step of the reusable workflows sets `enable-cache: false`, the `checks` job's
+  included, so no run restores a uv cache another run saved. An adopter's `checks` job no longer
+  restores or saves a uv cache.
 
 ## [0.3.0] - 2026-10-25
 

@@ -30,7 +30,7 @@ defaults:
     shell: bash
 jobs:
   frame:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && fromJSON(vars.LINUX_RUNS_ON || '"ubuntu-latest"') || 'ubuntu-latest' }}
     timeout-minutes: 10
     outputs:
       ci_os: ${{ steps.frame.outputs.ci_os }}
@@ -69,7 +69,7 @@ jobs:
       matrix:
         os: ${{ fromJSON(needs.frame.outputs.ci_os) }}
         python: ${{ fromJSON(needs.frame.outputs.python_versions) }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ startsWith(matrix.os, 'ubuntu') && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && fromJSON(vars.LINUX_RUNS_ON || '"ubuntu-latest"') || matrix.os }}
     timeout-minutes: 45
     env:
       UV_PYTHON: ${{ matrix.python }}
@@ -81,6 +81,7 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: '0.12.19'
+          enable-cache: false
       - name: railform private-refs
         env:
           UV_EXCLUDE_NEWER: ${{ env.RAILFORM_EXCLUDE_NEWER }}
@@ -105,7 +106,7 @@ jobs:
   commit-lane:
     needs: frame
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && fromJSON(vars.LINUX_RUNS_ON || '"ubuntu-latest"') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -147,7 +148,7 @@ jobs:
   changelog:
     needs: frame
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && fromJSON(vars.LINUX_RUNS_ON || '"ubuntu-latest"') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -174,7 +175,7 @@ jobs:
 
   hooks:
     needs: frame
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && fromJSON(vars.LINUX_RUNS_ON || '"ubuntu-latest"') || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -214,7 +215,7 @@ jobs:
           exit "$status"
 
   audit:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && fromJSON(vars.LINUX_RUNS_ON || '"ubuntu-latest"') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
