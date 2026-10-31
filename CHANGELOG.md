@@ -42,6 +42,18 @@ All notable changes to this project are recorded here, in the
   time and in CI's replay, the paths half of `railform private-refs` at commit time only), names
   the key as the way to raise the limit, and gives a hand-typed `--maxkb` with the frame at the
   default as its `drift` example.
+- `railform pr-text` judges the form of a pull request body with two more findings, after
+  `subject` and `attribution` in the rule order: `unclosed-fence` (the body ends inside a fenced
+  code block that no block quote or list item holds, its block structure read as the CommonMark
+  reference implementation reads it, so a fence line inside an HTML block or an indented code
+  block does not count; the README lists the bodies markdown-it reads differently; the finding
+  names the opening line) and `carriage-return` (the body holds a carriage return that no line
+  feed follows, which splits a table row on GitHub). Each names its line, counted in line feeds.
+  A CRLF line end passes, since GitHub's web editor submits bodies that way, and the title, which
+  is one line, gets neither.
+  `railform.commit_lane.verdict` takes the two sequences as the keyword arguments `fences` and
+  `carriage_returns`; `commit-msg` and `commit-range` pass none. A body that passed before can now
+  fail, so close every fence and write line feeds only.
 
 ### Changed
 

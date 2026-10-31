@@ -283,6 +283,83 @@ Three verbs judge commit text, with the rules read from the frame (`commit.types
   base.
 - `railform pr-text [--event PATH]` checks a pull request's title and body, read from the event
   payload (`--event`, else `$GITHUB_EVENT_PATH`). A `null` or absent title or body is empty text.
+  The body is also judged for its form, after the attribution rule, with two findings that each
+  name the line, counted in line feeds (the title is one line and gets neither):
+  `unclosed-fence` fires when the body ends inside a fenced code block, so the rest of the page
+  renders as code; and `carriage-return` fires when the body holds a carriage return that no line
+  feed follows, which splits a table row on GitHub. A CRLF line end passes, since GitHub's web
+  editor submits bodies that way.
+
+  A fence opens on a line with at most three spaces of indent and a run of three or more
+  backticks or of three or more tildes; after backticks, the rest of the line holds no backtick,
+  so a line of inline code (three backticks, `x`, three backticks) opens nothing. It closes on a
+  line with at most three spaces of indent, a run of the opener's character at least as long as
+  the opener's, and nothing after the run but spaces or tabs, so a run followed by text closes
+  nothing. Which lines can open or close a fence follows the block structure of the CommonMark
+  reference implementation, commonmark.js, as its Python port, the `commonmark` package 0.9.1,
+  reads it. A line inside an open fence, an indented code block or an HTML block is content: an
+  HTML block runs from a line that starts with `<!--` to the line that holds `-->`, from `<pre>`,
+  `<script>` or `<style>` to the line that holds an end tag of one of the three, likewise for the
+  other kinds CommonMark lists, and from a block-level tag such as `<details>` or `<div>`, or,
+  where it would not interrupt a paragraph, from a line holding only one tag, to the next blank
+  line. A fence inside a block quote or a list item is not judged, whether it sits on the item's
+  marker line or on a later line of the item. List items start and end by CommonMark's list
+  rules: an item whose marker line holds nothing ends at the next blank line, and a marker that
+  would interrupt a paragraph starts no item when nothing follows it or its number is not 1. A
+  setext underline under a paragraph made only of link reference definitions underlines nothing,
+  so a `===` line there is paragraph text.
+
+  A closing fence may be followed by spaces or tabs, as in CommonMark 0.30 and later, and as
+  markdown-it reads it; this is the one place the check departs from the reference
+  implementation. Older readers that allow only spaces, such as the `commonmark` package 0.9.1
+  and other readers of CommonMark 0.29, see such a fence as still open, so in those readers the
+  check can both pass a body they read as open and refuse one they pass: `'~~~\nx\n~~~\t\n'`
+  passes, where they read a fence left open on line 1, and `'~~~\n~~~\t\n~~~\n'` fails on line 3,
+  where they read the third line as the closer of the fence opened on line 1.
+
+  markdown-it-py 3.0.0, in its `commonmark` mode, reads some bodies differently from the
+  reference implementation, and on each of them the check follows the reference implementation.
+  Each class below has a minimal example, written as a Python string, and the check's verdict on
+  it:
+
+  - The line after a link reference definition goes on with the paragraph, where markdown-it
+    starts a new block there: `'[a]: /u\n<b>\n~~~\n'` fails on line 3.
+  - A line holding only one tag, after a list item or block quote it does not continue, starts an
+    HTML block, where markdown-it reads it as lazy paragraph text: `'- a\n<b>\n~~~\n'` passes.
+  - A line indented four or more spaces after a list item or block quote that holds an open
+    paragraph goes on with that paragraph lazily, where markdown-it measures the indent from the
+    container's content and can start a block there: `'   - x\n    ---\ny\n-\n  ~~~\n'` passes.
+  - A line indented four or more spaces after a block quote that holds no paragraph is indented
+    code outside the quote, since no paragraph is open for it to continue lazily, where
+    markdown-it goes on with the quote through an indented `>`: `'>\n    > x\ny\n2. z\n   ~~~\n'`
+    fails on line 5.
+  - A list item whose only block is a paragraph of link reference definitions holds nothing once
+    that paragraph ends, so a second blank line ends it: `'- [d]: /a\n\n\n  ~~~\n'` fails on
+    line 4.
+  - An HTML block in a list item goes on past a blank line indented less than the item's content,
+    where markdown-it ends it there: `'- <!--\n\n  x\ny\n2. z\n   ~~~\n'` fails on line 6.
+  - Only `h1` of the heading tags is a block-level tag name: `'<h2>Title</h2>\n~~~\n'` fails on
+    line 2.
+  - `textarea` is not a raw-text tag like `pre`: `'<textarea\n\n~~~\n'` fails on line 3.
+  - A script, file or data URL makes a link reference definition, where markdown-it makes none:
+    `'[a]: javascript:x\n===\n2. y\n   ~~~\n'` fails on line 4.
+  - A destination with a `(` that no `)` closes makes a definition:
+    `'[a]: /u(b\n===\n2. y\n   ~~~\n'` fails on line 4.
+  - A backslash before a title's closing quote is read as itself, so the quote ends the title:
+    `'[a]: /u "a\\"\n===\n2. y\n   ~~~\n'` fails on line 4.
+  - A tab between the parts of a definition, or after it, makes none:
+    `'[a]:\t/u\n===\n2. y\n   ~~~\n'` passes.
+  - A backslash before a line end inside a label makes no definition:
+    `'[a\\\nb]: /u\n===\n2. y\n   ~~~\n'` passes.
+  - A label over 1000 characters makes no definition:
+    `'[' + 'x' * 1001 + ']: /u\n===\n2. y\n   ~~~\n'` passes.
+  - An ordered marker interrupts a paragraph only when its number is written `1`, so `01.` does
+    not: `'x\n01. y\n-\n  ~~~\n'` fails on line 4.
+  - List items nested ten deep or more are read like any others, where markdown-it stops reading
+    the body at twenty nested blocks: `'- ' * 10 + 'a\n~~~\n'` fails on line 2.
+
+  GitHub's renderer is another CommonMark parser and can read some of these rare bodies
+  differently again.
 
 The subject rule: the first line reads `type(scope)!: description`, the scope and the `!` optional
 and the type one of `commit.types`. A commit with more than one parent (a merge) is exempt, since
