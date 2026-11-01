@@ -5,6 +5,20 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-01
+
+Moving to this release asks four things of an adopter. Delete `private_refs.names_file_env` and
+`private_refs.names_enabled` from `railform.toml`, each key the repository sets together with its
+`exceptions` row: both keys are removed, and `railform frame --check` reports each as `removed-key`
+until then. After this no project gate checks names: that check takes an environment's egress hook,
+which railform does not ship. Stop passing `--require-names`: the flag is removed and is now an
+unknown argument, and the verdict `names-file-missing` is removed with it. Run `railform adopt` at
+the new pin: it regenerates the hook wrappers, whose old text `railform hooks-check` and
+`railform adopt --check` report until then, and rewrites the `gate` job's `runs-on` line. In pull
+request bodies, close every fence and leave no carriage return without a line feed:
+`railform pr-text` has two new findings, `unclosed-fence` and `carriage-return`, so a body that
+passed before can fail.
+
 ### Added
 
 - The egress extension point in the `pre-push` and `pre-commit` hook wrappers. When the
