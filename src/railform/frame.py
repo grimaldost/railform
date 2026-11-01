@@ -15,6 +15,11 @@ classified before it ships (one that slips through reads as loosening). The keys
 either, but an element a repository adds to `private_refs.placeholders` loosens the scan
 (`LOOSENING_ADDITIONS`) and needs a row.
 
+A key the frame no longer has (`REMOVED_KEYS`) stays readable: every read accepts and ignores it
+and any `exceptions` row on it, in the working tree and at a merge base, so a pull request that
+moves the pin passes while its merge base still holds the old frame. Only `frame --check` on the
+working tree reports it, as `removed-key`, and the file is otherwise judged as if it were absent.
+
 `commit.attribution_patterns` in the default frame is keel's set
 (https://github.com/grimaldost/keel, `.pre-commit-config.yaml` at c3313fd), and its test cases
 come from keel's `tests/test_commit_msg_lane.py` at the same commit.
@@ -62,10 +67,10 @@ LOOSENING_ADDITIONS = ('private_refs.placeholders',)
 
 # How a departure of a key loosens a check, and so needs an `exceptions` row. A departure of a
 # key not listed here, or in the other direction, is stricter or neutral and needs none.
-# A string the preset sets (non-empty) is changed: railform cannot judge a command, a pattern or
-# the name of a variable, so any change, stricter or not, needs a row. That holds for the two
-# version pins too, which only the plugin-marketplace preset sets: a type that leaves one empty
-# never reads it, so a value there changes nothing.
+# A string the preset sets (non-empty) is changed: railform cannot judge a command or a pattern,
+# so any change, stricter or not, needs a row. That holds for the two version pins too, which only
+# the plugin-marketplace preset sets: a type that leaves one empty never reads it, so a value there
+# changes nothing.
 REPLACED = 'replaced'
 TURNED_OFF = 'turned off'  # a boolean the preset has true is false
 TURNED_ON = 'turned on'  # a boolean the preset has false is true
@@ -84,8 +89,6 @@ LOOSENING = {
     'release.metadata_paths': ADDS,
     'ci.extra_workflows': ADDS,
     'commit.types': ADDS,
-    'private_refs.names_file_env': REPLACED,
-    'private_refs.names_enabled': TURNED_OFF,
     'release.pr_branch_prefix': REPLACED,
     'release.pr_title_pattern': REPLACED,
     'ci.self_hosted': TURNED_ON,
@@ -129,13 +132,27 @@ PATH_KEYS = ('python.type_check',)
 # Replaced in `hooks.wrapper` by the value of `hooks.pre_commit_version`.
 WRAPPER_VERSION_FIELD = '{hooks.pre_commit_version}'
 
+# The keys the frame no longer has, in the order their findings come.
+REMOVED_KEYS = ('private_refs.names_enabled', 'private_refs.names_file_env')
+REMOVED_KEY_ADVICE = (
+    "delete it and its exceptions row; the environment's egress hook now holds the names policy"
+)
+
 UNKNOWN_KEY = 'unknown-key'
+REMOVED_KEY = 'removed-key'
 WRONG_TYPE = 'wrong-type'
 MISSING_PATH = 'missing-path'
 BAD_EXCEPTION = 'bad-exception'
 UNLISTED_DEPARTURE = 'unlisted-departure'
 # When several rules fail, the verdict names the first in this order.
-CODE_ORDER = (UNKNOWN_KEY, WRONG_TYPE, MISSING_PATH, BAD_EXCEPTION, UNLISTED_DEPARTURE)
+CODE_ORDER = (
+    UNKNOWN_KEY,
+    REMOVED_KEY,
+    WRONG_TYPE,
+    MISSING_PATH,
+    BAD_EXCEPTION,
+    UNLISTED_DEPARTURE,
+)
 
 
 NO_REPOSITORY = 'not inside a git repository'
@@ -356,9 +373,7 @@ SCHEMA = _Table(
             }
         ),
         'branch': _Table({'pattern': _Str(regex=True), 'allow': _STRINGS}),
-        'private_refs': _Table(
-            {'names_file_env': _Str(), 'names_enabled': _Bool(), 'placeholders': _STRINGS}
-        ),
+        'private_refs': _Table({'placeholders': _STRINGS}),
         'ci': _Table(
             {
                 'os': _STRINGS,
@@ -410,13 +425,50 @@ SCHEMA = _Table(
 )
 
 
+def _without_removed_keys(config: dict[str, Any]) -> dict[str, Any]:
+    """`config` without the removed keys and without any `exceptions` row that names one, whatever
+    the row's other fields hold. A table or a row of the wrong type is left for `validate`."""
+    clean = dict(config)
+    table = config.get('private_refs')
+    if isinstance(table, dict):
+        clean['private_refs'] = {
+            key: value for key, value in table.items() if f'private_refs.{key}' not in REMOVED_KEYS
+        }
+    rows = config.get('exceptions')
+    if isinstance(rows, list):
+        clean['exceptions'] = [row for row in rows if not _names_a_removed_key(row)]
+    return clean
+
+
+def _names_a_removed_key(row: object) -> bool:
+    return isinstance(row, dict) and row.get('key') in REMOVED_KEYS
+
+
+def _removed_key_problems(config: dict[str, Any]) -> list[Problem]:
+    """One problem per removed key that `config` sets or that an `exceptions` row names."""
+    table = config.get('private_refs')
+    rows = config.get('exceptions')
+    named = {f'private_refs.{key}' for key in table} if isinstance(table, dict) else set()
+    if isinstance(rows, list):
+        named |= {row['key'] for row in rows if _names_a_removed_key(row)}
+    return [
+        Problem(REMOVED_KEY, f'removed key {key}: {REMOVED_KEY_ADVICE}')
+        for key in REMOVED_KEYS
+        if key in named
+    ]
+
+
 def validate(config: object, *, complete: bool = False) -> list[Problem]:
-    """Return the unknown keys and wrong types in `config`.
+    """Return the removed keys, unknown keys and wrong types in `config`.
 
     With `complete`, every key must also be present (an effective frame); a `railform.toml`
-    sets only what it changes.
+    sets only what it changes. A removed key is reported and the rest of `config` is judged as if
+    it, and any `exceptions` row on it, were absent.
     """
-    return SCHEMA.check(config, '', complete)
+    if not isinstance(config, dict):
+        return SCHEMA.check(config, '', complete)
+    kept = SCHEMA.check(_without_removed_keys(config), '', complete)
+    return [*_removed_key_problems(config), *kept]
 
 
 def leaf_keys() -> list[str]:
@@ -527,6 +579,8 @@ def _drops(config: dict[str, Any], key: str, default: list[Any], added: list[Any
 
 
 def _unrendered(config: dict[str, Any]) -> dict[str, Any]:
+    # Every read of a frame comes through here, which is what makes the removed keys tolerated.
+    config = _without_removed_keys(config)
     problems = validate(config)
     if problems:
         raise FrameSchemaError(problems)
@@ -853,14 +907,16 @@ def check(config: dict[str, Any] | None, root: Path | None = None) -> tuple[str,
     and the findings, each prefixed with the file name.
 
     With `root`, the top of the repository, the paths the file names must also exist there
-    (`missing-path`); without it the tree is not looked at.
+    (`missing-path`); without it the tree is not looked at. A removed key stops nothing: only a
+    schema problem stops the departure and row checks.
     """
     config = config or {}
     problems = validate(config)
-    if not problems:
-        problems = _exception_problems(config)
+    if all(problem.code == REMOVED_KEY for problem in problems):
+        kept = _without_removed_keys(config)
+        problems += _exception_problems(kept)
         if root is not None:
-            problems += _path_problems(config, root)
+            problems += _path_problems(kept, root)
     if not problems:
         return 'ok', []
     problems.sort(key=lambda problem: CODE_ORDER.index(problem.code))
@@ -1191,7 +1247,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     mode.add_argument(
         '--check',
         action='store_true',
-        help='fail on unknown keys, wrong types, bad exceptions rows and unlisted departures',
+        help=(
+            'fail on unknown keys, removed keys, wrong types, bad exceptions rows and unlisted '
+            'departures'
+        ),
     )
     mode.add_argument('--json', action='store_true', help='print the effective frame as JSON')
     mode.add_argument(
@@ -1208,8 +1267,8 @@ def run(args: argparse.Namespace) -> Verdict:
     type as `--check` does, exit 1: judging `railform.toml` is this verb's own job, so a schema
     error is a violation it found. Another verb that loads the frame (`load`) gets a
     FrameSchemaError instead and exits 2, because for that verb a broken `railform.toml` is a
-    configuration error that stops it before its own check runs. Departures and exceptions
-    rows are judged only by `--check`.
+    configuration error that stops it before its own check runs. Departures, exceptions rows and
+    removed keys are judged only by `--check`.
     """
     target = os.environ.get(GITHUB_OUTPUT_ENV, '')
     if args.github_output and not target:
@@ -1227,7 +1286,7 @@ def run(args: argparse.Namespace) -> Verdict:
     try:
         frame = effective_frame(config)
     except FrameSchemaError:
-        code, findings = check(config)
+        code, findings = check(_without_removed_keys(config or {}))
         return Verdict.fail(VERB, code, tuple(findings))
     if args.github_output:
         try:

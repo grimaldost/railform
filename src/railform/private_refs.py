@@ -1,6 +1,7 @@
 """The private-reference check: the verb `railform private-refs`.
 
-Development-rails spec, §3, in two halves.
+The verb runs the paths half, the check a project's hooks and CI call. With `--names-file` it runs
+the egress mode instead, the check an environment's egress hook calls on what leaves the machine.
 
 The paths half is invented for railform and generic. It flags a home-directory path in text
 unless the user segment is a placeholder, so it catches a developer's home on a CI runner as well
@@ -20,24 +21,8 @@ A user segment passes when it is in `private_refs.placeholders` (case-insensitiv
 placeholder: it contains one of `<`, `>`, `$`, `%`, `{`, `}` or `*`, or it is made only of full
 stops and ellipsis characters (`...`, `…`).
 
-The names half reads a private list of terms from the one file that the variable named by
-`private_refs.names_file_env` points to, and nowhere else. It matches whole tokens, case
--insensitively: the characters on either side of a term are not letters or digits. With the
-variable unset it is silent, which is why it is silent in CI; `--require-names` makes an unset
-variable a failure. A variable set to a path that is not a file fails without the flag
-(`names-file-missing`): a stale path would otherwise turn the half off unnoticed on the very
-machine meant to be checking; a file that exists but cannot be read is a usage error (exit 2).
-No list of names is part of this package.
-
-`private_refs.names_enabled = false` in the frame turns the names half off, for a private
-repository whose tracked files carry the listed names by design, on machines where the variable is
-set (where it is unset the half is already silent); the frame check lists it as a loosening that
-needs an `exceptions` row with a reason. The paths half stays on, and a finding line says the
-names half is off.
-
-With `--diff`, the private-reference settings (the switch, the variable name and the
-placeholders) are read from the `railform.toml` committed at the merge base of the range, so the
-range cannot switch the names half off or add a placeholder for the path it carries. A merge base
+With `--diff`, `private_refs.placeholders` is read from the `railform.toml` committed at the merge
+base of the range, so the range cannot add a placeholder for the path it carries. A merge base
 without a `railform.toml` leaves the working tree's frame in force. Without `--diff` the working
 tree's frame judges.
 
@@ -57,9 +42,10 @@ is labelled `commit SHA PATH` (`commit SHA` for a message), SHA being the first 
 Outside a git repository the verb checks the files named as `PATH` or `--text`, and `--event`,
 under the default frame; the tracked files, `--diff`, `--history` and a directory exit 2.
 
-With `--names-file PATH` the verb runs in the egress mode, the check an environment runs on what
-leaves the machine: the names half alone, with the terms of that file, over exactly the input
-given, and nothing else. `--commits FILE` lists commits, one id per line; for each, the lines it
+With `--names-file PATH` the verb runs in the egress mode: it looks only for the terms of that
+file, over exactly the input given, and nothing else. A term matches as a whole token, without
+regard to case: the characters on either side of it are not letters or digits. No list of names
+is part of this package. `--commits FILE` lists commits, one id per line; for each, the lines it
 adds against its first parent (read with `--text`, so no file is skipped as binary), for a merge
 also the lines its own resolution adds (read with `--remerge-diff`), the path of every file it
 adds or renames (an empty file included), its author and committer names and emails, and its
@@ -94,8 +80,6 @@ if TYPE_CHECKING:
 VERB = 'private-refs'
 HOME_PATH = 'home-path'
 PRIVATE_NAME = 'private-name'
-NAMES_FILE_MISSING = 'names-file-missing'
-NAMES_OFF_NOTE = 'private_refs.names_enabled is false: the names half is off'
 
 REDACTED = '<name>'
 # A user segment containing one of these is a placeholder, whatever the list says.
@@ -144,7 +128,7 @@ class Source:
     text: str
 
 
-# --- the two halves ----------------------------------------------------------------------------
+# --- home paths and names ----------------------------------------------------------------------
 
 
 def _is_placeholder(name: str, placeholders: frozenset[str]) -> bool:
@@ -224,47 +208,29 @@ def redact(text: str, spans: Iterable[Span]) -> str:
 
 @dataclass(frozen=True)
 class Checker:
+    """The paths half: the home paths in a text, judged against the placeholders."""
+
     placeholders: frozenset[str]
-    names: Names
 
     def label(self, label: str) -> str:
         """A path or label with anything the check would flag replaced by `<name>`."""
-        spans = [*home_path_hits(label, self.placeholders), *self.names.hits(label)]
-        return redact(label, spans)
+        return redact(label, home_path_hits(label, self.placeholders))
 
-    def scan(self, source: Source) -> list[tuple[str, str]]:
-        """The findings in one text, as (code, finding line), in reading order."""
+    def scan(self, source: Source) -> list[str]:
+        """The finding lines in one text, in reading order."""
         return self.scan_lines(source.label, enumerate(source.text.split('\n'), start=1))
 
-    def scan_lines(self, label: str, numbered: Iterable[tuple[int, str]]) -> list[tuple[str, str]]:
-        """The findings in the given (line number, line) pairs of one text called `label`."""
+    def scan_lines(self, label: str, numbered: Iterable[tuple[int, str]]) -> list[str]:
+        """The finding lines in the given (line number, line) pairs of one text called `label`."""
         label = self.label(label)
-        findings: list[tuple[str, str]] = []
+        findings: list[str] = []
         for number, line in numbered:
             line = line.rstrip('\r')
-            name_hits = self.names.hits(line)
             for span in home_path_hits(line, self.placeholders):
-                # The shown part hides a private name as well, if one falls inside it.
-                window = [clip(hit, span.start, span.end) for hit in [span, *name_hits]]
-                shape = redact(line[span.start : span.end], [w for w in window if w is not None])
-                findings.append((HOME_PATH, f'{label}:{number}: home path {shape}'))
-            for span in name_hits:
-                findings.append(
-                    (
-                        PRIVATE_NAME,
-                        f'{label}:{number}: private name (names file line {span.term_line})',
-                    )
-                )
+                shape = line[span.start : span.hidden_start] + REDACTED
+                shape += line[span.hidden_end : span.end]
+                findings.append(f'{label}:{number}: home path {shape}')
         return findings
-
-
-def clip(span: Span, start: int, end: int) -> Span | None:
-    """The part of `span`'s hidden stretch inside [start, end), moved to index from `start`."""
-    low = max(span.hidden_start, start)
-    high = min(span.hidden_end, end)
-    if low >= high:
-        return None
-    return Span(low - start, high - start, low - start, high - start)
 
 
 # --- git and the files -------------------------------------------------------------------------
@@ -549,7 +515,7 @@ def _has_commits(root: Path) -> bool:
 
 def history_findings(
     root: Path, checker: Checker, scanned: frozenset[str] = frozenset()
-) -> list[tuple[str, str]]:
+) -> list[str]:
     """The findings in every commit message reachable from HEAD and in every line any of those
     commits added, whether or not a later commit removed it.
 
@@ -559,7 +525,7 @@ def history_findings(
     """
     if not _has_commits(root):
         return []
-    findings: list[tuple[str, str]] = []
+    findings: list[str] = []
     for source in _commit_messages(root, 'HEAD'):
         if source.label not in scanned:
             findings.extend(checker.scan(source))
@@ -636,7 +602,8 @@ _LOG = (
 
 
 def read_names_file(given: str) -> Names:
-    """The terms of the names file at `given`, read as the names half reads its file."""
+    """The terms of the names file at `given`: UTF-8 (a BOM allowed), one term per line, blank
+    lines and lines starting with `#` skipped."""
     path = Path(given)
     if not given or not path.is_file():
         raise UsageError(f'--names-file {given}: no such names file')
@@ -663,17 +630,13 @@ def _defect(data: bytes) -> str | None:
 
 @dataclass(frozen=True)
 class Egress:
-    """The names half alone, judging the input of the egress mode."""
+    """The terms of a names file, judging the input of the egress mode."""
 
     names: Names
 
-    @property
-    def redactor(self) -> Checker:
-        # No frame is read, so no placeholder passes: every home path in a label is hidden.
-        return Checker(frozenset(), self.names)
-
     def label(self, text: str) -> str:
-        return self.redactor.label(text)
+        # No frame is read, so no placeholder passes: every home path in a label is hidden.
+        return redact(text, [*home_path_hits(text, frozenset()), *self.names.hits(text)])
 
     def hits(self, label: str, text: str) -> list[tuple[str, str]]:
         """One finding per term in `text`, which has no lines of its own (a path, a name)."""
@@ -933,8 +896,8 @@ def _egress_root() -> Path:
 
 
 def run_egress(args: argparse.Namespace) -> Verdict:
-    """The egress mode: the names half alone, on exactly the input given, with no frame read."""
-    redactor = Checker(frozenset(), Names(None, ()))
+    """The egress mode: the terms of the names file, on exactly the input given, no frame read."""
+    redactor = Checker(frozenset())
     others = [
         flag
         for flag, given in (
@@ -942,7 +905,6 @@ def run_egress(args: argparse.Namespace) -> Verdict:
             ('--diff', args.diff is not None),
             ('--history', args.history),
             ('--event', args.event is not None),
-            ('--require-names', args.require_names),
         )
         if given
     ]
@@ -981,32 +943,12 @@ def run_egress(args: argparse.Namespace) -> Verdict:
 # --- the verb ----------------------------------------------------------------------------------
 
 
-def _variable_value(variable: str) -> str:
-    return os.environ.get(variable, '') if variable else ''
-
-
-def _read_names(variable: str) -> Names | None:
-    """The compiled names file, or None when the variable is unset or does not name a file."""
-    value = _variable_value(variable)
-    if not value:
-        return None
-    path = Path(value)
-    if not path.is_file():
-        return None
-    try:
-        text = path.read_bytes().decode('utf-8-sig', errors='replace')
-    except OSError as exc:
-        raise UsageError(f'cannot read the names file named by ${variable}') from exc
-    return Names.parse(text)
-
-
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.description = (
         'Fail when text carries a home-directory path (unless its user segment is a '
-        'placeholder) or a term from the private names file. Scope: the given paths; else '
-        'the files and commit messages of --diff; else every tracked file. --history adds every '
-        'commit message and every line any commit added. '
-        '--text and --event add to any scope. Outside a git repository only files (PATH, '
+        'placeholder). Scope: the given paths; else the files and commit messages of --diff; '
+        'else every tracked file. --history adds every commit message and every line any commit '
+        'added. --text and --event add to any scope. Outside a git repository only files (PATH, '
         '--text) and --event can be checked, under the default frame. With --names-file the '
         'verb runs in the egress mode instead (below).'
     )
@@ -1033,11 +975,6 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         '--event',
         metavar='PATH',
         help='also check the pull request title and body in this GitHub event payload',
-    )
-    parser.add_argument(
-        '--require-names',
-        action='store_true',
-        help='also fail with names-file-missing when the names variable is unset',
     )
     egress = parser.add_argument_group(
         'egress mode',
@@ -1107,26 +1044,16 @@ def run(args: argparse.Namespace) -> Verdict:
         effective = frame.load(root) if root is not None else frame.effective_frame(None)
     except (frame.FrameError, frame.FrameSchemaError) as exc:
         # No frame yet, so no placeholder list: every home-shaped path in the message is hidden.
-        return Verdict.usage(
-            VERB, f'{VERB}: {Checker(frozenset(), Names(None, ())).label(str(exc))}'
-        )
+        return Verdict.usage(VERB, f'{VERB}: {Checker(frozenset()).label(str(exc))}')
     settings = effective['private_refs']
     try:
         if args.diff:
             settings = _settings_at_merge_base(_need(root), args.diff, settings)
     except (UsageError, frame.FrameError) as exc:
-        return Verdict.usage(
-            VERB, f'{VERB}: {Checker(frozenset(), Names(None, ())).label(str(exc))}'
-        )
-    placeholders = frozenset(str(name).lower() for name in settings['placeholders'])
-    variable = str(settings['names_file_env'])
-    names_enabled = bool(settings['names_enabled'])
-    names: Names | None = None
-    checker = Checker(placeholders, Names(None, ()))
-    history: list[tuple[str, str]] = []
+        return Verdict.usage(VERB, f'{VERB}: {Checker(frozenset()).label(str(exc))}')
+    checker = Checker(frozenset(str(name).lower() for name in settings['placeholders']))
+    history: list[str] = []
     try:
-        names = _read_names(variable) if names_enabled else None
-        checker = Checker(placeholders, names or Names(None, ()))
         sources = _scope_sources(root, args)
         sources += sources_for_text(list(args.text))
         sources += sources_for_event(args.event)
@@ -1137,24 +1064,11 @@ def run(args: argparse.Namespace) -> Verdict:
     except UsageError as exc:
         # A message may carry a path the user gave: it is redacted like a finding's label.
         return Verdict.usage(VERB, f'{VERB}: {checker.label(str(exc))}')
-    findings: list[tuple[str, str]] = []
-    notes: list[str] = []
-    if not names_enabled:
-        notes.append(NAMES_OFF_NOTE)
-    elif names is None and (args.require_names or _variable_value(variable)):
-        # Unset: only --require-names asks for the file. Set to a path that is not a file: a
-        # stale path fails closed, whatever the flags say.
-        shown = f'${variable}' if variable else 'private_refs.names_file_env'
-        findings.append((NAMES_FILE_MISSING, f'the names file named by {shown} is not readable'))
-    for source in sources:
-        findings.extend(checker.scan(source))
-    findings.extend(history)
+    findings = [line for source in sources for line in checker.scan(source)]
+    findings += history
     if not findings:
-        return Verdict.ok(VERB, tuple(notes))
-    for code in (NAMES_FILE_MISSING, HOME_PATH, PRIVATE_NAME):
-        if any(found == code for found, _ in findings):
-            return Verdict.fail(VERB, code, (*notes, *(line for _, line in findings)))
-    raise AssertionError('unreachable: every finding carries one of the three codes')
+        return Verdict.ok(VERB)
+    return Verdict.fail(VERB, HOME_PATH, tuple(findings))
 
 
 def _settings_at_merge_base(root: Path, spec: str, current: dict[str, Any]) -> dict[str, Any]:

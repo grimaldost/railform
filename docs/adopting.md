@@ -163,8 +163,9 @@ railform frame --check
 railform adopt --check
 ```
 
-`frame --check` fails with `unknown-key`, `wrong-type`, `missing-path` (a `python.package` or a
-`python.type_check` entry that `railform.toml` sets and that is neither `.` nor a path in the tree),
+`frame --check` fails with `unknown-key`, `removed-key` (a key the frame no longer has; see "Moving
+to a newer pin"), `wrong-type`, `missing-path` (a `python.package` or a `python.type_check` entry
+that `railform.toml` sets and that is neither `.` nor a path in the tree),
 `bad-exception` (a row with no key, an empty reason, one that matches no departure, or a bad `drop`
 or `value`) or `unlisted-departure` (a departure that loosens a check and that no row lists).
 `adopt --check` writes nothing and fails with
@@ -180,6 +181,9 @@ there, by the top-level `exclude:` of `.pre-commit-config.yaml`, at a cost that 
 keeps: a top-level `exclude:` removes the excluded paths from the hygiene hooks both at commit time and in
 CI's replay of them, and from the paths half of `railform private-refs` at commit time only,
 while in CI the paths half scans every tracked file, the excluded ones included.
+No project gate checks names. The egress mode of `railform private-refs` (`--names-file`), which
+an environment's egress hook calls on what is pushed, never runs through pre-commit, so a
+top-level exclude does not remove paths from it.
 The exclude therefore fits a data directory that holds nothing those hooks guard. A data file
 over the 500 KB limit of `check-added-large-files` needs no exclude: `hooks.large_file_kb` in
 `railform.toml` sets the limit in KB, so a repository can raise the limit without that trade-off
@@ -447,9 +451,17 @@ pre-commit `rev` and the tag-watch caller. Then run `railform frame --check` and
 `exceptions` row for a key that no longer departs fails as `bad-exception` and is deleted, and a
 repository setting that the new frame rejects fails as `unknown-key`, `wrong-type` or
 `missing-path`. A pin from
-before rows matched by key keeps its rows: each one that names its value still passes. Commit the
-result as one pull request that touches the pin sites, the `.gitattributes` region and any stub
-`adopt` rewrote in a former hooks directory (a release whose changelog entry lists a new part
+before rows matched by key keeps its rows: each one that names its value still passes.
+
+Names are checked at egress, by an environment's egress hook, and never on the receiving side, so
+the frame no longer holds a names policy. A frame that still sets `private_refs.names_file_env` or
+`private_refs.names_enabled`, or an `exceptions` row that names one of them, fails `frame --check`
+as `removed-key`, and every other verb ignores them, so the pull request that moves the pin passes
+while its merge base still holds them. At the re-pin, delete each key and its `exceptions` row;
+`RAILFORM_PRIVATE_NAMES` no longer does anything in a project's hooks or CI.
+
+Commit the result as one pull request that touches the pin sites, the `.gitattributes` region and
+any stub `adopt` rewrote in a former hooks directory (a release whose changelog entry lists a new part
 that adopt owns adds it to that pull request) and, if needed, `railform.toml`.
 A stub left in a former hooks directory is deleted once every clone has run `railform arm`; run
 `railform adopt` after that, and its line leaves the region in `.gitattributes`.

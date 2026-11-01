@@ -105,8 +105,8 @@ These departures loosen a check (`LOOSENING` in `src/railform/frame.py`):
 
 | Key | Loosens when |
 |---|---|
-| `python.test_command`, `python.type_check`, `branch.pattern`, `hooks.wrapper`, `changelog.trailer`, `release.pr_branch_prefix`, `release.pr_title_pattern`, `private_refs.names_file_env`, `ci.ruff_version`, `hooks.pre_commit_version` | the preset sets it and the repository changes it: railform cannot judge a command, a pattern, a variable name or a tool version, a blank or `true` command runs nothing, a trailer of `<reason>` alone declares every commit and so turns `changelog-gate` off, a broad release convention lets any pull request carrying the version count as the release, a variable CI does not set turns off the private-name half of `railform private-refs`, and an older ruff or pre-commit runs fewer rules (only the `plugin-marketplace` preset sets the two versions; a type that leaves one empty never reads it) |
-| `changelog.enabled`, `release.enabled`, `private_refs.names_enabled` | it is `false` |
+| `python.test_command`, `python.type_check`, `branch.pattern`, `hooks.wrapper`, `changelog.trailer`, `release.pr_branch_prefix`, `release.pr_title_pattern`, `ci.ruff_version`, `hooks.pre_commit_version` | the preset sets it and the repository changes it: railform cannot judge a command, a pattern or a tool version, a blank or `true` command runs nothing, a trailer of `<reason>` alone declares every commit and so turns `changelog-gate` off, a broad release convention lets any pull request carrying the version count as the release, and an older ruff or pre-commit runs fewer rules (only the `plugin-marketplace` preset sets the two versions; a type that leaves one empty never reads it) |
+| `changelog.enabled`, `release.enabled` | it is `false` |
 | `ci.self_hosted` | it is `true` |
 | `ci.extra_workflows`, `changelog.unwatched`, `branch.allow`, `release.metadata_paths`, `commit.types`, `python.sync_args`, `ci.setup.extra_installs` | the list has an element the preset lacks: an argument after `uv sync --frozen` or a requirement installed after it changes the environment the checks run in |
 | `ci.os`, `commit.attribution_patterns`, `hooks.names`, `python.lint_paths` | the list leaves out an element the preset has |
@@ -210,9 +210,10 @@ Some keys hold rows rather than plain values:
   frame does not repeat them.
 
 - `railform frame` prints the effective frame as TOML, and `--json` prints it as one JSON object.
-- `railform frame --check` fails on an unknown key (`unknown-key`), a value of the wrong type
-  (`wrong-type`), a `python.type_check` entry or a `python.package` that `railform.toml` sets and
-  that is neither `.` nor a path in the tree (`missing-path`; see `python.type_check` above), an
+- `railform frame --check` fails on an unknown key (`unknown-key`), a key the frame no longer has
+  (`removed-key`, see the private-reference check), a value of the wrong type (`wrong-type`), a
+  `python.type_check` entry or a `python.package` that `railform.toml` sets and that is neither `.`
+  nor a path in the tree (`missing-path`; see `python.type_check` above), an
   exceptions row with no key, an empty reason, matching no departure or with a bad `drop`
   (`bad-exception`), and a departure that loosens a check and that no row lists
   (`unlisted-departure`), naming the first in that order.
@@ -513,26 +514,27 @@ change to files in its contents is not seen unless the submodule path itself is 
 
 ## The private-reference check
 
-`railform private-refs [PATH ...] [--diff BASE...HEAD] [--history] [--text FILE]... [--event PATH]
-[--require-names]` keeps two kinds of private reference out of a public repository. It checks the
-given paths; otherwise, with `--diff`, the files the range changes (read at its tip) and the
-range's commit messages; otherwise every tracked file. `--history` adds to whichever of those
+`railform private-refs [PATH ...] [--diff BASE...HEAD] [--history] [--text FILE]... [--event PATH]`
+keeps home-directory paths out of a public repository: this is the paths half of the check, and
+the egress mode below is its other half. It checks the given paths; otherwise, with `--diff`, the
+files the range changes (read at its tip) and the range's commit messages; otherwise every tracked
+file. `--history` adds to whichever of those
 applies: it checks every commit message reachable from `HEAD` and every line any of those commits
-added, including a line a later commit removed, which none of the other scopes can see (a term
+added, including a line a later commit removed, which none of the other scopes can see (a path
 added in one commit and deleted in the next is still in the history that gets pushed). It does not
 replace the tracked files, because the history does not hold every line they hold: `git log -p`
 shows no line for a file marked `-diff` or binary, for the conflict resolution a merge commit
 makes (the lines of a merged branch are found in that branch's commits), or for a change not yet
 committed. A finding names the commit by its first 12 characters and the line in the file that
-commit wrote: `commit 0123456789ab notes.md:3: private name (names file line 2)`, or `commit
+commit wrote: `commit 0123456789ab notes.md:3: home path /home/<name>`, or `commit
 0123456789ab:4: ...` for line 4 of a message. `--text FILE` (repeatable, one
 file per flag) adds a file to any scope. `--event PATH` adds the title and body of the pull
 request in a GitHub event payload, read as `pr-text` reads them and reported as `pull request
 title` and `pull request body`. Binary files are skipped.
 
 Outside a git repository the verb checks files the caller names: `PATH` files, `--text FILE` and
-`--event`, for instance `RAILFORM_PRIVATE_NAMES=names.txt railform private-refs --require-names
---text report.md` on a report written in a plain directory. The frame is the default one (there
+`--event`, for instance `railform private-refs --text report.md` on a report written in a plain
+directory. The frame is the default one (there
 is no `railform.toml` to read). The scopes that need a repository (the tracked files, `--diff`,
 `--history`, a directory given as a `PATH`) exit 2 with `not inside a git repository`, and so
 does a run that names nothing to check. A repository that git refuses to read (dubious
@@ -541,8 +543,7 @@ instead of falling back to the default frame.
 
 In the reusable workflow, the `checks` job runs it over the tracked files, and the `commit-lane`
 job runs `private-refs --diff "origin/${BASE_REF}...HEAD" --event "$GITHUB_EVENT_PATH"` on pull
-requests, so a home path in a commit message or in the pull request's text fails too. Without a
-names file in CI, the names half is silent there, as below.
+requests, so a home path in a commit message or in the pull request's text fails too.
 
 - **Home paths.** A home-directory path fails (`home-path`) unless its user segment is in
   `private_refs.placeholders` (default: `me`, `x`, `someone`, `alice`, `user`, `runner`, and the
@@ -556,29 +557,41 @@ names file in CI, the names half is silent there, as below.
   regard to case for the Windows ones. A segment ends at a separator, whitespace, a quote or the
   end of the line, so `cd C:\Users\<name>` is caught. `/home/` counts only where it is not
   preceded by a word character, `.` or `-`, so `src/home/views/` and the `/home/` of a URL pass.
-- **Private names.** The file that the variable named by `private_refs.names_file_env` (default
-  `RAILFORM_PRIVATE_NAMES`) points to lists one term per line (LF or CRLF line ends); blank lines
-  and lines starting with `#` are ignored. A term matches case-insensitively as a whole token, so
-  a term `alice` matches `by alice.` and not `aliceworks`. With the variable unset this half is
-  silent, which is why it is silent in CI. A variable set to a path that is not a file fails
-  (`names-file-missing`) whatever the flags say, so a stale path cannot turn the half off
-  unnoticed; a file that exists but cannot be read is a configuration error (exit 2).
-  `--require-names` also fails when the variable is unset. The `railform-private-refs` hook passes
-  no `--require-names`: it runs on every contributor's machine, and most hold no names file.
-  railform tracks no names list and ports none.
-- **Switching the names half off.** `private_refs.names_enabled = false` in `railform.toml` turns
-  this half off for a private repository whose tracked files carry the listed names by design,
-  on machines where the variable is set (where it is unset the half is already silent): the file
-  is not read, a stale variable and `--require-names` are no failure, and the run prints a line
-  saying the half is off. The home-path half stays on. The switch loosens the check, so
-  `railform frame --check` fails it as `unlisted-departure` unless an `exceptions` row names
-  `private_refs.names_enabled` with a reason.
-- **Which frame judges.** With `--diff`, the `private_refs` settings (the switch, the variable
-  name and the placeholders) are read from the `railform.toml` committed at the merge base of the
-  range, so a pull request cannot switch the names half off, or add a placeholder for the home
-  path it carries, in the change that is being judged. A merge base without a `railform.toml`
-  leaves the working tree's frame in force, as for `version-sites --base`. Without `--diff` the
-  working tree's frame judges.
+- **Private names.** Names are checked at egress, by an environment's egress hook (see the
+  egress extension point), and never on the receiving side. No project gate checks them: the
+  `railform-private-refs` hook and both CI steps run the paths half only, and no frame key or
+  variable gives them a list. railform tracks no names list and ports none.
+- **The egress mode.** `railform private-refs --names-file PATH`, with `--commits FILE`, `--staged`
+  or `--text FILE` (at least one, and they combine), is the check an egress hook calls on what
+  leaves the machine. It looks only for the terms of that file, over exactly the input given: it
+  reads no frame, so a `railform.toml` that does not load changes nothing, no other tracked file
+  and no variable, and makes no home-path finding. The file lists one term per line (UTF-8, LF or
+  CRLF line ends); blank lines and lines starting with `#` are ignored. A term matches
+  case-insensitively as a whole token, so a term `alice` matches `by alice.` and not `aliceworks`.
+  `--commits FILE` lists commits, one id per line, and an empty list passes; for each commit it
+  reads the lines the commit adds against its first parent, for a merge also the lines its own
+  resolution adds, the path of every file it adds or renames, an empty file included, its author
+  and committer names and emails, and its message. `--staged` is the lines the index adds against
+  `HEAD`, labelled `path:line`. `--text FILE` is a whole file, and it also works outside a git
+  repository. A finding reads `commit 0123456789ab notes.md:3: private name (names file line 2)`,
+  with `path`, `author`, `committer` or `message:4` in place of the file for what a commit carries
+  outside its lines. A file of the input that is binary or not UTF-8 is reported `unscannable`:
+  the run fails `private-name` when a term is found, else `unscannable` (exit 1). A missing or
+  empty names file, an unknown commit, or a `PATH`, `--diff`, `--history` or `--event` beside
+  `--names-file` exits 2. The mode runs only when a hook calls it: it never runs through pre-commit,
+  so a top-level `exclude:` does not remove paths from it.
+- **Moving to a pin with no names keys.** At re-pin an adopter deletes
+  `private_refs.names_file_env`, `private_refs.names_enabled` and any `exceptions` row that names
+  one of them, and `RAILFORM_PRIVATE_NAMES` no longer does anything in these scopes. Until then
+  `railform frame --check` on the working tree reports each key as `removed-key`, in one line that
+  says what to delete. Every other verb accepts and ignores the keys and their rows, in the working
+  tree and at a merge base, so the pull request that deletes them passes while its merge base still
+  holds them.
+- **Which frame judges.** With `--diff`, `private_refs.placeholders` is read from the
+  `railform.toml` committed at the merge base of the range, so a pull request cannot add a
+  placeholder for the home path it carries in the change that is being judged. A merge base
+  without a `railform.toml` leaves the working tree's frame in force, as for `version-sites
+  --base`. Without `--diff` the working tree's frame judges.
 
 No output contains a matched name or the user segment of a matched home path: a home-path finding
 shows the shape with `<name>` in its place, and a private-name finding gives only the term's line
@@ -877,7 +890,7 @@ manifest:
 | `railform-commit-msg` | `commit-msg` | the message file |
 | `railform-branch-name` | `pre-push` | every push pre-commit runs hooks for (`always_run: true`, `pass_filenames: false`) |
 | `railform-hooks-check` | `pre-commit` | every commit (`always_run: true`, `pass_filenames: false`), since a commit that only deletes a wrapper stages no file a filter could match |
-| `railform-private-refs` | `pre-commit` | the staged files only; no `--require-names`, see the private-reference check |
+| `railform-private-refs` | `pre-commit` | the staged files only; home-directory paths only, see the private-reference check |
 
 The hygiene hooks (trailing whitespace, end of file, merge-conflict markers and the rest) are
 `pre-commit/pre-commit-hooks`, which `railform adopt` references beside these, pinned by commit.

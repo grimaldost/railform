@@ -118,11 +118,6 @@ pattern = '^[a-z][a-z0-9-]*/[a-z0-9][a-z0-9._/-]*$'
 allow = ["dependabot/**"]
 
 [private_refs]
-names_file_env = "RAILFORM_PRIVATE_NAMES"
-# False turns the names half of `railform private-refs` off for a private repository whose tracked
-# files carry the listed names by design, on machines where the variable is set; it needs an
-# `exceptions` row with a reason. The paths half stays on.
-names_enabled = true
 placeholders = [
   "me", "x", "someone", "alice", "user", "runner", "public", "default", "shared", "runneradmin",
 ]

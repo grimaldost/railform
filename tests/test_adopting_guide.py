@@ -432,11 +432,68 @@ def test_the_guide_s_drift_example_names_the_frame_key() -> None:
     assert '`hooks.large_file_kb`' in example
 
 
-def test_the_exclude_paragraph_says_nothing_about_private_names() -> None:
-    # This paragraph keeps to the hygiene hooks, the paths half and the large-file limit.
-    words = _words(_edits_outside_the_markers())
-    for clause in ('private name', 'names half', 'names file', 'names-file', 'egress'):
-        assert clause not in words, clause
+def _plain_sentences(text: str) -> list[str]:
+    """The sentences of `text`, compared without backticks, case and line breaks."""
+    return re.split(r'(?<=\.)\s+', _words(text).replace('`', ''))
+
+
+def test_red_proof_the_exclude_paragraph_says_no_project_gate_checks_names() -> None:
+    sentences = _plain_sentences(_edits_outside_the_markers())
+    assert [s for s in sentences if 'no project gate checks' in s and 'names' in s]
+
+
+def test_red_proof_the_exclude_paragraph_says_the_egress_mode_never_runs_through_pre_commit() -> (
+    None
+):
+    terms = ('--names-file', 'egress mode', 'never runs through pre-commit', 'top-level exclude')
+    sentences = _plain_sentences(_edits_outside_the_markers())
+    assert [s for s in sentences if all(term in s for term in terms)]
+
+
+def _text_under_heading(text: str, heading: str) -> str:
+    """The section of `text` under the level-two `heading`, up to the next one."""
+    _, _, rest = text.partition(f'\n## {heading}\n')
+    assert rest, heading
+    return rest.partition('\n## ')[0]
+
+
+@pytest.mark.parametrize('path', [GUIDE, README], ids=['guide', 'readme'])
+def test_red_proof_the_guide_and_the_readme_say_where_names_are_checked(path: Path) -> None:
+    sentences = _plain_sentences(path.read_text(encoding='utf-8'))
+    assert [s for s in sentences if 'egress hook' in s and 'receiving side' in s]
+
+
+@pytest.mark.parametrize(
+    ('path', 'heading'),
+    [(GUIDE, 'Moving to a newer pin'), (README, 'The private-reference check')],
+    ids=['guide', 'readme'],
+)
+def test_red_proof_the_re_pin_text_says_what_an_adopter_deletes(path: Path, heading: str) -> None:
+    words = _words(_text_under_heading(path.read_text(encoding='utf-8'), heading))
+    for term in ('`removed-key`', '`private_refs.names_enabled`', '`private_refs.names_file_env`'):
+        assert term in words, term
+    assert '`exceptions` row' in words
+
+
+def test_red_proof_the_readme_describes_the_egress_mode_and_none_of_the_old_names_half() -> None:
+    text = README.read_text(encoding='utf-8')
+    words = _words(text).replace('`', '')
+    assert '--names-file' in words
+    for gone in (
+        '--require-names',
+        'names-file-missing',
+        'variable named by private_refs.names_file_env',
+        'the names half is silent',
+        'switch the names half off',
+        'switching the names half off',
+    ):
+        assert gone not in words, gone
+    rows = [line for line in text.splitlines() if line.startswith('|')]
+    assert not [row for row in rows if 'names_enabled' in row or 'names_file_env' in row]
+
+
+def test_the_guide_does_not_name_the_removed_flag() -> None:
+    assert '--require-names' not in _guide_text()
 
 
 def test_the_readme_links_to_the_guide() -> None:

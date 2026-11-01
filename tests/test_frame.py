@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from migration_fixtures import PIN, build
 from railform import frame
 from railform.cli import main
 
@@ -35,8 +36,6 @@ SPEC_KEYS = (
     'branch.pattern',
     'branch.allow',
     'session_loaded',
-    'private_refs.names_file_env',
-    'private_refs.names_enabled',
     'private_refs.placeholders',
     'ci.os',
     'ci.setup',
@@ -135,7 +134,6 @@ def test_the_schema_of_each_preset(preset: str) -> None:
         'hooks.wrapper',
         'hooks.pre_commit_version',
         'branch.pattern',
-        'private_refs.names_file_env',
         'ci.ruff_version',
         'python.newest',
         'python.package',
@@ -166,7 +164,7 @@ def test_the_schema_of_each_preset(preset: str) -> None:
         value = _get(effective, key)
         assert isinstance(value, list), key
         assert all(isinstance(item, str) for item in value), key
-    for key in ('changelog.enabled', 'release.enabled', 'private_refs.names_enabled'):
+    for key in ('changelog.enabled', 'release.enabled'):
         assert isinstance(_get(effective, key), bool), key
     assert effective['changelog']['consumer_affecting'] in ('advisory', 'error')
     assert isinstance(effective['ci']['setup'], dict)
@@ -211,8 +209,7 @@ def test_the_default_frame_values_the_spec_names() -> None:
     assert effective['changelog']['trailer'] == 'Changelog: none (<reason>)'
     assert effective['hooks']['dir'] == '.githooks'
     assert effective['hooks']['names'] == ['pre-commit', 'commit-msg', 'pre-push']
-    assert effective['private_refs']['names_file_env'] == 'RAILFORM_PRIVATE_NAMES'
-    assert effective['private_refs']['names_enabled'] is True
+    assert set(effective['private_refs']) == {'placeholders'}
     assert effective['private_refs']['placeholders'] == [
         'me',
         'x',
@@ -835,17 +832,6 @@ LOOSENING = [
     ),
     pytest.param(
         f'[commit]\ntypes = {json.dumps([*TYPES, "wip"])}\n', 'commit.types', id='more-types'
-    ),
-    pytest.param(
-        '[private_refs]\nnames_file_env = "UNSET_VARIABLE"\n',
-        'private_refs.names_file_env',
-        id='names-variable',
-    ),
-    # The names half of private-refs is the check a repository can only turn off with a reason.
-    pytest.param(
-        '[private_refs]\nnames_enabled = false\n',
-        'private_refs.names_enabled',
-        id='names-switch',
     ),
     # A bare `<reason>` template matches every commit message, which turns changelog-gate off.
     pytest.param('[changelog]\ntrailer = "<reason>"\n', 'changelog.trailer', id='trailer-bare'),
@@ -1828,3 +1814,303 @@ def test_a_row_value_for_type_check_that_names_other_paths_is_bad(
     row = f'[[exceptions]]\nkey = "python.type_check"\nvalue = {row_value}\nreason = "measured"\n'
     _write(scratch_repo, '[python]\ntype_check = "tests"\n' + row)
     assert _check(capsys)[:2] == (1, 'bad-exception')
+
+
+# --- removed-key -------------------------------------------------------------------------------
+
+REMOVED_KEYS = ('private_refs.names_enabled', 'private_refs.names_file_env')
+# A private adopter's frame: both keys and a row for each, as `frame --check` used to ask.
+KEYS_AND_ROWS = (
+    '[private_refs]\n'
+    'names_enabled = false\n'
+    'names_file_env = "SOME_VARIABLE"\n'
+    '\n'
+    '[[exceptions]]\n'
+    'key = "private_refs.names_enabled"\n'
+    'reason = "tracked files carry the listed terms by design"\n'
+    '\n'
+    '[[exceptions]]\n'
+    'key = "private_refs.names_file_env"\n'
+    'reason = "another variable"\n'
+)
+PLAIN_FRAME = '[project]\ntype = "python-package"\n'
+
+
+def _removed_finding(key: str) -> str:
+    return (
+        f'railform.toml: removed key {key}: delete it and its exceptions row; '
+        "the environment's egress hook now holds the names policy"
+    )
+
+
+def _assert_no_removed_key_in(effective: dict[str, Any] | None) -> None:
+    """The effective frame shows neither removed key, nor a row that names one."""
+    assert effective is not None
+    assert set(effective['private_refs']) == {'placeholders'}
+    assert [row for row in effective['exceptions'] if row.get('key') in REMOVED_KEYS] == []
+
+
+def _commit_all(repo: Path, message: str) -> str:
+    identity = ('-c', 'user.name=someone', '-c', 'user.email=someone@example.com')
+    for args in (
+        ('add', '-A'),
+        (*identity, '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', message),
+    ):
+        subprocess.run(['git', *args], cwd=repo, capture_output=True, check=True)
+    done = subprocess.run(
+        ['git', 'rev-parse', 'HEAD'], cwd=repo, capture_output=True, text=True, check=True
+    )
+    return done.stdout.strip()
+
+
+def _verb(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
+    code = main(list(argv))
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def test_red_proof_a_working_tree_names_switch_fails_frame_check_as_removed_key(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(
+        scratch_repo,
+        '[private_refs]\nnames_enabled = false\n'
+        '[[exceptions]]\nkey = "private_refs.names_enabled"\nreason = "by design"\n',
+    )
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'removed-key')
+    assert findings == [_removed_finding('private_refs.names_enabled')]
+
+
+def test_red_proof_a_merge_base_frame_with_the_keys_and_rows_passes_the_verbs_that_read_it(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (scratch_repo / 'src').mkdir()
+    (scratch_repo / 'src' / 'a.py').write_text('x = 1\n', encoding='utf-8')
+    _write(scratch_repo, KEYS_AND_ROWS)
+    base = _commit_all(scratch_repo, 'chore: the frame of a private adopter')
+    _write(scratch_repo, PLAIN_FRAME)
+    _commit_all(scratch_repo, 'chore: delete the removed keys and their rows')
+    for argv in (
+        ('private-refs', '--diff', f'{base}...HEAD'),
+        ('changelog-gate', f'{base}...HEAD'),
+        ('version-sites', '--base', base),
+        ('session-paths', '--diff', f'{base}...HEAD', '--frame-from', base),
+    ):
+        code, out, err = _verb(capsys, *argv)
+        assert code == 0, (argv, out, err)
+        assert out.splitlines()[-1] == f'railform-verdict: {argv[0]} pass ok', (argv, out)
+        assert err == '', argv
+    # What the merge base's frame reads as: neither key, and no row.
+    _assert_no_removed_key_in(frame.effective_frame_at(scratch_repo, base))
+
+
+def test_red_proof_adopt_pin_succeeds_on_a_working_tree_that_still_carries_the_keys(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fixture = build(scratch_repo, 'python-package')
+    _write(fixture.root, KEYS_AND_ROWS)
+    code, out, err = _verb(capsys, 'adopt', '--pin', PIN)
+    assert (code, out.splitlines()[-1]) == (0, 'railform-verdict: adopt pass ok'), out + err
+    code, out, err = _verb(capsys, 'adopt', '--check')
+    assert (code, out.splitlines()[-1]) == (0, 'railform-verdict: adopt pass ok'), out + err
+    # adopt reads past them; only the frame check reports them.
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'removed-key')
+    assert findings == [_removed_finding(key) for key in REMOVED_KEYS]
+
+
+def test_both_keys_make_one_finding_each_in_the_order_of_their_names(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, '[private_refs]\nnames_file_env = "X"\nnames_enabled = true\n')
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'removed-key')
+    assert findings == [_removed_finding(key) for key in REMOVED_KEYS]
+
+
+@pytest.mark.parametrize(
+    ('text', 'key'),
+    [
+        # The old defaults count too.
+        ('[private_refs]\nnames_enabled = true\n', 'private_refs.names_enabled'),
+        (
+            '[private_refs]\nnames_file_env = "RAILFORM_PRIVATE_NAMES"\n',
+            'private_refs.names_file_env',
+        ),
+        # A value the old schema refused is not judged: the key is gone, whatever it holds.
+        ('[private_refs]\nnames_enabled = "no"\n', 'private_refs.names_enabled'),
+        # A row alone counts for its key.
+        (
+            '[[exceptions]]\nkey = "private_refs.names_enabled"\nreason = "x"\n',
+            'private_refs.names_enabled',
+        ),
+        (
+            '[[exceptions]]\nkey = "private_refs.names_file_env"\nreason = "x"\n',
+            'private_refs.names_file_env',
+        ),
+        # A key and its row make one finding.
+        (
+            '[private_refs]\nnames_enabled = false\n'
+            '[[exceptions]]\nkey = "private_refs.names_enabled"\nreason = "x"\n',
+            'private_refs.names_enabled',
+        ),
+        # A row is set aside whole, whatever its other fields: no reason, a value, an unknown field.
+        ('[[exceptions]]\nkey = "private_refs.names_enabled"\n', 'private_refs.names_enabled'),
+        (
+            '[[exceptions]]\nkey = "private_refs.names_file_env"\nvalue = 3\nexpires = "never"\n',
+            'private_refs.names_file_env',
+        ),
+    ],
+)
+def test_a_removed_key_or_a_row_alone_is_one_finding_whatever_it_holds(
+    text: str, key: str, scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, text)
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict, findings) == (1, 'removed-key', [_removed_finding(key)])
+
+
+def test_a_removed_key_does_not_stop_the_other_checks(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The rest of the file is judged as if the keys and rows were absent.
+    _write(scratch_repo, '[private_refs]\nnames_enabled = false\n[python]\ntest_command = "true"\n')
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'removed-key')
+    assert findings[0] == _removed_finding('private_refs.names_enabled')
+    assert len(findings) == 2
+    assert 'python.test_command departs' in findings[1]
+    _write(
+        scratch_repo,
+        '[private_refs]\nnames_enabled = false\n[[exceptions]]\nkey = "ci.os"\nreason = "x"\n',
+    )
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'removed-key')
+    assert len(findings) == 2
+    assert 'exceptions[0] (ci.os)' in findings[1]
+    _write(scratch_repo, '[private_refs]\nnames_enabled = false\n[python]\ntype_check = "nope"\n')
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'removed-key')
+    assert 'python.type_check' in findings[1]
+
+
+def test_a_schema_problem_still_stops_the_departure_checks_and_lists_the_removed_key(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(
+        scratch_repo,
+        '[private_refs]\nnames_enabled = false\n[python]\nversions = "3.11"\ntest_command = "t"\n',
+    )
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'removed-key')
+    assert findings[0] == _removed_finding('private_refs.names_enabled')
+    assert any('python.versions' in finding for finding in findings)
+    assert not any('test_command' in finding for finding in findings)
+
+
+def test_an_unknown_key_comes_before_a_removed_key_and_both_are_listed(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, '[private_refs]\nnames_enabled = false\nbogus = 1\n')
+    code, verdict, findings = _check(capsys)
+    assert (code, verdict) == (1, 'unknown-key')
+    assert findings == [
+        'railform.toml: unknown key private_refs.bogus',
+        _removed_finding('private_refs.names_enabled'),
+    ]
+
+
+def test_a_removed_key_comes_directly_after_an_unknown_key_in_the_order_of_precedence() -> None:
+    assert frame.CODE_ORDER == (
+        'unknown-key',
+        'removed-key',
+        'wrong-type',
+        'missing-path',
+        'bad-exception',
+        'unlisted-departure',
+    )
+
+
+def test_the_printing_modes_pass_on_a_file_with_the_keys_and_show_no_trace_of_them(
+    scratch_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _assert_no_removed_key_in(_effective(scratch_repo, KEYS_AND_ROWS, capsys))
+    code, verdict, lines = _run(capsys)
+    assert (code, verdict) == (0, 'ok')
+    assert not any('names_' in line for line in lines)
+    output = tmp_path / 'github-output.txt'
+    monkeypatch.setenv('GITHUB_OUTPUT', str(output))
+    assert _run(capsys, '--github-output')[:2] == (0, 'ok')
+    text = output.read_text(encoding='utf-8')
+    assert 'private_refs_placeholders=' in text
+    assert 'names_' not in text
+
+
+def test_a_printing_mode_that_fails_on_the_schema_does_not_report_a_removed_key(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, '[private_refs]\nnames_enabled = false\nbogus = 1\n')
+    code, verdict, findings = _run(capsys, '--json')
+    assert (code, verdict) == (1, 'unknown-key')
+    assert findings == ['railform.toml: unknown key private_refs.bogus']
+
+
+def test_an_unknown_key_at_a_merge_base_still_stops_the_verb_that_reads_it(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, KEYS_AND_ROWS.replace('[private_refs]\n', '[private_refs]\nbogus = 1\n'))
+    base = _commit_all(scratch_repo, 'chore: a frame with an unknown key')
+    _write(scratch_repo, PLAIN_FRAME)
+    _commit_all(scratch_repo, 'chore: a clean frame')
+    code, out, err = _verb(capsys, 'changelog-gate', f'{base}...HEAD')
+    assert (code, out.splitlines()[-1]) == (2, 'railform-verdict: changelog-gate fail usage')
+    assert 'private_refs.bogus' in err
+
+
+def _frame_readers(root: Path, base: str) -> list[list[str]]:
+    message = root.parent / f'{root.name}-message.txt'
+    message.write_text('docs: a change\n', encoding='utf-8')
+    event = root.parent / f'{root.name}-event.json'
+    event.write_text(
+        json.dumps({'pull_request': {'title': 'docs: a change', 'body': 'A change.'}}),
+        encoding='utf-8',
+    )
+    return [
+        ['frame'],
+        ['frame', '--json'],
+        ['arm'],
+        ['branch-name', '--', 'feat/a-change'],
+        ['commit-msg', str(message)],
+        ['commit-range', f'{base}...HEAD'],
+        ['pr-text', '--event', str(event)],
+        ['hooks-check'],
+        ['release-check'],
+        ['private-refs'],
+        ['private-refs', '--diff', f'{base}...HEAD'],
+        ['private-refs', '--history'],
+        ['changelog-gate', f'{base}...HEAD'],
+        ['version-sites'],
+        ['version-sites', '--base', base],
+        ['session-paths', '--diff', f'{base}...HEAD', '--frame-from', base],
+        ['adopt', '--check'],
+    ]
+
+
+def test_every_verb_that_reads_a_frame_says_the_same_with_the_keys_and_rows_in_the_working_tree(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(scratch_repo, PLAIN_FRAME)
+    base = _commit_all(scratch_repo, 'chore: the frame')
+    (scratch_repo / 'notes.md').write_text('a change\n', encoding='utf-8')
+    _commit_all(scratch_repo, 'docs: a change')
+    readers = _frame_readers(scratch_repo, base)
+    without = [_verb(capsys, *argv) for argv in readers]
+    assert any(code == 0 for code, _, _ in without), 'a run that only fails proves nothing'
+    _write(scratch_repo, PLAIN_FRAME + KEYS_AND_ROWS)
+    with_keys = [_verb(capsys, *argv) for argv in readers]
+    for argv, first, second in zip(readers, without, with_keys, strict=True):
+        assert first == second, argv
