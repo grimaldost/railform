@@ -28,8 +28,7 @@ All notable changes to this project are recorded here, in the
   names variable, and makes no home-path finding. A file of the input that is binary or not UTF-8
   is reported `unscannable`, which fails the run when no term is found; a missing or empty names
   file and an unknown commit exit 2. It is the check an environment's egress hook runs on what
-  leaves the machine. Without `--names-file` the verb is unchanged: the names half, its variable,
-  `--require-names` and the `private_refs` keys work as before.
+  leaves the machine. Without `--names-file` the verb judges home-directory paths only.
 - `hooks.large_file_kb` (default 500) in the frame: the limit of `check-added-large-files`, in
   KB. At 500, the hook's own limit, adopt writes the hygiene entry as before, with no `args`, so
   no owned region changes; any other value is written as `args: [--maxkb=<value>]` on that hook.
@@ -57,6 +56,16 @@ All notable changes to this project are recorded here, in the
 
 ### Changed
 
+- Names are checked at egress, by an environment's egress hook calling the egress mode
+  (`--names-file`), and no project gate checks them any more. Outside the egress mode
+  `railform private-refs` judges home-directory paths only: it reads no names variable, its verdict
+  `names-file-missing` is gone, and `--require-names` is an unknown argument (exit 2). The
+  `railform-private-refs` hook and both CI steps keep their commands and so run the paths half only.
+  `private_refs.names_file_env` and `private_refs.names_enabled` leave the frame: every verb that
+  reads a frame accepts and ignores them and any `exceptions` row on them, in the working tree and
+  at a merge base, and `railform frame --check` on the working tree reports each as `removed-key`.
+  At re-pin an adopter deletes each of the two keys it sets and its `exceptions` row; the pull
+  request that does so passes while its merge base still holds them.
 - The adopter fixtures of `tests/fixtures/adopter_frames/` are true copies: a header of three
   lines (the repository, the full commit and the blob id of `<commit>:railform.toml`), then the
   adopter's `railform.toml` byte for byte, refreshed from each adopter's `origin/main`. The fathom
