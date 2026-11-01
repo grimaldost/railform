@@ -7,8 +7,8 @@ checks. A repository that adopts railform pins one commit of this repository and
 CI pipeline, hook wrappers and commit checks as every other adopter at that commit.
 
 The verbs, the hook manifest and the reusable CI workflow exist, and railform's own CI runs
-through that workflow. The current release is 0.3.0; an adopter pins the commit the tag
-`v0.3.0` points at, the release pull request's merge commit.
+through that workflow. The current release is 0.4.0; an adopter pins the commit the tag
+`v0.4.0` points at, the release pull request's merge commit.
 
 ## Adopting a repository in five steps
 
@@ -18,7 +18,7 @@ choices adopt leaves to the repository and a worked example. Its steps, in order
 1. **Take an inventory** of the workflows, the hooks, the changelog and version scripts and the
    required status checks, before anything changes ([step 1](docs/adopting.md#1-take-an-inventory)).
 2. **Run adopt at a release commit,** on a branch. `git ls-remote
-   https://github.com/grimaldost/railform 'refs/tags/v0.3.0^{}'` prints the commit, and
+   https://github.com/grimaldost/railform 'refs/tags/v0.4.0^{}'` prints the commit, and
    `uvx --from git+https://github.com/grimaldost/railform@<40-hex sha> railform adopt --pin
    <40-hex sha>` writes the owned files. Then delete the jobs and hooks railform replaces
    ([step 2](docs/adopting.md#2-run-railform-adopt)).
