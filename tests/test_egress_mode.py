@@ -619,6 +619,21 @@ def test_a_label_holding_a_term_is_redacted(
     assert all(TERM not in line.lower() for line in [*findings, err])
 
 
+@pytest.mark.parametrize('segment', [TERM, f'{TERM}-work'])
+def test_a_label_with_a_term_in_a_home_path_hides_the_user_segment_once(
+    segment: str, scratch_repo: Path, names: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The home path and the term overlap, and one `<name>` covers both. A term that is only part
+    of the segment still hides the whole segment."""
+    # The doubled slash puts a real file under the home shape in a relative path.
+    given = f'sub//home/{segment}/a.md'
+    write(scratch_repo, given, f'{TERM}\n')
+    code, _, findings, err = check(capsys, '--names-file', str(names), '--text', given)
+    assert code == 1
+    assert findings == ['sub//home/<name>/a.md:1: private name (names file line 2)']
+    assert all(TERM not in line.lower() for line in [*findings, err])
+
+
 # --- the arguments -----------------------------------------------------------------------------
 
 
@@ -671,11 +686,13 @@ def test_the_names_file_is_utf_8_with_one_term_per_line(
 ) -> None:
     listed = tmp_path / 'bom-terms.txt'
     listed.write_bytes(f'﻿# comment\r\n\r\n  {TERM}  \r\na.b\r\n'.encode())
-    stage(scratch_repo, 'a.md', f'{TERM}x {TERM.upper()}_y aXb a.b\n')
+    stage(scratch_repo, 'a.md', f'{TERM}x {TERM.upper()}_y x{TERM} 9{TERM} _{TERM} aXb a.b\n')
     code, _, findings, _ = check(capsys, '--names-file', str(listed), '--staged')
     assert (code, findings) == (
         1,
         [
+            # An underscore is a boundary on either side; a letter or a digit is on neither.
+            'a.md:1: private name (names file line 3)',
             'a.md:1: private name (names file line 3)',
             'a.md:1: private name (names file line 4)',
         ],
