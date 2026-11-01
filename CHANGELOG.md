@@ -94,6 +94,8 @@ All notable changes to this project are recorded here, in the
 - Every `setup-uv` step of the reusable workflows sets `enable-cache: false`, the `checks` job's
   included, so no run restores a uv cache another run saved. An adopter's `checks` job no longer
   restores or saves a uv cache.
+- The reusable workflows pin `astral-sh/setup-uv` at v10.3.3
+  (`68559e99cc807c1eb7e9238fd43a15bba460eec2`), up from v10.3.0.
 
 ## [0.3.0] - 2026-10-25
 
