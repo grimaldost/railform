@@ -674,9 +674,10 @@ def test_no_names_list_is_tracked_in_railform() -> None:
     tracked = _tracked_in_railform()
     assert tracked
     assert [name for name in tracked if suspicious.search(Path(name).name)] == []
-    # The default frame names the variable, never a list.
+    # The default frame names neither a list nor a variable that points to one.
     frame_text = (ROOT / 'src' / 'railform' / 'default_frame.toml').read_text(encoding='utf-8')
-    assert 'names_file_env = "RAILFORM_PRIVATE_NAMES"' in frame_text
+    assert 'names_file_env' not in frame_text
+    assert 'RAILFORM_PRIVATE_NAMES' not in frame_text
 
 
 def test_railforms_own_tracked_files_pass_the_check(
