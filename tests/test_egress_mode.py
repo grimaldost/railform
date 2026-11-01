@@ -629,7 +629,6 @@ def test_a_label_holding_a_term_is_redacted(
         ['--diff', 'HEAD~1...HEAD'],
         ['--history'],
         ['--event', 'e.json'],
-        ['--require-names'],
     ],
 )
 def test_nothing_else_is_in_scope_of_the_egress_mode(
@@ -667,7 +666,7 @@ def test_a_names_file_without_a_term_or_that_cannot_be_read_exits_2(
         assert 'names file' in err
 
 
-def test_the_names_file_is_read_like_the_names_half_reads_it(
+def test_the_names_file_is_utf_8_with_one_term_per_line(
     scratch_repo: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     listed = tmp_path / 'bom-terms.txt'
@@ -693,16 +692,17 @@ def test_text_without_the_names_file_keeps_its_old_meaning(
     assert (code, verdict) == (1, 'railform-verdict: private-refs fail home-path')
 
 
-# --- railform's own pre-commit hook, unchanged -------------------------------------------------
+# --- railform's own pre-commit hook, the paths half only ---------------------------------------
 
 
 @pytest.mark.slow
-def test_railforms_own_pre_commit_hook_still_refuses_a_staged_term(
+def test_red_proof_railforms_own_pre_commit_hook_passes_a_staged_term(
     tmp_path_factory: pytest.TempPathFactory, outside: dict[str, str]
 ) -> None:
-    """With the names variable set, the names half of railform's own `railform-private-refs`
-    hook still refuses a staged file holding a term. The hook is taken from railform's own
-    `.pre-commit-config.yaml` and run by pre-commit in a copy of this working tree."""
+    """With the names variable set, railform's own `railform-private-refs` hook lets a staged file
+    holding a term through, and still refuses a staged home-directory path. The hook is taken from
+    railform's own `.pre-commit-config.yaml` and run by pre-commit in a copy of this working
+    tree."""
     listed = subprocess.run(
         ['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
         cwd=ROOT,
@@ -748,11 +748,11 @@ def test_railforms_own_pre_commit_hook_still_refuses_a_staged_term(
             check=False,
         )
 
-    stage(copy, 'notes.md', 'a clean note\n')
+    stage(copy, 'notes.md', f'a note by {TERM}\n')
     passed = run_hook()
     assert passed.returncode == 0, passed.stdout + passed.stderr
-    stage(copy, 'notes.md', f'a note by {TERM}\n')
+    home = '/' + 'home' + '/' + 'mallory' + '/x'
+    stage(copy, 'notes.md', f'a note at {home}\n')
     refused = run_hook()
     assert refused.returncode != 0
-    assert FAIL_NAME in refused.stdout + refused.stderr
-    assert TERM not in (refused.stdout + refused.stderr).lower()
+    assert 'railform-verdict: private-refs fail home-path' in refused.stdout + refused.stderr

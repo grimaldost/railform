@@ -37,7 +37,7 @@
   minimum_pre_commit_version: 3.2.0
 - id: railform-private-refs
   name: railform private-refs
-  description: No home-directory path, and no name from the private names file, in the staged files.
+  description: No home-directory path in the staged files.
   entry: railform private-refs
   language: python
   stages: [pre-commit]

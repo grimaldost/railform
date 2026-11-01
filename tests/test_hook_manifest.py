@@ -79,17 +79,17 @@ def test_private_refs_judges_the_staged_files_only(hooks: dict[str, dict[str, An
     assert 'files' not in hook
 
 
-def test_private_refs_hook_does_not_require_the_names_file(
+def test_private_refs_hook_runs_the_paths_half_with_no_flag(
     hooks: dict[str, dict[str, Any]],
 ) -> None:
-    # The hook runs on every contributor's machine, and most hold no names file: with the variable
-    # unset the names half is silent there, and `--require-names` would turn that silence into a
-    # failure that blocks a commit nobody could fix. A variable set to a path that does not exist
-    # already fails without the flag (`names-file-missing`), which is the case the hook can judge.
+    # The hook judges home-directory paths and nothing else: a project gate never checks names.
     hook = hooks['railform-private-refs']
     assert hook['entry'] == 'railform private-refs'
-    assert '--require-names' not in hook.get('args', [])
-    assert '--require-names' not in hook['entry']
+    assert 'args' not in hook
+    description = ' '.join(hook['description'].split()).lower()
+    assert 'home-directory path' in description
+    assert 'names file' not in description
+    assert 'private name' not in description
 
 
 def test_red_proof_hooks_check_always_runs_and_takes_no_file_names(
