@@ -53,7 +53,9 @@ git ls-remote https://github.com/grimaldost/railform 'refs/tags/v0.4.0^{}'
 ```
 
 Work on a branch, with the repository's `ci.yml` and hooks as they are, and run adopt from the
-repository root. railform is installed from git at the same commit, never by name from a package
+repository root. The branch can be a linked worktree of the clone (`git worktree add`): adopt works
+there as it does in the main checkout, but it does not tell you to arm the clone from the worktree;
+step 7 says when and from where to arm. railform is installed from git at the same commit, never by name from a package
 index:
 
 ```
@@ -310,6 +312,9 @@ git -c core.hooksPath=.githooks commit -m "chore: a change"
 ```
 
 The stub in a former hooks directory prints this form with `<command>` in place of `commit ...`.
+
+The stub also says where to arm: from the main checkout, once the adoption is merged there, and not from a
+linked worktree. `railform hooks-check --armed` gives the same advice in each place.
 
 ## Release tags
 

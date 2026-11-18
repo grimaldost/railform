@@ -66,6 +66,20 @@ def is_linked_worktree(root: Path) -> bool:
     return done.returncode == 0 and len(lines) == 2 and lines[0] != lines[1]
 
 
+def arm_advice(root: Path, detail: str = '') -> str:
+    """What to tell the person whose clone is not armed: the one place that chooses the advice, for
+    `railform adopt` and `hooks-check --armed` alike. A linked worktree shares the clone's
+    configuration, and until an adoption merges the main checkout has no hooks directory, so it is
+    sent to arm from there; `detail`, a parenthesis for the main checkout's advice, is kept out of
+    the worktree's."""
+    if is_linked_worktree(root):
+        return (
+            'this is a linked worktree: once the adoption is merged, arm the clone with'
+            ' `railform arm` from the main checkout'
+        )
+    return f'arm this clone with `railform arm`{detail}'
+
+
 def _stderr(done: subprocess.CompletedProcess[bytes]) -> str:
     return done.stderr.decode('utf-8', 'replace').strip()
 
@@ -162,8 +176,7 @@ def run(args: argparse.Namespace) -> Verdict:
                 problems.append(
                     (
                         NOT_ARMED,
-                        f'core.hooksPath is {shown}, not {directory!r}; arm this clone with '
-                        '`railform arm`',
+                        f'core.hooksPath is {shown}, not {directory!r}; {arm_advice(root)}',
                     )
                 )
     except (*CONFIG_ERRORS, GitError) as exc:
