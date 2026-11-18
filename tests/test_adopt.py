@@ -2355,6 +2355,10 @@ def test_the_stub_written_in_a_linked_worktree_does_not_tell_it_to_arm_the_clone
     assert '.hooks/pre-commit: stub written' in out
     text = read(linked, '.hooks/pre-commit')
     assert 'arm this clone' not in text
-    assert 'from the main checkout' in text
-    assert 'not from a linked worktree' in text
+    # Armed only once the main checkout has the directory, and then from there: right in the
+    # adoption's worktree before the merge, in the main checkout after it, and when the adoption
+    # ran in the main checkout itself.
+    assert 'only once the main checkout has .githooks' in text
+    assert 'and then from the main checkout' in text
+    assert 'not from a linked worktree' not in text
     assert 'git -c core.hooksPath=.githooks <command>' in text

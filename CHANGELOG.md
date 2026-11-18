@@ -13,8 +13,9 @@ All notable changes to this project are recorded here, in the
   directory. The last finding now says to run `railform arm` from the main checkout after the merge.
 - The message of the stub that `railform adopt` writes in a former hooks directory, and the
   `not-armed` finding of `railform hooks-check --armed`, no longer tell a linked worktree to arm the
-  clone from there. The stub says to arm from the main checkout once the adoption is merged there,
-  and both messages come from one function, so adopt and `hooks-check --armed` give the same advice.
+  clone from there. The stub says to arm only once the main checkout has the hooks directory, and
+  then from the main checkout. The last finding of adopt and the `not-armed` finding come from one
+  function, so those two give the same advice in the same place.
   `docs/adopting.md` now says in step 2 that adopt can run in a linked worktree.
 
 ## [0.4.0] - 2026-11-01

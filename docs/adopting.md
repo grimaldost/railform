@@ -313,8 +313,12 @@ git -c core.hooksPath=.githooks commit -m "chore: a change"
 
 The stub in a former hooks directory prints this form with `<command>` in place of `commit ...`.
 
-The stub also says where to arm: from the main checkout, once the adoption is merged there, and not
-from a linked worktree. `railform hooks-check --armed` gives the same advice in each place.
+The stub's text is fixed, so it reads the same everywhere: arm only once the main checkout has the
+hooks directory, and then from the main checkout. That holds in the adoption's worktree before the
+merge, in the main checkout after it, and when the adoption ran in the main checkout. The last
+finding of `railform adopt` and the `not-armed` finding of `railform hooks-check --armed` depend on
+where they run: in the main checkout both say to run `railform arm` there, and in a linked worktree
+both say to arm from the main checkout once the adoption is merged.
 
 ## Release tags
 
