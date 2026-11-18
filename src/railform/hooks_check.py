@@ -59,6 +59,13 @@ def git(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
         raise GitError(f'cannot run git: {exc}') from exc
 
 
+def is_linked_worktree(root: Path) -> bool:
+    """True when `root` is a linked git worktree, whose git directory differs from the clone's."""
+    done = git(root, 'rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir')
+    lines = done.stdout.decode('utf-8', 'replace').splitlines()
+    return done.returncode == 0 and len(lines) == 2 and lines[0] != lines[1]
+
+
 def _stderr(done: subprocess.CompletedProcess[bytes]) -> str:
     return done.stderr.decode('utf-8', 'replace').strip()
 

@@ -2297,3 +2297,37 @@ def test_red_proof_a_filter_on_the_pull_request_trigger_is_reported(
     assert f'{CI}: on.pull_request has {key}:' in out
     assert 'reports no gate' in out
     assert f'{CI}: on.pull_request has {key}:' in run_adopt(capsys)[2]
+
+
+# --- the arm hint in a linked worktree ---------------------------------------------------------
+
+
+def test_adopt_in_a_linked_worktree_says_to_arm_from_the_main_checkout(
+    scratch_repo: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    build(scratch_repo, 'python-package')
+    git(scratch_repo, 'add', '-A')
+    identity = ('-c', 'user.name=alice', '-c', 'user.email=alice@example.com')
+    git(scratch_repo, *identity, 'commit', '-qm', 'x')
+    linked = tmp_path_factory.mktemp('linked') / 'tree'
+    git(scratch_repo, 'worktree', 'add', '-q', '--detach', str(linked))
+    monkeypatch.chdir(linked)
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0, out
+    assert 'arm this clone' not in out
+    assert 'linked worktree' in out
+    assert 'railform arm' in out
+    assert 'main checkout' in out
+
+
+def test_adopt_in_the_main_checkout_tells_the_clone_to_arm(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    build(scratch_repo, 'python-package')
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0, out
+    assert 'arm this clone with `railform arm`' in out
+    assert 'linked worktree' not in out

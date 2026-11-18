@@ -296,9 +296,11 @@ that setting is local to a clone. In each clone, once, from the repository root:
 uvx --from git+https://github.com/grimaldost/railform@<40-hex sha> railform arm
 ```
 
-Worktrees share their clone's configuration, so arming the clone arms them. `railform hooks-check
---armed` fails with `not-armed` in a clone that has not run it. Put the command in the
-contributing guide.
+Worktrees share their clone's configuration, so arming the clone arms them. Arm it from the main
+checkout once the adoption has merged there, not from the adoption's worktree: until the merge the
+main checkout has no `.githooks`, and arming from the worktree would point its hooks at a missing
+directory. `railform hooks-check --armed` fails with `not-armed` in a clone that has not run it. Put
+the command in the contributing guide.
 
 To run one git command with the hooks, without arming the clone, name the directory for that
 command alone:

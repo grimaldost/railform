@@ -60,7 +60,15 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from railform import frame as frame_module
-from railform.hooks_check import CONFIG_ERRORS, EXECUTABLE, GitError, git, hooks_path, is_armed
+from railform.hooks_check import (
+    CONFIG_ERRORS,
+    EXECUTABLE,
+    GitError,
+    git,
+    hooks_path,
+    is_armed,
+    is_linked_worktree,
+)
 from railform.verdict import Verdict
 from railform.wrapper import WrapperError, hooks_dir, render
 
@@ -1387,7 +1395,14 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         for message in _extra_pr_workflows(root, frame['ci']['extra_workflows'])
     ]
     # The hint follows `hooks-check --armed`, so the two never disagree about this clone.
-    if not is_armed(hooks_path(root), directory):
+    if is_armed(hooks_path(root), directory):
+        pass
+    elif is_linked_worktree(root):
+        findings.append(
+            'this is a linked worktree: once the adoption is merged, arm the clone with'
+            ' `railform arm` from the main checkout'
+        )
+    else:
         findings.append(f'arm this clone with `railform arm` (core.hooksPath to {directory})')
     return Verdict.ok(VERB, tuple(findings))
 

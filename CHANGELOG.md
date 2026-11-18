@@ -5,6 +5,13 @@ All notable changes to this project are recorded here, in the
 
 ## [Unreleased]
 
+### Fixed
+
+- `railform adopt` run in a linked git worktree no longer tells you to arm that clone from there.
+  `core.hooksPath` is shared by every worktree of a clone, so arming from the adoption's worktree
+  pointed the main checkout, which has no `.githooks` until the adoption merges, at a missing
+  directory. The last finding now says to run `railform arm` from the main checkout after the merge.
+
 ## [0.4.0] - 2026-11-01
 
 Moving to this release asks four things of an adopter. Delete `private_refs.names_file_env` and
