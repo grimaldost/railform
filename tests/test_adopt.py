@@ -2331,3 +2331,34 @@ def test_adopt_in_the_main_checkout_tells_the_clone_to_arm(
     assert code == 0, out
     assert 'arm this clone with `railform arm`' in out
     assert 'linked worktree' not in out
+
+
+def test_the_stub_written_in_a_linked_worktree_does_not_tell_it_to_arm_the_clone(
+    scratch_repo: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The stub is tracked and fires in the adoption's worktree before the merge, and in the main
+    # checkout after it; its fixed text must be right in both.
+    build(scratch_repo, 'python-scripts')
+    git(scratch_repo, 'add', '-A')
+    # a hook is a stub target only when tracked as 100755
+    git(scratch_repo, 'update-index', '--chmod=+x', '--', '.hooks/pre-commit')
+    identity = ('-c', 'user.name=alice', '-c', 'user.email=alice@example.com')
+    git(scratch_repo, *identity, 'commit', '-qm', 'x')
+    linked = tmp_path_factory.mktemp('linked') / 'tree'
+    git(scratch_repo, 'worktree', 'add', '-q', '--detach', str(linked))
+    monkeypatch.chdir(linked)
+    code, _, out = run_adopt(capsys, '--pin', PIN)
+    assert code == 0, out
+    assert '.hooks/pre-commit: stub written' in out
+    text = read(linked, '.hooks/pre-commit')
+    assert 'arm this clone' not in text
+    # Armed only once the main checkout has the directory, and then from there: right in the
+    # adoption's worktree before the merge, in the main checkout after it, and when the adoption
+    # ran in the main checkout itself.
+    assert 'only once the main checkout has .githooks' in text
+    assert 'and then from the main checkout' in text
+    assert 'not from a linked worktree' not in text
+    assert 'git -c core.hooksPath=.githooks <command>' in text

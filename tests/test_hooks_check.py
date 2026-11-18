@@ -539,3 +539,33 @@ def test_arm_in_a_git_worktree_arms_the_main_clone(
     assert check(capsys, '--armed')[:2] == (0, 'railform-verdict: hooks-check pass ok')
     monkeypatch.chdir(scratch_repo)
     assert check(capsys, '--armed')[:2] == (0, 'railform-verdict: hooks-check pass ok')
+
+
+def test_armed_in_a_linked_worktree_says_to_arm_from_the_main_checkout(
+    scratch_repo: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    put_all(scratch_repo)
+    identity = ('-c', 'user.name=alice', '-c', 'user.email=alice@example.com')
+    git(scratch_repo, *identity, 'commit', '-qm', 'x')
+    linked = tmp_path_factory.mktemp('linked') / 'tree'
+    git(scratch_repo, 'worktree', 'add', '-q', '--detach', str(linked))
+    monkeypatch.chdir(linked)
+    code, line, out = check(capsys, '--armed')
+    assert (code, line) == (1, 'railform-verdict: hooks-check fail not-armed')
+    assert 'arm this clone' not in out
+    assert 'linked worktree' in out
+    assert 'main checkout' in out
+    assert 'railform arm' in out
+
+
+def test_armed_in_the_main_checkout_tells_the_clone_to_arm(
+    scratch_repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    put_all(scratch_repo)
+    code, _, out = check(capsys, '--armed')
+    assert code == 1
+    assert 'arm this clone with `railform arm`' in out
+    assert 'linked worktree' not in out

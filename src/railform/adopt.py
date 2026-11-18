@@ -64,10 +64,10 @@ from railform.hooks_check import (
     CONFIG_ERRORS,
     EXECUTABLE,
     GitError,
+    arm_advice,
     git,
     hooks_path,
     is_armed,
-    is_linked_worktree,
 )
 from railform.verdict import Verdict
 from railform.wrapper import WrapperError, hooks_dir, render
@@ -1084,10 +1084,15 @@ def _refuse_links(root: Path, paths: list[str]) -> None:
 
 def _stub(directory: str) -> str:
     quoted = shlex.quote(directory)
+    # Fixed text, read in the worktree of the adoption before the merge, in the main checkout after
+    # it, and in the main checkout when the adoption ran there: the clone is armed once the main
+    # checkout has the directory, and then from the main checkout.
     message = (
-        f'railform: the git hooks of this repository moved to {directory}; arm this clone with '
-        f'`railform arm` (or: git config core.hooksPath {quoted}); to run one command without '
-        f'arming: git -c core.hooksPath={quoted} <command>'
+        f'railform: the git hooks of this repository moved to {directory}; arm the clone with '
+        f'`railform arm` (or: git config core.hooksPath {quoted}) only once the main checkout has '
+        f'{directory} (an adoption made in a linked worktree gets there when it is merged), and '
+        f'then from the main checkout; to run one command without arming, from any worktree: '
+        f'git -c core.hooksPath={quoted} <command>'
     )
     return '\n'.join(_fill('hook-stub.sh', MESSAGE=shlex.quote(message))) + '\n'
 
@@ -1395,15 +1400,8 @@ def _adopt(root: Path, pin: str | None, requested: str | None) -> Verdict:
         for message in _extra_pr_workflows(root, frame['ci']['extra_workflows'])
     ]
     # The hint follows `hooks-check --armed`, so the two never disagree about this clone.
-    if is_armed(hooks_path(root), directory):
-        pass
-    elif is_linked_worktree(root):
-        findings.append(
-            'this is a linked worktree: once the adoption is merged, arm the clone with'
-            ' `railform arm` from the main checkout'
-        )
-    else:
-        findings.append(f'arm this clone with `railform arm` (core.hooksPath to {directory})')
+    if not is_armed(hooks_path(root), directory):
+        findings.append(arm_advice(root, f' (core.hooksPath to {directory})'))
     return Verdict.ok(VERB, tuple(findings))
 
 
