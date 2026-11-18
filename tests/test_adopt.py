@@ -2343,6 +2343,8 @@ def test_the_stub_written_in_a_linked_worktree_does_not_tell_it_to_arm_the_clone
     # checkout after it; its fixed text must be right in both.
     build(scratch_repo, 'python-scripts')
     git(scratch_repo, 'add', '-A')
+    # a hook is a stub target only when tracked as 100755
+    git(scratch_repo, 'update-index', '--chmod=+x', '--', '.hooks/pre-commit')
     identity = ('-c', 'user.name=alice', '-c', 'user.email=alice@example.com')
     git(scratch_repo, *identity, 'commit', '-qm', 'x')
     linked = tmp_path_factory.mktemp('linked') / 'tree'
